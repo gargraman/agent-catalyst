@@ -1,0 +1,132 @@
+@import "tailwindcss";
+
+/* ============================================================
+   Agent Catalyst - design tokens
+   Default theme = dark. `.light` on <html> flips to light.
+   Data/series + status colors come from the validated dataviz palette.
+   ============================================================ */
+@theme {
+  /* surfaces (dark defaults) */
+  --color-canvas: #0a0a0c;
+  --color-surface: #141418;
+  --color-elevated: #1a1a1f;
+  --color-overlay: #202027;
+  --color-border: #26262d;
+  --color-border-strong: #34343d;
+
+  /* ink */
+  --color-ink: #f5f5f6;
+  --color-ink-2: #b9b9c2;
+  --color-muted: #83838f;
+
+  /* accent (brand blue) */
+  --color-accent: #3987e5;
+  --color-accent-hover: #4e97ef;
+  --color-accent-soft: #15233a;
+  --color-accent-ink: #ffffff;
+
+  /* status (fixed, never themed) */
+  --color-good: #0ca30c;
+  --color-warning: #fab219;
+  --color-serious: #ec835a;
+  --color-critical: #d03b3b;
+
+  /* categorical series (dark steps) */
+  --color-s1: #3987e5;
+  --color-s2: #d95926;
+  --color-s3: #199e70;
+  --color-s4: #c98500;
+  --color-s5: #d55181;
+  --color-s6: #2e9e2e;
+  --color-s7: #9085e9;
+  --color-s8: #e66767;
+
+  --radius: 0.7rem;
+  --font-sans: var(--font-geist-sans), system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+/* light theme overrides (win over :root via higher specificity) */
+:root.light {
+  --color-canvas: #f7f7f5;
+  --color-surface: #ffffff;
+  --color-elevated: #fafaf9;
+  --color-overlay: #ffffff;
+  --color-border: #e7e6e1;
+  --color-border-strong: #d7d6d0;
+
+  --color-ink: #0b0b0b;
+  --color-ink-2: #52514e;
+  --color-muted: #898781;
+
+  --color-accent: #2a6fdb;
+  --color-accent-hover: #2360c4;
+  --color-accent-soft: #e8f0fc;
+  --color-accent-ink: #ffffff;
+
+  --color-s1: #2a78d6;
+  --color-s2: #eb6834;
+  --color-s3: #1baf7a;
+  --color-s4: #eda100;
+  --color-s5: #e87ba4;
+  --color-s6: #008300;
+  --color-s7: #4a3aa7;
+  --color-s8: #e34948;
+}
+
+:root { color-scheme: dark; }
+:root.light { color-scheme: light; }
+
+* { border-color: var(--color-border); }
+
+html { -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; }
+
+body {
+  background:
+    radial-gradient(1100px 440px at 50% -8%, color-mix(in srgb, var(--color-accent) 8%, transparent), transparent),
+    var(--color-canvas);
+  background-attachment: fixed;
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  font-feature-settings: "cv11", "ss01";
+}
+
+::selection { background: color-mix(in srgb, var(--color-accent) 30%, transparent); }
+
+/* custom scrollbar */
+* { scrollbar-width: thin; scrollbar-color: var(--color-border-strong) transparent; }
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-thumb { background: var(--color-border-strong); border-radius: 999px; border: 3px solid var(--color-canvas); }
+*::-webkit-scrollbar-thumb:hover { background: var(--color-muted); }
+
+:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; border-radius: 4px; }
+
+@layer utilities {
+  .tnum { font-variant-numeric: tabular-nums; }
+  .grid-dots {
+    background-image: radial-gradient(var(--color-border) 1px, transparent 1px);
+    background-size: 22px 22px;
+  }
+
+  /* elevation: faint tinted shadow + a 1px inset top highlight for premium depth */
+  .card-elev {
+    box-shadow: 0 1px 2px -1px rgb(0 0 0 / 0.3), 0 2px 6px -2px rgb(0 0 0 / 0.22), inset 0 1px 0 rgb(255 255 255 / 0.03);
+  }
+  :root.light .card-elev {
+    box-shadow: 0 1px 2px rgb(16 24 40 / 0.04), 0 2px 6px -2px rgb(16 24 40 / 0.06), inset 0 1px 0 rgb(255 255 255 / 0.7);
+  }
+
+  .lift { transition: transform 0.18s cubic-bezier(0.16,1,0.3,1), box-shadow 0.18s ease, border-color 0.18s ease; }
+  .lift:hover { transform: translateY(-2px); box-shadow: 0 10px 24px -10px rgb(0 0 0 / 0.5); border-color: var(--color-border-strong); }
+
+  .animate-in { animation: fade-in 0.3s ease both; }
+  .reveal { animation: reveal 0.45s cubic-bezier(0.16,1,0.3,1) both; }
+  @keyframes fade-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+  @keyframes reveal { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-in, .reveal { animation: none; }
+  .lift { transition: none; }
+  .lift:hover { transform: none; }
+}
