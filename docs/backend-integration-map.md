@@ -97,11 +97,11 @@ Legend: **Auth** = console session (signed-in user, RBAC) vs caller token (runti
 | Source (`file:symbol`) | Method / Path | Auth | Tenant | Async | Notes |
 |---|---|---|---|---|---|
 | `lib/store.ts:useEvalRuns` / `useEvalRunsForAgent` | GET /v1/evals / /v1/agents/:id/evals | session | yes | - | List. |
-| `lib/store.ts:addEvalRun` | POST /v1/agents/:id/evals | session | yes | yes | Queue eval vs frozen baseline + judge. |
-| `lib/store.ts:resolveEvalRun` | (job result) | session | yes | yes | Completion patches the run row via poll/stream. |
+| `lib/store.ts:addEvalRun` | POST /v1/agents/:id/evals | session | yes | yes | Queue eval vs frozen baseline + judge. (Mock applies the lifecycle transition synchronously since mock evals are born resolved; server does it on completion — see `resolveEvalRun`.) |
+| `lib/store.ts:resolveEvalRun` | (job result) | session | yes | yes | Completion patches the run row via poll/stream **and transitions the agent lifecycle**: failing verdict gates a pre-publish agent (draft → eval_failing), passing verdict clears it (eval_failing → draft). Published/archived agents untouched (pinned live version is immutable; regressions surface via `drift`). |
 | `evaluations/page.tsx:runEval` | (job result) | session | yes | yes | `Math.random` result values are mock; replace with the job result. |
 | `components/eval-explainer.tsx:generateStarterEval` | POST /v1/agents/:id/evals | session | yes | yes | Eval-onboarding "Generate starter eval set" reuses the eval endpoint (mock passing cases today). |
-| `components/eval-explainer.tsx:rollbackToBaseline` | PATCH /v1/agents/:id (activeVersion) | session | yes | - | Eval-failing remedy "Roll back to {baseline}" re-points via the agent PATCH (see Agents). The explainer/banner/dialog copy + per-dimension deltas are client-only (from the `EvalRun` fields). |
+| `components/eval-explainer.tsx:rollbackToBaseline` | PATCH /v1/agents/:id (activeVersion) | session | yes | - | Eval-failing remedy "Roll back to {baseline}": a compound re-point that sets activeVersion → baseline, status → published, and drift → none in one PATCH. Intentionally **bypasses the publish eval-gate** (it serves a known-passing version), so it does **not** go through the guarded `publishAgent`/`rollbackVersion`. The explainer/banner/dialog copy + per-dimension deltas are client-only (from the `EvalRun` fields). |
 
 ## Runs & metrics
 

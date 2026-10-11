@@ -299,7 +299,9 @@ export function addTool(t: RepoTool) {
   set({ tools: [stamped, ...state.tools] });
   toast(`Tool "${stamped.name}" added`);
 }
-// @backend POST /v1/agents/:id/evals - queue an eval run (async job vs frozen baseline + judge).
+// @backend POST /v1/agents/:id/evals - queue an eval run (async job vs frozen baseline + judge). The
+//   lifecycle transition done below is a server concern that fires on job completion (see resolveEvalRun),
+//   not at queue time; the mock applies it here only because mock evals are born already-resolved.
 export function addEvalRun(e: EvalRun) {
   const stamped = { ...e, workspaceId: e.workspaceId ?? state.activeWorkspaceId };
   // Propagate the verdict to lifecycle, but ONLY for pre-publish agents: a failing eval gates
@@ -321,7 +323,10 @@ export function addEvalRun(e: EvalRun) {
   });
   toast(`Eval run queued for ${stamped.agent}`);
 }
-// @backend (job result) - eval job completion arrives via poll/stream and patches the run row.
+// @backend (job result) - eval job completion arrives via poll/stream and patches the run row. The same
+//   completion must also transition the agent lifecycle server-side: a failing verdict gates a pre-publish
+//   agent (draft -> eval_failing), a passing verdict clears it (eval_failing -> draft). Published/archived
+//   agents are left untouched (the pinned live version is immutable; regressions surface via `drift`).
 export function resolveEvalRun(id: string, patch: Partial<EvalRun>) {
   set({ evalRuns: state.evalRuns.map((e) => (e.id === id ? { ...e, ...patch } : e)) });
 }
