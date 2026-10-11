@@ -1,0 +1,428 @@
+# 08 — API Surface (REST + SSE, Pydantic, OpenAPI → export)
+
+> Implements `spec.md §B11` (REST + OpenAPI 3.1, not GraphQL) and `§B2.5` (IO contract). The contract
+> is the one the built frontend already expects — see `docs/backend-integration-map.md` (code→endpoint)
+> and `docs/backend-integration-plan.md` Part 2 (`data.ts`→API mapping). This doc is the
+> implementation-level version of both: concrete routes, Pydantic models mapped field-by-field to the
+> frontend TS types, the SSE wire format, and the OpenAPI→export path. Names/tables from `01`.
+
+## 1. Conventions
+
+**Two auth planes, two URL prefixes** (reconciling the FE map's `/v1/...` with spec B11):
+
+| Plane | Prefix | Auth | Who calls it |
+|---|---|---|---|
+| Builder API | `/api/v1/*` | **console session** (OIDC cookie, CSRF) + workspace scope | the Next.js console |
+| Published runtime | `/v1/agents/:id/invoke`, `/v1/...` | **caller bearer token** (hashed, scoped) | external apps / cURL |
+
+Both are served by the `api` process (00 §2); different routers, different FastAPI dependencies
+(`deps.session_principal` vs `deps.caller_token`). The FE map writes paths as `/v1/...`; in the builder
+console those resolve under `/api/v1/...` via the reverse proxy (`backend-integration-plan` Part 2).
+
+**Error envelope.** Every non-2xx returns one shape; `api/errors.py` maps typed exceptions → HTTP:
+
+```json
+{ "error": { "code": "publish.eval_gate", "message": "Publish blocked: no PASS eval newer than the last config change.", "detail": {"last_trigger_at": "...", "last_pass_at": null} } }
+```
+
+| Exception | HTTP | `code` |
+|---|---|---|
+| `ValidationError` (input contract) | 400 | `input.invalid` |
+| unauthenticated | 401 | `auth.required` |
+| not a member / RBAC / access-policy deny | 403 | `access.denied` |
+| missing row (post-tenant-scope) | 404 | `not_found` |
+| publish without passing eval | **409** | `publish.eval_gate` |
+| low-confidence suite blocks publish | 409 | `publish.low_confidence` |
+| over monthly budget (hard cap) | **402** | `budget.exceeded` |
+| rate limit (per-token, **P1**) / concurrency + spend quota (P2) | **429** | `rate.limited` |
+| provider/all-fallbacks failed | 502 | `provider.unavailable` |
+
+**Pagination:** cursor-based — `?limit=50&cursor=<opaque>`; responses carry `{items, next_cursor}`.
+Dashboards use dedicated metrics endpoints (§7), not paginated lists.
+
+**Idempotency:** published invoke accepts `Idempotency-Key` header → dedupes via the partial-unique
+index on `runs` (01 §4.7). The first completion's response body is cached in a short-TTL Redis
+idempotency store keyed by `(workspace_id, Idempotency-Key)` and replayed verbatim; the `runs` row
+stores only metadata (cost/tokens/status), and Langfuse (10) is **never** the authoritative response
+source. After the TTL, a replay returns the stored run metadata + a `result_expired` marker rather than
+reconstructing output.
+
+**Tenancy:** every builder route takes `workspace_id` from the client's selection (`?workspace=:id` or
+`X-Workspace-Id`) but **authorizes it against the session's memberships** before use (09 §3) — selecting
+a workspace you don't belong to is a 403, never a leak, so it cannot be forged. The tenancy guard + RLS
+(09, 01 §6) then pin and enforce it.
+
+## 2. Endpoint catalog
+
+Faithful to `backend-integration-map.md`. `Auth`: **S**=session, **T**=caller token. `Async`: returns a
+job/stream (00 §5, 10). `Backs`: the `frontend/src/lib/data.ts` symbol (via `store.ts`).
+
+### Agents & versions
+| Method · Path | Auth | Async | Backs |
+|---|---|---|---|
+| `GET /api/v1/agents?workspace=:id` | S | — | `useAgents` / `AGENTS` |
+| `GET /api/v1/agents/:id` | S | — | `useAgent` (config + versions + bound kb/tools) |
+| `POST /api/v1/agents` | S | — | `addAgent` (create draft) |
+| `PATCH /api/v1/agents/:id` | S | — | `updateAgent` (config, lifecycle, bind kb/tools, rollback activeVersion) |
+| `DELETE /api/v1/agents/:id` | S | — | `deleteAgent` |
+| `POST /api/v1/agents/:id/duplicate` | S | — | `duplicateAgent` |
+| `GET /api/v1/agents/:id/versions` | S | — | `getVersions` / `VERSIONS` |
+| `POST /api/v1/agents/:id/versions` | S | — | "Save as new version" (clone+change; §4.2) |
+| `POST /api/v1/versions/:vid/clone` | S | — | clone to new draft |
+| `GET /api/v1/models` | S | — | `MODELS` (provider catalog + profiles + pricing; 02) |
+
+### Knowledge / RAG
+| Method · Path | Auth | Async | Backs |
+|---|---|---|---|
+| `GET /api/v1/knowledge-bases?workspace=:id` | S | — | `useKnowledgeBases` |
+| `GET /api/v1/knowledge-bases/:id` | S | — | `useKnowledgeBase` |
+| `POST /api/v1/knowledge-bases` | S | — | `addKnowledgeBase` (embedding model, chunking) |
+| `POST /api/v1/knowledge-bases/:id/sources` | S | **yes** | `addDataSource` (connector sources carry `config{connector,fields,credentialRef}`; + kick ingestion) |
+| `POST /api/v1/knowledge-bases/:id/reingest` | S | **yes** | `reingest` |
+| `GET /api/v1/ingestion-jobs` (poll/SSE) | S | **yes** | `useIngestionJobs` |
+| `GET /api/v1/connectors` + presigned upload | S | — | `source-picker.tsx`; returns the connector registry (field specs per connector) + file-upload presign (→ MinIO) |
+| `POST /api/v1/connectors/credentials` | S | — | capture a connector secret/file → vault; returns `{masked, vaultPath}`. FE masks client-side as a mock stand-in (never persists raw). Shared by tool auth secrets. |
+| `POST /api/v1/versions/:vid/retrieval-bindings` | S | — | bind KB→version (04) |
+
+### Evaluations
+| Method · Path | Auth | Async | Backs |
+|---|---|---|---|
+| `GET /api/v1/evals` · `GET /api/v1/agents/:id/evals` | S | — | `useEvalRuns` / `getEvalsForAgent` |
+| `POST /api/v1/agents/:id/evals` | S | **yes** | `addEvalRun` (queue vs frozen baseline + judge; 05) |
+| `GET /api/v1/jobs/:id` | S | **yes** | `resolveEvalRun` completion patch |
+| `POST /api/v1/agents/:id/eval-suites` · `/cases` | S | — | suite/case CRUD |
+| `POST /api/v1/versions/:vid/baseline` | S | — | "Re-freeze baseline" (audited; 05) |
+
+### Publish, tokens, export
+| Method · Path | Auth | Async | Backs |
+|---|---|---|---|
+| `POST /api/v1/versions/:vid/publish` | S | — | publish (409 if no PASS eval; §6, 05) |
+| `POST /api/v1/agents/:id/repoint` | S | — | re-point endpoint to a prior passing version |
+| `GET /api/v1/agents/:id/tokens` | S | — | `useTokens` (prefixes only) |
+| `POST /api/v1/agents/:id/tokens` | S | — | `addToken` (secret shown **once**; 09) |
+| `DELETE /api/v1/tokens/:id` | S | — | `revokeToken` |
+| `GET /api/v1/endpoints/:eid/export?format=curl\|ts\|python` | S | — | Publish & Export (§5) |
+| `GET /api/v1/endpoints/:eid/openapi.json` | S | — | per-endpoint OpenAPI (export source) |
+
+### Runs, metrics, settings
+| Method · Path | Auth | Async | Backs |
+|---|---|---|---|
+| `GET /api/v1/runs?workspace=:id` | S | — | `useRuns` / `RUNS` |
+| `GET /api/v1/runs/:id` | S | — | run detail + spans |
+| `GET /api/v1/metrics/{spend,volume,latency,activity}` | S | — | dashboard/runs charts (§7) |
+| `GET /api/v1/provider-keys?workspace=:id` | S | — | `useProviderKeys` (masked) |
+| `POST /api/v1/provider-keys` (+ `/rotate`,`/revoke`) | S(admin) | — | `addProviderKey` (vaulted; 09) |
+| `GET /api/v1/members?workspace=:id` | S | — | `useMembers` (IAM read-only) |
+| `PUT /api/v1/{agents\|knowledge\|tools\|mcp}/:id/access-policy` | S(admin) | — | `setAccessPolicy` (09) |
+| `GET /api/v1/agents/:id/guardrails` · `PUT …` | S | — | Guardrails tab (per-version config; 06) |
+| `GET /api/v1/search?q=` | S | — | topbar + list search |
+
+### Tools & MCP (P2 — routes reserved)
+| Method · Path | Auth | Async | Backs |
+|---|---|---|---|
+| `GET/POST /api/v1/tools` | S | — | `useTools` / `addTool` (HTTP tool carries `httpConfig{method,url,auth,authRef,headers,argsSchema}`; secret → vault, only `authRef` persisted) |
+| `GET /api/v1/mcp-servers` · `GET /:id` | S | — | `useMcpServers` / `useMcpServer` |
+| `POST /api/v1/mcp-servers` | S | yes* | `addMcpServer` (connect + discover) |
+| `POST /api/v1/mcp-servers/:id/discover` | S | yes | re-run `tools/list` |
+| `POST /api/v1/versions/:vid/tools` | S | — | bind tools/MCP tools to version |
+
+### Published runtime (caller token)
+| Method · Path | Auth | Async | Backs |
+|---|---|---|---|
+| `POST /v1/agents/:id/invoke` (JSON or SSE) | **T** | stream | Playground `send()` (preview) + external callers |
+
+> **Playground vs published invoke share one body + one code path.** The playground calls the *same*
+> `runtime.invoke` (00 §1) with a console session instead of a token and `run_source="playground"`. The
+> FE `runtime-access.ts` decode is a **client-side preview only**; the server re-validates the token and
+> computes effective access (09).
+
+## 3. Load-bearing Pydantic models (mapped to `data.ts`)
+
+Generated OpenAPI from these is the single source for the FE typed client (§5). Each model notes the TS
+type it mirrors so FE/BE never diverge.
+
+```python
+# services/api/schemas/agents.py
+from pydantic import BaseModel, Field
+from datetime import datetime
+
+class ModelRefOut(BaseModel):            # mirrors TS ModelRef
+    provider: str                        # "Anthropic" | "OpenAI" | ...
+    model: str
+    in_usd: float = Field(alias="inUsd") # per 1M input tokens
+    out_usd: float = Field(alias="outUsd")
+    context: str
+    class Config: populate_by_name = True
+
+class AgentOut(BaseModel):               # mirrors TS Agent
+    id: str                              # slug ("triage-copilot")
+    name: str
+    description: str
+    status: str                          # agent_status enum (01 §3)
+    provider: str
+    model: str
+    owner: str
+    created_at: datetime = Field(alias="createdAt")
+    updated_at: datetime = Field(alias="updatedAt")
+    active_version: str = Field(alias="activeVersion")
+    versions: int
+    tags: list[str]
+    calls_30d: int = Field(alias="calls30d")
+    cost_30d: float = Field(alias="cost30d")
+    p95_ms: int = Field(alias="p95ms")
+    eval_pass: float = Field(alias="evalPass")
+    drift: str                           # none|stable|watch|regressed
+    calls_spark: list[int] = Field(alias="callsSpark")
+    knowledge_bases: list[str] = Field(alias="knowledgeBases")
+    tools: list[str]
+    endpoint: str | None = None
+    workspace_id: str | None = Field(default=None, alias="workspaceId")
+    access_policy: dict | None = Field(default=None, alias="accessPolicy")
+    class Config: populate_by_name = True
+
+class AgentCreate(BaseModel):            # addAgent
+    name: str
+    description: str = ""
+    provider: str
+    model: str
+    system_prompt: str = ""
+    tags: list[str] = []
+
+class AgentPatch(BaseModel):             # updateAgent (all optional; lifecycle + binds + rollback)
+    name: str | None = None
+    description: str | None = None
+    status: str | None = None            # publish/unpublish/archive → may trigger eval gate (§6)
+    active_version: str | None = None    # rollback / re-point
+    knowledge_bases: list[str] | None = None
+    tools: list[str] | None = None
+    access_policy: dict | None = None
+```
+
+```python
+# services/api/schemas/versions.py — a version is an immutable snapshot (01 §4.2)
+class VersionOut(BaseModel):             # mirrors TS Version
+    label: str                           # "v7"
+    status: str                          # draft|evaluated|published|deprecated
+    model: str
+    provider: str
+    created_at: datetime = Field(alias="createdAt")
+    created_by: str = Field(alias="createdBy")
+    eval_verdict: str = Field(alias="evalVerdict")   # pass|fail|low_confidence|none
+    note: str
+    publishable: bool
+    class Config: populate_by_name = True
+
+class VersionCreate(BaseModel):          # "Save as new version" = clone the active + apply changes
+    from_label: str                      # base version to clone
+    model_config_: dict | None = Field(default=None, alias="modelConfig")  # provider/model/params (02)
+    system_prompt: str | None = None
+    io_contract: dict | None = None      # typed inputs + output schema (B2.5)
+    guardrail_config: dict | None = None # (06)
+    note: str = ""
+    # server freezes snapshot_hash + resolves profile_snapshot at create (01 §4.2)
+```
+
+```python
+# services/api/schemas/invoke.py — the IO contract at the wire (spec B2.5)
+class Message(BaseModel):
+    role: str                            # system|user|assistant|tool
+    content: str
+
+class InvokeInputs(BaseModel):
+    messages: list[Message]
+    inputs: dict = {}                    # declared typed input vars; validated vs io_contract (400 on miss)
+    stream: bool = True
+    session_id: str | None = None        # LangGraph checkpointer key (03, memory)
+
+class InvokeResult(BaseModel):           # non-stream mode
+    run_id: str
+    output: str
+    structured: dict | None = None       # when io_contract declares a JSON schema
+    citations: list[dict] = []           # {source, docId, chunkId, score} when RAG on (04)
+    usage: dict                          # {input_tokens, output_tokens, cost_usd}
+    guardrail: str = "passed"
+```
+
+```python
+# services/api/schemas/evals.py — mirrors TS EvalRun (incl. drill-down)
+class EvalDimension(BaseModel):
+    name: str; score: float; baseline: float
+
+class EvalCaseFail(BaseModel):
+    input: str; issue: str
+
+class EvalRunOut(BaseModel):
+    id: str; agent_id: str = Field(alias="agentId"); agent: str
+    version: str; baseline: str
+    quality: float
+    quality_delta: float = Field(alias="qualityDelta")
+    cost_delta: float = Field(alias="costDelta")
+    latency_delta: float = Field(alias="latencyDelta")
+    cases: int
+    verdict: str                         # pass|fail|low_confidence
+    date: datetime
+    trigger: str
+    reason: str | None = None
+    dimensions: list[EvalDimension] | None = None
+    failing_cases: list[EvalCaseFail] | None = Field(default=None, alias="failingCases")
+    class Config: populate_by_name = True
+```
+
+```python
+# services/api/schemas/runs.py & tokens.py
+class RunOut(BaseModel):                  # mirrors TS Run
+    id: str; agent_id: str = Field(alias="agentId"); agent: str
+    version: str
+    source: str                          # Playground|API|Eval
+    status: str                          # success|error|blocked
+    latency_ms: int = Field(alias="latencyMs")
+    tokens: int
+    cost: float
+    time: datetime
+    guardrail: str
+    caller: str | None = None
+    subject_type: str | None = Field(default=None, alias="subjectType")
+    class Config: populate_by_name = True
+
+class ApiTokenOut(BaseModel):            # mirrors TS ApiToken — NEVER includes the secret
+    id: str; name: str; agent: str; prefix: str
+    created: datetime; last_used: datetime | None = Field(default=None, alias="lastUsed")
+    scopes: str                          # human-readable display summary (matches FE ApiToken.scopes: string)
+    # NOTE: the STRUCTURED authorization claims (api_tokens.scopes jsonb, 01 §4.7 — teams/scopes/subject)
+    # are read server-side at invoke (09 §6) and are deliberately NOT returned on the wire.
+
+class ApiTokenCreated(ApiTokenOut):      # returned ONCE on mint
+    secret: str                          # shown once; only the hash is stored (01 §4.7, 09)
+```
+
+> **FE/BE field alignment is load-bearing.** The FE already uses camelCase (`calls30d`, `qualityDelta`).
+> Models use `alias=` + `populate_by_name` so the JSON is camelCase while Python stays snake_case, and
+> the generated TS client (§5) matches `data.ts` exactly — the integration is "swap the data source,"
+> not a UI rewrite (`backend-integration-plan` Part 2).
+
+## 4. SSE streaming (playground + published invoke)
+
+The runtime yields `NormalizedStreamEvent`s (the IR; 02); the HTTP layer re-encodes them as SSE. One
+wire format for both callers, so the FE renders playground and production identically.
+
+**Framing:** `text/event-stream`, one JSON object per `data:` line, `event:` = the type.
+
+```
+event: run_start
+data: {"run_id":"run-7f3a21","version":"v7","model":"claude-opus-5-5"}
+
+event: guardrail
+data: {"stage":"pii","phase":"input","action":"pass"}
+
+event: retrieval
+data: {"chunks":4,"kb":"xdr-playbooks"}
+
+event: text_delta
+data: {"text":"Based on the "}
+
+event: tool_call_start
+data: {"id":"tc_1","name":"http-enrich-ip","args_partial":""}
+
+event: tool_call_end
+data: {"id":"tc_1","result_summary":"enriched 1 IP"}
+
+event: citation
+data: {"source":"xdr-playbooks","docId":"pb-14","chunkId":"c-3","score":0.82}
+
+event: usage
+data: {"input_tokens":9120,"output_tokens":540,"cost_usd":0.034,"cache_hit":false}
+
+event: done
+data: {"run_id":"run-7f3a21","status":"success","guardrail":"passed"}
+```
+
+| `event:` | Payload | Source |
+|---|---|---|
+| `run_start` | run_id, version, model | runtime enter |
+| `text_delta` | text | model stream (02 IR `text_delta`) |
+| `reasoning_delta` | text | model stream (reasoning models; profile-gated, 02) |
+| `tool_call_start/_delta/_end` | id, name, args, result | tool loop (03) |
+| `retrieval` | chunks, kb | retriever (04) |
+| `citation` | source, docId, chunkId, score | retriever (04) |
+| `guardrail` | stage, phase, action (pass\|redact\|block) | guardrail runner (06) |
+| `usage` | tokens + `cost_usd` + `cache_hit` | gateway cost calc (02, 07) |
+| `error` | code, message | typed error (fail-open/closed per 06) |
+| `done` | run_id, status, guardrail | runtime exit |
+
+Implementation notes: use `StreamingResponse` with `media-type text/event-stream`; disable proxy
+buffering + set long read timeouts (`11 §networking`); heartbeat `: ping` every ~15s to keep
+intermediaries from closing idle streams; on client disconnect, cancel the runtime task (frees the
+provider call + any spend reservation, 07). A **blocked** input guardrail emits `guardrail{action:block}`
+then `done{status:blocked}` with no model call — matching FE `Run.status="blocked"` /
+`guardrail:"PII blocked on input"`.
+
+## 5. OpenAPI as source of truth → export
+
+FastAPI emits OpenAPI 3.1 from the Pydantic models above. Two consumers:
+
+1. **FE typed client (CI).** `openapi-typescript` + a thin fetch wrapper generate `frontend/src/lib/api/`
+   in CI from the live spec; a CI check fails if the committed client drifts from the spec
+   (`backend-integration-plan` Part 2, risk #5). This is what keeps `data.ts` types and backend models
+   in lockstep.
+2. **Per-endpoint export** (`GET /endpoints/:eid/export?format=curl|ts|python`). The published endpoint
+   has its own narrowed OpenAPI (only `POST /v1/agents/:id/invoke` with *that agent's* resolved input
+   schema from its `io_contract`). Snippets are rendered from that spec.
+
+```bash
+# format=curl — only the scoped caller token placeholder; NEVER a provider key (09)
+curl -N https://catalyst.internal/v1/agents/soc-triage-copilot/invoke \
+  -H "Authorization: Bearer $AGENT_CATALYST_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"messages":[{"role":"user","content":"Triage alert 8831"}],"inputs":{"severity":"high"},"stream":true}'
+```
+
+> **Secret-free export is automated-tested** (`backend-integration-plan` M4): the export output is
+> scanned for key-shaped strings; any provider/tool secret in a snippet fails CI. The export supports
+> the headline metric "new agent → published, callable endpoint < 15 min" (`scope.md`).
+
+## 6. Publish flow (the eval gate, enforced server-side)
+
+`POST /api/v1/versions/:vid/publish`:
+1. Load version; assert `publishable = true` — set only by a PASS `eval_run` **newer than** the last
+   config-change trigger on this version (05). Else **409 `publish.eval_gate`**.
+2. If the suite is below the low-confidence threshold (default 10 cases) → **409 `publish.low_confidence`**
+   unless an audited override flag is passed (05, `spec B5`).
+3. Create/repoint `published_endpoints.pinned_version_id`; set agent `status=published`; write
+   `audit_logs(action="publish")` (01 §4.8).
+
+`POST /api/v1/agents/:id/repoint {version_label}` re-points to a prior **already-passing** version
+(one-click rollback; `backend-integration-plan` §cross-cutting). Editing the agent afterward changes
+nothing live until another eval-gated publish — enforced because the endpoint pins a *version snapshot*,
+not the live agent (00 §4, 01 §4.2).
+
+## 7. Metrics endpoints (dashboard charts)
+
+The FE dashboard/runs pages render `SPEND_SERIES`, `RUNS_SERIES`, `LATENCY_SERIES`, `ACTIVITY`, and
+stat deltas (`dashStats`, `runsStats`, `evalStats`). Back them with time-series endpoints computed from
+`runs`/`spans`/`eval_runs` (01), scoped to the active workspace:
+
+```
+GET /api/v1/metrics/spend?workspace=:id&range=30d&bucket=4d   -> { labels:[...], series:[{name, values:[...]}] }
+GET /api/v1/metrics/volume?workspace=:id&range=7d&bucket=1d   -> RUNS_SERIES shape
+GET /api/v1/metrics/latency?workspace=:id&range=6d&bucket=1d  -> LATENCY_SERIES shape (p50/p95)
+GET /api/v1/metrics/activity?workspace=:id&limit=20           -> [{who,action,target,time,tone}]  (audit-derived)
+GET /api/v1/agents/:id/dashboard                              -> per-agent rollup (calls/cost/p95/evalPass/drift)
+```
+
+```python
+class Series(BaseModel):                 # mirrors TS Series
+    name: str
+    values: list[float]
+
+class MetricsOut(BaseModel):
+    labels: list[str]
+    series: list[Series]
+```
+
+Implementation: pre-aggregate in SQL with `date_trunc` + `width_bucket`; cache per
+`(workspace, metric, range)` in Redis with a short TTL (dashboards tolerate seconds of staleness) — a
+cheap COGS/latency win (07). High-volume raw rows are partitioned/retained per `11 §telemetry` so these
+rollups stay fast and the primary DB doesn't bloat. Stat deltas (`spendDelta`, `evalDelta`, …) are
+computed as current-window vs previous-window from the same aggregates, not hardcoded as in the mock.
+
+→ Next: `09-security-tenancy.md`.
