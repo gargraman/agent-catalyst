@@ -43,10 +43,14 @@ Legend: **Auth** = console session (signed-in user, RBAC) vs caller token (runti
 | `lib/store.ts:useAgents` | GET /v1/agents?workspace=:id | session | yes | - | List; server applies access-policy visibility. |
 | `lib/store.ts:useAgent` | GET /v1/agents/:id | session | yes | - | Config, versions, bound knowledge/tools. |
 | `lib/store.ts:addAgent` | POST /v1/agents | session | yes | - | Create draft; used by `agents/new`. |
-| `lib/store.ts:updateAgent` | PATCH /v1/agents/:id | session | yes | - | Config edits, lifecycle (publish/unpublish/archive), bind knowledge/tools, rollback activeVersion. Publish may require a passing eval. |
-| `lib/store.ts:deleteAgent` | DELETE /v1/agents/:id | session | yes | - | Delete agent + versions. |
+| `lib/store.ts:updateAgent` | PATCH /v1/agents/:id | session | yes | - | Generic field patch (name/description/tags) + bind knowledge/tools. Config params go through `updateAgentConfig`. |
+| `lib/store.ts:updateAgentConfig` | PATCH /v1/agents/:id | session | yes | - | Draft config: model params, prompt, **input variables (io_contract)**, memory, retrieval, guardrails, spend. Frozen into the version snapshot on publish. |
+| `lib/store.ts:publishAgent` / `unpublishAgent` / `archiveAgent` / `restoreAgent` | PATCH /v1/agents/:id | session | yes | - | Guarded lifecycle wrappers. `publishAgent` is blocked when the agent is `eval_failing` (requires a passing eval). |
+| `lib/store.ts:rollbackVersion` | PATCH /v1/agents/:id (activeVersion) | session | yes | - | Repoint the live version; validates the label against known versions. |
+| `lib/store.ts:deleteAgent` | DELETE /v1/agents/:id | session | yes | - | Delete agent + versions (server cascade). Mock also scrubs eval runs, runs, tokens, and channel `agentIds` references. |
 | `lib/store.ts:duplicateAgent` | POST /v1/agents/:id/duplicate | session | yes | - | Server copies config to a new draft. |
-| `agents/[id]` Versions tab | POST version / PATCH baseline | session | yes | - | "Save as new version" + "Re-freeze baseline" are mock toasts today. |
+| `agents/[id]` Configure → Input variables | (io_contract on PATCH / version create) | session | yes | - | Editable schema builder (name/type/required/default); persists via `updateAgentConfig.inputVariables`. Maps to `agent_versions.io_contract` (spec B2.5). |
+| `agents/[id]` Versions tab | POST version / PATCH baseline | session | yes | - | Rollback is wired (`rollbackVersion`); "Save as new version" + "Re-freeze baseline" are mock toasts today. |
 | `agents/[id]` Model + `agents/new` | GET /v1/models | session | - | - | Provider/model list (`MODELS` seed). |
 
 ## Knowledge
@@ -144,7 +148,7 @@ Legend: **Auth** = console session (signed-in user, RBAC) vs caller token (runti
 
 | Source (`file:symbol`) | Method / Path | Auth | Tenant | Async | Notes |
 |---|---|---|---|---|---|
-| `agents/[id]` Guardrails tab | GET/PUT /v1/agents/:id/guardrails | session | yes | - | Currently local React state only; per-version guardrail config. |
+| `agents/[id]` Guardrails tab | GET/PUT /v1/agents/:id/guardrails | session | yes | - | Stage toggles persist via `updateAgentConfig.guardrails` (draft); per-version guardrail config, frozen on publish. |
 | `app-shell.tsx` + `agents/page.tsx` search | GET /v1/search | session | yes | - | Topbar + list search inputs are non-functional today. |
 
 ---

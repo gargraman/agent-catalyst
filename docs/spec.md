@@ -141,7 +141,9 @@ for cost or capability.
 
 ### B2.5. Input / output contract
 - **Input variables:** typed declarations (name, type, required, default) injected into the prompt
-  template; validated at invoke; become part of the published OpenAPI request schema.
+  template; validated at invoke; become part of the published OpenAPI request schema. Edited in the
+  console via the Configure → Input variables schema builder (add/remove/retype rows); persisted as the
+  version's `io_contract`.
 - **Output:** free text or structured output (JSON schema) via the profile's structured-output
   support; citations included when RAG is on. Declared per version → reflected in export.
 

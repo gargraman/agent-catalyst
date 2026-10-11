@@ -14,7 +14,7 @@ import { Segmented } from "@/components/tabs";
 import { ConfirmDialog } from "@/components/dialog";
 import { GateButton } from "@/components/gate";
 import { statusLabel, statusTone, type Agent, type AgentStatus } from "@/lib/data";
-import { useAgents, updateAgent, deleteAgent, duplicateAgent, toast } from "@/lib/store";
+import { useAgents, deleteAgent, duplicateAgent, publishAgent, unpublishAgent, archiveAgent, restoreAgent } from "@/lib/store";
 import { useAuth, usePrincipal } from "@/lib/auth";
 import { canUse } from "@/lib/access-policy";
 import { num, relative } from "@/lib/format";
@@ -29,9 +29,9 @@ const FILTERS: { key: string; label: string }[] = [
 
 /* @backend integration points (this page):
  *  - @backend GET /v1/agents?workspace=:id - agent list [via useAgents]
- *  - @backend PATCH /v1/agents/:id - lifecycle: publish/unpublish/archive/restore [via updateAgent]
+ *  - @backend PATCH /v1/agents/:id - lifecycle: publish/unpublish/archive/restore [via guarded publishAgent/unpublishAgent/archiveAgent/restoreAgent]
  *  - @backend POST /v1/agents/:id/duplicate - duplicate agent [via duplicateAgent]
- *  - @backend DELETE /v1/agents/:id - delete agent [via deleteAgent]
+ *  - @backend DELETE /v1/agents/:id - delete agent + cascade (evals/runs/tokens/channel refs) [via deleteAgent]
  *  - @backend GET /v1/search - search box Input (non-functional today)
  * See src/lib/store.ts markers + docs/backend-integration-map.md for the authoritative contracts.
  */
@@ -75,12 +75,6 @@ export default function AgentsPage() {
   const hasActiveFilters = q.trim() !== "" || provider !== "all" || owner !== "all" || tag !== "all";
   function resetFilters() {
     setQ(""); setProvider("all"); setOwner("all"); setTag("all"); setPage(1);
-  }
-
-  function publish(a: Agent) {
-    if (a.status === "eval_failing") { toast("Publishing is blocked: the active version failed its latest eval.", "critical"); return; }
-    updateAgent(a.id, { status: "published" }, false);
-    toast(`Published ${a.name}`);
   }
 
   return (
@@ -133,10 +127,10 @@ export default function AgentsPage() {
                 onPlayground={() => router.push(`/playground?agent=${a.id}`)}
                 onEdit={() => router.push(`/agents/${a.id}`)}
                 onDuplicate={() => { const id = duplicateAgent(a.id); if (id) router.push(`/agents/${id}`); }}
-                onPublish={() => publish(a)}
-                onUnpublish={() => updateAgent(a.id, { status: "draft" })}
-                onArchive={() => updateAgent(a.id, { status: "archived" })}
-                onRestore={() => updateAgent(a.id, { status: "draft" })}
+                onPublish={() => publishAgent(a.id)}
+                onUnpublish={() => unpublishAgent(a.id)}
+                onArchive={() => archiveAgent(a.id)}
+                onRestore={() => restoreAgent(a.id)}
                 onDelete={() => setDeleteTarget(a)}
               />
             ))}

@@ -4,12 +4,13 @@ import * as React from "react";
 import { useRouter } from "next/navigation";
 import { ArrowLeft, Bot, Check, Database, FileText, Headphones, MessageSquare, Plug, Rocket, Sparkles } from "lucide-react";
 import {
-  Card, CardHeader, CardTitle, CardContent, CardDescription, Badge, Button, Field, Input, Select, Textarea,
+  Card, CardHeader, CardTitle, CardContent, CardDescription, Badge, Button, Field, Input, Select, Textarea, EmptyState,
 } from "@/components/ui";
 import { Term } from "@/components/term";
 import { MODELS, type Agent, type ReasoningEffort } from "@/lib/data";
 import { addAgent, genId, nowIso, useKnowledgeBases, useTools } from "@/lib/store";
-import { usePrincipal } from "@/lib/auth";
+import { usePrincipal, useAuth } from "@/lib/auth";
+import { requirementText } from "@/components/gate";
 import { canUse } from "@/lib/access-policy";
 import { usd } from "@/lib/format";
 
@@ -80,6 +81,7 @@ const OUTPUT_FORMATS = ["Free text", "Structured JSON", "Structured JSON + citat
 export default function NewAgentPage() {
   const router = useRouter();
   const principal = usePrincipal();
+  const { can } = useAuth();
   // Only bind resources the builder can actually use in the active workspace (Part B2).
   const kbOptions = useKnowledgeBases().filter((kb) => canUse(kb.accessPolicy, principal));
   const toolOptions = useTools().filter((t) => canUse(t.accessPolicy, principal));
@@ -151,6 +153,17 @@ export default function NewAgentPage() {
     };
     addAgent(agent);
     router.push(`/agents/${agent.id}`);
+  }
+
+  // Guard the whole create flow — direct navigation to /agents/new must respect agent.create, not just
+  // the gated link on the agents list.
+  if (!can("agent.create")) {
+    return (
+      <div className="space-y-6">
+        <Button href="/agents" variant="ghost" size="sm"><ArrowLeft className="size-4" /> Back to agents</Button>
+        <EmptyState icon={<Bot className="size-6" />} title="You can't create agents" hint={requirementText("agent.create")} />
+      </div>
+    );
   }
 
   return (

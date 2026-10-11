@@ -133,7 +133,9 @@ create table agent_versions (
   profile_snapshot jsonb not null,              -- resolved capability profile at freeze time (02)
   system_prompt   text not null default '',
   prompt_hash     text not null,                -- sha256(system_prompt) — an eval trigger (05)
-  io_contract     jsonb not null default '{}',  -- typed inputs + output schema (spec B2.5)
+  io_contract     jsonb not null default '{}',  -- typed inputs + output schema (spec B2.5); edited as
+                                                --   draft config in the console (Configure → Input
+                                                --   variables builder), frozen here on publish
   memory_config   jsonb not null default '{}',  -- window, compaction, persist (03)
   context_config  jsonb not null default '{}',  -- window limit, truncation strategy (03)
   guardrail_config jsonb not null default '{}', -- ordered stages + thresholds (06)

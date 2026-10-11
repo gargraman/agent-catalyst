@@ -3,7 +3,7 @@
 import { useRef, useSyncExternalStore } from "react";
 import {
   AGENTS, KNOWLEDGE_BASES, INGESTION_JOBS, MCP_SERVERS, TOOLS_REPO, EVAL_RUNS, RUNS,
-  API_TOKENS, PROVIDER_KEYS, MEMBERS, CHANNELS_SEED, resolveConfig,
+  API_TOKENS, PROVIDER_KEYS, MEMBERS, CHANNELS_SEED, resolveConfig, getVersions,
   type Agent, type AgentConfig, type KnowledgeBase, type DataSource, type IngestionJob, type McpServer,
   type RepoTool, type EvalRun, type Run, type ApiToken, type ProviderKey, type Member, type Channel,
 } from "./data";
@@ -153,8 +153,10 @@ export function addAgent(a: Agent) {
   set({ agents: [stamped, ...state.agents] });
   toast(`Agent "${stamped.name}" created as a draft`);
 }
-// @backend PATCH /v1/agents/:id - config edits, lifecycle (publish/unpublish/archive), bind
-//   knowledge/tools, rollback activeVersion. Publish/version changes may require a passing eval.
+// @backend PATCH /v1/agents/:id - generic field patch + bind knowledge/tools. Lifecycle transitions
+//   (publish/unpublish/archive/restore) and version rollback go through the dedicated guarded wrappers
+//   below (publishAgent/unpublishAgent/archiveAgent/restoreAgent/rollbackVersion), which map to the same
+//   endpoint but centralize the passing-eval guard.
 export function updateAgent(id: string, patch: Partial<Agent>, notify = true) {
   set({ agents: state.agents.map((a) => (a.id === id ? { ...a, ...patch, updatedAt: nowIso() } : a)) });
   if (notify) toast("Changes saved");
@@ -180,9 +182,61 @@ export function updateAgentConfig(id: string, patch: Partial<AgentConfig>, notif
   });
   if (notify) toast("Changes saved");
 }
-// @backend DELETE /v1/agents/:id - delete agent and its versions.
+// @backend PATCH /v1/agents/:id - lifecycle transitions below are dedicated wrappers over the same
+//   endpoint; they centralize the guards (publish requires a passing eval) the UI previously duplicated.
+/** Publish the active version. Blocked when the agent is eval_failing. Returns false if blocked. */
+export function publishAgent(id: string): boolean {
+  const a = state.agents.find((x) => x.id === id);
+  if (!a) return false;
+  if (a.status === "eval_failing") {
+    toast("Publish blocked: the latest eval is failing. Run a passing eval first.", "critical");
+    return false;
+  }
+  const endpoint = a.endpoint ?? a.id;
+  set({ agents: state.agents.map((x) => (x.id === id ? { ...x, status: "published", endpoint, updatedAt: nowIso() } : x)) });
+  toast(`Published ${a.activeVersion}`);
+  return true;
+}
+/** Unpublish back to draft (the endpoint stops serving until re-published). */
+export function unpublishAgent(id: string) {
+  updateAgent(id, { status: "draft" }, false);
+  toast("Agent unpublished", "neutral");
+}
+/** Archive (hide from active lists; reversible). */
+export function archiveAgent(id: string) {
+  updateAgent(id, { status: "archived" }, false);
+  toast("Agent archived", "neutral");
+}
+/** Restore an archived agent back to draft. */
+export function restoreAgent(id: string) {
+  updateAgent(id, { status: "draft" }, false);
+  toast("Agent restored");
+}
+/** Repoint the live version. Validates the label against the agent's known versions. */
+export function rollbackVersion(id: string, label: string) {
+  if (!getVersions(id).some((v) => v.label === label)) {
+    toast(`Unknown version "${label}"`, "critical");
+    return;
+  }
+  updateAgent(id, { activeVersion: label }, false);
+  toast(`Rolled back to ${label}`);
+}
+// @backend DELETE /v1/agents/:id - delete agent and its versions (server cascade). The mock mirrors the
+//   cascade client-side: drop the agent's eval runs, runs, tokens, and scrub it from channel bindings so
+//   no dangling references survive the delete.
 export function deleteAgent(id: string) {
-  set({ agents: state.agents.filter((a) => a.id !== id) });
+  const a = state.agents.find((x) => x.id === id);
+  set({
+    agents: state.agents.filter((x) => x.id !== id),
+    evalRuns: state.evalRuns.filter((e) => e.agentId !== id),
+    runs: state.runs.filter((r) => r.agentId !== id),
+    tokens: a ? state.tokens.filter((t) => t.agent !== a.name) : state.tokens,
+    channels: state.channels.map((c) => ({
+      ...c,
+      agentIds: c.agentIds.filter((aid) => aid !== id),
+      defaultAgentId: c.defaultAgentId === id ? undefined : c.defaultAgentId,
+    })),
+  });
   toast("Agent deleted", "neutral");
 }
 // @backend POST /v1/agents/:id/duplicate - server copies config into a new draft; returns new id.
@@ -248,7 +302,23 @@ export function addTool(t: RepoTool) {
 // @backend POST /v1/agents/:id/evals - queue an eval run (async job vs frozen baseline + judge).
 export function addEvalRun(e: EvalRun) {
   const stamped = { ...e, workspaceId: e.workspaceId ?? state.activeWorkspaceId };
-  set({ evalRuns: [stamped, ...state.evalRuns] });
+  // Propagate the verdict to lifecycle, but ONLY for pre-publish agents: a failing eval gates
+  // publishing (draft -> eval_failing); a passing eval clears that gate (eval_failing -> draft).
+  // Published/archived agents are left untouched — the live pinned version is immutable until an
+  // explicit eval-gated re-point, so a regression surfaces via `drift`, not by auto-unpublishing.
+  // Folded into one `set` with the eval insert so a single logical action is one store commit.
+  const agent = state.agents.find((a) => a.id === e.agentId);
+  let nextStatus: Agent["status"] | null = null;
+  if (agent) {
+    if (e.verdict === "fail" && agent.status === "draft") nextStatus = "eval_failing";
+    else if (e.verdict === "pass" && agent.status === "eval_failing") nextStatus = "draft";
+  }
+  set({
+    evalRuns: [stamped, ...state.evalRuns],
+    agents: nextStatus
+      ? state.agents.map((a) => (a.id === e.agentId ? { ...a, status: nextStatus!, updatedAt: nowIso() } : a))
+      : state.agents,
+  });
   toast(`Eval run queued for ${stamped.agent}`);
 }
 // @backend (job result) - eval job completion arrives via poll/stream and patches the run row.
@@ -367,7 +437,10 @@ export const useChannel = (id: string) => useSelector((s) => s.channels.find((c)
 export const useChannelsForAgent = (agentId: string) =>
   useSelector((s) => inWs(s.channels, s.activeWorkspaceId).filter((c) => c.agentIds.includes(agentId)));
 // @backend GET /v1/agents/:id/evals and /runs - per-agent lists for the detail tabs.
-/** Per-agent, store-backed so new eval/run mutations show on the agent detail tabs. */
+/** Per-agent, store-backed so new eval/run mutations show on the agent detail tabs. Filtered by
+   agentId only — an agentId already pins the rows to that agent's single workspace, and useAgent
+   itself is not workspace-scoped, so adding an activeWorkspaceId filter here would wrongly empty the
+   tabs when the active workspace is switched while viewing an agent from another one. */
 export const useEvalRunsForAgent = (agentId: string) => useSelector((s) => s.evalRuns.filter((e) => e.agentId === agentId));
 export const useRunsForAgent = (agentId: string) => useSelector((s) => s.runs.filter((r) => r.agentId === agentId));
 // @backend GET /v1/agents/:id/tokens - list endpoint tokens (prefixes only, never the secret).

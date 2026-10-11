@@ -19,13 +19,15 @@ import { Dialog, ConfirmDialog } from "@/components/dialog";
 import {
   getAgent, getKb, getModel, getVersions, resolveConfig, parseNum,
   MODELS, driftTone, statusLabel, statusTone, verdictLabel, verdictTone,
-  type Agent, type AgentStatus, type EvalRun,
+  type Agent, type EvalRun,
   type ReasoningEffort, type OutputFormat, type TruncationStrategy, type InjectionStrategy, type Reranker, type GuardrailStage,
+  type InputVariable, type InputVariableType,
 } from "@/lib/data";
 import {
   useAgent, useTokens, useTools, useKnowledgeBases, useMcpServers, useEvalRunsForAgent,
   useChannelsForAgent, addEvalRun, addToken, revokeToken,
   updateAgent, updateAgentConfig, deleteAgent, duplicateAgent, toast, genId, nowIso,
+  publishAgent, unpublishAgent, archiveAgent, restoreAgent, rollbackVersion,
 } from "@/lib/store";
 import { useAuth, usePrincipal } from "@/lib/auth";
 import { GateButton } from "@/components/gate";
@@ -67,13 +69,13 @@ function SectionCard({ title, desc, children, action }: { title: React.ReactNode
 
 /* @backend integration points (this page - the agent hub, listed per tab):
  *  - @backend GET /v1/agents/:id - load the agent [via useAgent]
- *  - @backend Header: POST /v1/agents/:id/duplicate (duplicateAgent); POST /v1/agents/:id/evals async run eval (addEvalRun); PATCH /v1/agents/:id publish/unpublish/archive (updateAgent); DELETE /v1/agents/:id delete (deleteAgent)
- *  - @backend Configure: PATCH /v1/agents/:id - general + model config [via updateAgent]; GET /v1/models - provider/model list (MODELS is local today)
+ *  - @backend Header: POST /v1/agents/:id/duplicate (duplicateAgent); POST /v1/agents/:id/evals async run eval (addEvalRun); PATCH /v1/agents/:id publish/unpublish/archive/restore (publishAgent/unpublishAgent/archiveAgent/restoreAgent - guarded wrappers); DELETE /v1/agents/:id delete + cascade (deleteAgent)
+ *  - @backend Configure: PATCH /v1/agents/:id - general (name/description/tags) + model config [via updateAgent/updateAgentConfig]; input variables persist to io_contract [via updateAgentConfig.inputVariables]; GET /v1/models - provider/model list (MODELS is local today). Lifecycle is NOT edited here - use the guarded Publish/Archive controls.
  *  - @backend Knowledge tab: PATCH /v1/agents/:id - bind/detach knowledgeBases [via updateAgent]; GET /v1/knowledge-bases picker [via useKnowledgeBases]
  *  - @backend Tools tab: PATCH /v1/agents/:id - bind/detach tools [via updateAgent]; GET /v1/tools picker [via useTools]; GET /v1/mcp-servers picker [via useMcpServers]
- *  - @backend Guardrails tab: GET/PUT /v1/agents/:id/guardrails - per-version config (LOCAL React state only today)
+ *  - @backend Guardrails tab: GET/PUT /v1/agents/:id/guardrails - per-version config [persisted via updateAgentConfig.guardrails]
  *  - @backend Access tab: PUT /v1/agents/:id/access-policy - access policy [via setAccessPolicy]
- *  - @backend Versions tab: GET versions; PATCH /v1/agents/:id activeVersion for rollback [via updateAgent]; "Save as new version" -> POST version and "Re-freeze baseline" -> PATCH baseline (mock toasts today)
+ *  - @backend Versions tab: GET versions; PATCH /v1/agents/:id activeVersion for rollback [via rollbackVersion - validates the label]; "Save as new version" -> POST version and "Re-freeze baseline" -> PATCH baseline (mock toasts today)
  *  - @backend Playground moved to its own route (/playground); header "Open in Playground" deep-links there. Invoke contract lives on that page and in src/components/playground.tsx.
  *  - @backend Evals tab: GET /v1/agents/:id/evals [via useEvalRunsForAgent]; POST /v1/agents/:id/evals async run [via addEvalRun]
  *  - @backend Publish & Export: endpoint URL + cURL/TS/Python snippets + OpenAPI are GET; POST /v1/agents/:id/tokens (addToken); DELETE /v1/tokens/:id (revokeToken); GET /v1/agents/:id/tokens (useTokens)
@@ -124,7 +126,7 @@ export default function AgentDetailPage() {
               <GateButton permission="playground.use" variant="outline" href={`/playground?agent=${agent.id}`}><MessageSquare className="size-4" /> Open in Playground</GateButton>
             )}
             {agent.status === "published"
-              ? <GateButton permission="agent.publish" disabled={!manage} title={manageTitle} variant="outline" onClick={() => { updateAgent(agent.id, { status: "draft" }, false); toast("Endpoint unpublished", "neutral"); }}><Rocket className="size-4" /> Unpublish</GateButton>
+              ? <GateButton permission="agent.publish" disabled={!manage} title={manageTitle} variant="outline" onClick={() => unpublishAgent(agent.id)}><Rocket className="size-4" /> Unpublish</GateButton>
               : (
                 <GateButton
                   permission="agent.publish"
@@ -197,7 +199,7 @@ export default function AgentDetailPage() {
       <ConfirmDialog
         open={publishOpen}
         onClose={() => setPublishOpen(false)}
-        onConfirm={() => { updateAgent(agent.id, { status: "published" }, false); toast(`Published ${agent.activeVersion}`); }}
+        onConfirm={() => publishAgent(agent.id)}
         title="Publish version"
         confirmLabel="Publish"
         tone="primary"
@@ -230,7 +232,7 @@ function HeaderMenu({ agent, can, onDelete }: { agent: Agent; can: (p: Permissio
         <>
           <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
           <div className="absolute right-0 z-20 mt-1 w-44 overflow-hidden rounded-lg border border-border bg-surface py-1 card-elev">
-            <button className={item} onClick={() => { setOpen(false); updateAgent(agent.id, { status: archived ? "draft" : "archived" }); }}>
+            <button className={item} onClick={() => { setOpen(false); if (archived) { restoreAgent(agent.id); } else { archiveAgent(agent.id); } }}>
               <Archive className="size-4" /> {archived ? "Restore" : "Archive"}
             </button>
             <div className="my-1 h-px bg-border" />
@@ -260,8 +262,9 @@ function Configure({ agent, model }: { agent: ReturnType<typeof getAgent> & {}; 
   const [deleteOpen, setDeleteOpen] = React.useState(false);
   const router = useRouter();
   const [name, setName] = React.useState(agent.name);
-  const [lifecycle, setLifecycle] = React.useState<AgentStatus>(agent.status);
   const [description, setDescription] = React.useState(agent.description);
+  const [tags, setTags] = React.useState(agent.tags.join(", "));
+  const parsedTags = [...new Set(tags.split(",").map((t) => t.trim()).filter(Boolean))];
   // Model params
   const [temperature, setTemperature] = React.useState(String(base.temperature));
   const [maxTokens, setMaxTokens] = React.useState(String(base.maxOutputTokens));
@@ -272,6 +275,7 @@ function Configure({ agent, model }: { agent: ReturnType<typeof getAgent> & {}; 
   // I/O contract
   const [outputFormat, setOutputFormat] = React.useState<OutputFormat>(base.outputFormat);
   const [includeCitations, setIncludeCitations] = React.useState(base.includeCitations);
+  const [inputVariables, setInputVariables] = React.useState<InputVariable[]>(base.inputVariables);
   // Context & memory (planned — captured, not enforced at runtime)
   const [truncation, setTruncation] = React.useState<TruncationStrategy>(base.truncationStrategy);
   const [sessionMemory, setSessionMemory] = React.useState(base.sessionMemory);
@@ -283,10 +287,10 @@ function Configure({ agent, model }: { agent: ReturnType<typeof getAgent> & {}; 
   const [timeout, setTimeoutSec] = React.useState(String(base.spend.timeoutSec));
 
 
-  const generalDirty = name !== agent.name || lifecycle !== agent.status || description !== agent.description;
+  const generalDirty = name !== agent.name || description !== agent.description || parsedTags.join("\u0000") !== agent.tags.join("\u0000");
   const modelDirty = provider !== agent.provider || modelId !== agent.model || parseNum(temperature, base.temperature) !== base.temperature || parseNum(maxTokens, base.maxOutputTokens) !== base.maxOutputTokens || reasoning !== base.reasoningEffort || fallback !== base.fallbackModel;
   const promptDirty = systemPrompt !== base.systemPrompt;
-  const ioDirty = outputFormat !== base.outputFormat || includeCitations !== base.includeCitations;
+  const ioDirty = outputFormat !== base.outputFormat || includeCitations !== base.includeCitations || JSON.stringify(inputVariables) !== JSON.stringify(base.inputVariables);
   const memoryDirty = truncation !== base.truncationStrategy || sessionMemory !== base.sessionMemory || parseNum(maxTurns, base.maxTurnsRetained) !== base.maxTurnsRetained || longTerm !== base.longTermMemory;
   const spendDirty = parseNum(monthlyCap, base.spend.monthlyCapUsd) !== base.spend.monthlyCapUsd || parseNum(concurrency, base.spend.maxConcurrency) !== base.spend.maxConcurrency || parseNum(timeout, base.spend.timeoutSec) !== base.spend.timeoutSec;
 
@@ -297,16 +301,19 @@ function Configure({ agent, model }: { agent: ReturnType<typeof getAgent> & {}; 
   return (
     <div className="grid gap-6 lg:grid-cols-3">
       <div className="space-y-6 lg:col-span-2">
-        <SectionCard title="General" action={saveBtn(generalDirty, () => updateAgent(agent.id, { name: name.trim() || agent.name, status: lifecycle, description }))}>
+        <SectionCard title="General" desc="Lifecycle is managed by the Publish and Archive controls — not edited here." action={saveBtn(generalDirty, () => updateAgent(agent.id, { name: name.trim() || agent.name, description, tags: parsedTags }))}>
           <div className="grid gap-4 sm:grid-cols-2">
             <Field label="Agent name"><Input value={name} onChange={(e) => setName(e.target.value)} /></Field>
-            <Field label="Lifecycle state">
-              <Select value={lifecycle} onChange={(e) => setLifecycle(e.target.value as AgentStatus)}>
-                <option value="draft">Draft</option><option value="published">Published</option><option value="eval_failing">Eval failing</option><option value="archived">Archived</option>
-              </Select>
+            <Field label="Tags" hint="Comma-separated; used for filtering on the agents list">
+              <Input value={tags} onChange={(e) => setTags(e.target.value)} placeholder="security, triage, rag" />
             </Field>
           </div>
           <div className="mt-4"><Field label="Description"><Textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={2} /></Field></div>
+          {parsedTags.length > 0 && (
+            <div className="mt-3 flex flex-wrap gap-1.5">
+              {parsedTags.map((t) => <Badge key={t} tone="neutral">{t}</Badge>)}
+            </div>
+          )}
         </SectionCard>
 
         <SectionCard title="Model" desc="Model-agnostic. Edits save to the agent's draft config; a provider or model swap should be re-evaluated before you publish." action={saveBtn(modelDirty, () => { updateAgent(agent.id, { provider: provider as Agent["provider"], model: modelId }, false); updateAgentConfig(agent.id, { temperature: parseNum(temperature, base.temperature), maxOutputTokens: parseNum(maxTokens, base.maxOutputTokens), reasoningEffort: reasoning, fallbackModel: fallback }); })}>
@@ -339,16 +346,52 @@ function Configure({ agent, model }: { agent: ReturnType<typeof getAgent> & {}; 
           <Textarea value={systemPrompt} onChange={(e) => setSystemPrompt(e.target.value)} rows={6} className="font-mono text-xs leading-relaxed" />
         </SectionCard>
 
-        <SectionCard title="Input / output contract" desc="Typed inputs become the published API request schema." action={saveBtn(ioDirty, () => updateAgentConfig(agent.id, { outputFormat, includeCitations }))}>
-          <p className="mb-2 text-xs font-medium text-ink-2">Input variables</p>
+        <SectionCard
+          title="Input / output contract"
+          desc="Typed inputs become the published API request schema."
+          action={saveBtn(ioDirty, () => {
+            const cleaned = inputVariables.filter((v) => v.name.trim()).map((v) => ({ ...v, name: v.name.trim() }));
+            updateAgentConfig(agent.id, { outputFormat, includeCitations, inputVariables: cleaned });
+            setInputVariables(cleaned);
+          })}
+        >
+          <div className="mb-2 flex items-center justify-between">
+            <p className="text-xs font-medium text-ink-2">Input variables</p>
+            <GateButton permission="agent.edit" variant="ghost" size="sm" disabled={!manage} title={manageTitle}
+              onClick={() => setInputVariables((arr) => [...arr, { name: "", type: "string", required: false }])}>
+              <Plus className="size-3.5" /> Add variable
+            </GateButton>
+          </div>
           <Table>
-            <THead><TR><TH>Name</TH><TH>Type</TH><TH>Required</TH><TH>Default</TH></TR></THead>
+            <THead><TR><TH>Name</TH><TH>Type</TH><TH>Required</TH><TH>Default</TH><TH>{""}</TH></TR></THead>
             <tbody>
-              <TR><TD className="font-mono text-xs text-ink">query</TD><TD>string</TD><TD><Badge tone="good">required</Badge></TD><TD className="text-muted">-</TD></TR>
-              <TR><TD className="font-mono text-xs text-ink">severity_hint</TD><TD>enum</TD><TD><Badge tone="neutral">optional</Badge></TD><TD className="text-muted">auto</TD></TR>
+              {inputVariables.length === 0 && (
+                <TR><TD colSpan={5} className="text-muted">No input variables. The endpoint accepts a free-form body.</TD></TR>
+              )}
+              {inputVariables.map((v, i) => (
+                <TR key={i}>
+                  <TD><Input value={v.name} onChange={(e) => setInputVariables((arr) => arr.map((x, idx) => (idx === i ? { ...x, name: e.target.value } : x)))} placeholder="variable_name" className="font-mono text-xs" /></TD>
+                  <TD>
+                    <Select value={v.type} onChange={(e) => setInputVariables((arr) => arr.map((x, idx) => (idx === i ? { ...x, type: e.target.value as InputVariableType } : x)))}>
+                      <option value="string">string</option><option value="number">number</option><option value="boolean">boolean</option><option value="enum">enum</option>
+                    </Select>
+                  </TD>
+                  <TD>
+                    <button type="button" aria-label="Toggle required" onClick={() => setInputVariables((arr) => arr.map((x, idx) => (idx === i ? { ...x, required: !x.required } : x)))}>
+                      <Toggle on={v.required} />
+                    </button>
+                  </TD>
+                  <TD><Input value={v.default ?? ""} onChange={(e) => setInputVariables((arr) => arr.map((x, idx) => (idx === i ? { ...x, default: e.target.value || undefined } : x)))} placeholder="-" /></TD>
+                  <TD>
+                    <button type="button" aria-label="Remove variable" className="text-muted hover:text-critical" onClick={() => setInputVariables((arr) => arr.filter((_, idx) => idx !== i))}>
+                      <X className="size-4" />
+                    </button>
+                  </TD>
+                </TR>
+              ))}
             </tbody>
           </Table>
-          <p className="mt-2 text-xs text-muted">The input-variable schema is seeded for preview; an editable schema builder is a separate follow-up.</p>
+          <p className="mt-2 text-xs text-muted">Typed inputs are validated at invoke and become part of the published OpenAPI request schema.</p>
           <div className="mt-4 grid gap-4 sm:grid-cols-2">
             <Field label="Output format"><Select value={outputFormat} onChange={(e) => setOutputFormat(e.target.value as OutputFormat)}><option value="text">Free text</option><option value="json">Structured output (JSON schema)</option></Select></Field>
             <button type="button" onClick={() => setIncludeCitations((v) => !v)} className="flex items-center justify-between rounded-lg border border-border bg-elevated px-3 py-2 text-left">
@@ -409,7 +452,7 @@ function Configure({ agent, model }: { agent: ReturnType<typeof getAgent> & {}; 
                 <p className="text-sm font-medium text-ink">{agent.status === "archived" ? "Restore agent" : "Archive agent"}</p>
                 <p className="text-xs text-muted">{agent.status === "archived" ? "Make this agent active again." : "Hide from active lists. Reversible."}</p>
               </div>
-              <Button variant="outline" size="sm" onClick={() => updateAgent(agent.id, { status: agent.status === "archived" ? "draft" : "archived" })}>
+              <Button variant="outline" size="sm" onClick={() => (agent.status === "archived" ? restoreAgent(agent.id) : archiveAgent(agent.id))}>
                 {agent.status === "archived" ? "Restore" : "Archive"}
               </Button>
             </div>
@@ -428,7 +471,7 @@ function Configure({ agent, model }: { agent: ReturnType<typeof getAgent> & {}; 
       <ConfirmDialog
         open={publishOpen}
         onClose={() => setPublishOpen(false)}
-        onConfirm={() => toast("Published")}
+        onConfirm={() => publishAgent(agent.id)}
         title="Publish version"
         confirmLabel="Publish"
         tone="primary"
@@ -669,6 +712,9 @@ function AccessTab({ agent, canManage }: { agent: ReturnType<typeof getAgent> & 
 
 /* ================================================================= Versions */
 function Versions({ agent, versions }: { agent: ReturnType<typeof getAgent> & {}; versions: ReturnType<typeof getVersions> }) {
+  const principal = usePrincipal();
+  const manage = canManage(agent.accessPolicy, principal);
+  const manageTitle = manage ? undefined : "Restricted by this agent's access policy";
   return (
     <SectionCard title="Version history" desc="Every version is an immutable snapshot. A published endpoint always runs exactly one pinned version." action={<Button variant="outline" size="sm" onClick={() => toast("Version compare (coming soon)", "neutral")}><GitBranch className="size-4" /> Compare</Button>}>
       <ol className="relative space-y-6 before:absolute before:left-[7px] before:top-1 before:h-full before:w-px before:bg-border">
@@ -687,7 +733,7 @@ function Versions({ agent, versions }: { agent: ReturnType<typeof getAgent> & {}
               <p className="mt-1 text-sm text-ink-2">{v.note}</p>
               <p className="mt-1 text-xs text-muted">{v.createdBy} · {dateShort(v.createdAt)}</p>
               <div className="mt-2 flex gap-2">
-                {!active && <Button variant="outline" size="sm" onClick={() => { updateAgent(agent.id, { activeVersion: v.label }, false); toast(`Active version set to ${v.label}`); }}>Roll back to {v.label}</Button>}
+                {!active && <GateButton permission="agent.publish" variant="outline" size="sm" disabled={!manage} title={manageTitle} onClick={() => rollbackVersion(agent.id, v.label)}>Roll back to {v.label}</GateButton>}
                 <Button variant="ghost" size="sm" onClick={() => toast(`Opening eval for ${v.label}`, "neutral")}>View eval</Button>
               </div>
             </li>
@@ -888,7 +934,7 @@ function Publish({ agent }: { agent: ReturnType<typeof getAgent> & {} }) {
                   <TD className="font-mono text-xs text-muted">{t.prefix}</TD>
                   <TD className="text-xs text-muted">{dateShort(t.created)}</TD>
                   <TD className="text-xs text-muted">{t.lastUsed === "-" ? "-" : relative(t.lastUsed)}</TD>
-                  <TD className="text-right"><Button variant="ghost" size="sm" className="text-critical" onClick={() => setRevokeId(t.id)}>Revoke</Button></TD>
+                  <TD className="text-right"><GateButton permission="agent.publish" variant="ghost" size="sm" className="text-critical" onClick={() => setRevokeId(t.id)}>Revoke</GateButton></TD>
                 </TR>
               ))
             )}

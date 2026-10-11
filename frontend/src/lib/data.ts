@@ -97,6 +97,10 @@ export type TruncationStrategy = "summarize" | "drop_oldest";
 export type InjectionStrategy = "tool" | "stuff";
 export type Reranker = "bge" | "none";
 export type GuardrailStage = { name: string; desc: string; on: boolean };
+export type InputVariableType = "string" | "number" | "boolean" | "enum";
+// A typed input declaration (name, type, required, default) injected into the prompt template and
+// validated at invoke. Maps to the backend's io_contract (spec B2.5 / backend/01 §4.2 io_contract).
+export type InputVariable = { name: string; type: InputVariableType; required: boolean; default?: string };
 
 export type AgentConfig = {
   // model params
@@ -109,6 +113,8 @@ export type AgentConfig = {
   // I/O contract
   outputFormat: OutputFormat;
   includeCitations: boolean;
+  // typed input variables -> published request schema (backend io_contract, frozen per version on publish)
+  inputVariables: InputVariable[];
   // context & memory — PLANNED: captured as config, not enforced at runtime yet.
   // See docs/session-memory-status.md.
   truncationStrategy: TruncationStrategy;
@@ -143,6 +149,16 @@ export const PROMPTS: Record<string, string> = {
 
 const DEFAULT_PROMPT = "You are a helpful, precise internal assistant. Be concise and ground every answer in the provided context and tools. If you are unsure, say so.";
 
+// Per-agent input-variable schema (seed). Falls back to DEFAULT_INPUT_VARIABLES in resolveConfig().
+export const INPUT_VARIABLES: Record<string, InputVariable[]> = {
+  "triage-copilot": [
+    { name: "query", type: "string", required: true },
+    { name: "severity_hint", type: "enum", required: false, default: "auto" },
+  ],
+};
+
+const DEFAULT_INPUT_VARIABLES: InputVariable[] = [{ name: "query", type: "string", required: true }];
+
 export const DEFAULT_GUARDRAILS: AgentConfig["guardrails"] = {
   input: [
     { name: "PII detection", desc: "Redact emails, tokens and account IDs", on: true },
@@ -165,6 +181,7 @@ export const DEFAULT_AGENT_CONFIG: Omit<AgentConfig, "systemPrompt"> = {
   fallbackModel: "claude-sonnet-5-5",
   outputFormat: "json",
   includeCitations: true,
+  inputVariables: DEFAULT_INPUT_VARIABLES,
   truncationStrategy: "summarize",
   sessionMemory: true,
   maxTurnsRetained: 24,
@@ -191,6 +208,7 @@ export function resolveConfig(agent: Agent): AgentConfig {
     ...DEFAULT_AGENT_CONFIG,
     ...c,
     systemPrompt: c.systemPrompt ?? PROMPTS[agent.id] ?? DEFAULT_PROMPT,
+    inputVariables: c.inputVariables ?? INPUT_VARIABLES[agent.id] ?? DEFAULT_INPUT_VARIABLES,
     retrieval: { ...DEFAULT_AGENT_CONFIG.retrieval, ...c.retrieval },
     guardrails: {
       input: c.guardrails?.input ?? DEFAULT_GUARDRAILS.input,

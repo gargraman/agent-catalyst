@@ -188,14 +188,27 @@ class AgentCreate(BaseModel):            # addAgent
     system_prompt: str = ""
     tags: list[str] = []
 
-class AgentPatch(BaseModel):             # updateAgent (all optional; lifecycle + binds + rollback)
+class AgentPatch(BaseModel):             # updateAgent / updateAgentConfig (all optional)
     name: str | None = None
     description: str | None = None
-    status: str | None = None            # publish/unpublish/archive → may trigger eval gate (§6)
+    tags: list[str] | None = None        # editable on the Configure → General section
+    status: str | None = None            # publish/unpublish/archive → may trigger eval gate (§6).
+                                         #   The console routes these through guarded wrappers
+                                         #   (publishAgent/archiveAgent/…), not a free-form status set.
     active_version: str | None = None    # rollback / re-point
     knowledge_bases: list[str] | None = None
     tools: list[str] | None = None
     access_policy: dict | None = None
+    # Draft config edits (updateAgentConfig). Frozen into the next version snapshot on publish (01 §4.2);
+    # the io_contract carries the typed input variables (name/type/required/default, B2.5), editable via
+    # the Configure → Input variables builder.
+    model_config_: dict | None = Field(default=None, alias="modelConfig")
+    system_prompt: str | None = None
+    io_contract: dict | None = None
+    memory_config: dict | None = None
+    retrieval_config: dict | None = None
+    guardrail_config: dict | None = None
+    spend_config: dict | None = None
 ```
 
 ```python
