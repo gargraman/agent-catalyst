@@ -5,7 +5,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   Activity, Bot, Check, ChevronsUpDown, Database, Gauge, LayoutDashboard,
-  LogOut, Menu, MessageSquare, Plug, Plus, Search, Settings, ShieldCheck, X,
+  LogOut, Menu, MessageSquare, MessagesSquare, Plug, Plus, Search, Settings, ShieldCheck, X,
 } from "lucide-react";
 import { ThemeToggle } from "./theme-toggle";
 import { Avatar, Input } from "./ui";
@@ -26,6 +26,7 @@ const NAV: { group: string; items: NavItem[] }[] = [
   { group: "Build", items: [
     { href: "/knowledge", label: "Knowledge", icon: Database },
     { href: "/tools", label: "Tools & MCP", icon: Plug },
+    { href: "/channels", label: "Channels", icon: MessagesSquare },
   ] },
   { group: "Observe", items: [
     { href: "/evaluations", label: "Evaluations", icon: Gauge },

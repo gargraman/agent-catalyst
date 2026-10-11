@@ -12,6 +12,7 @@
 
 import type { AccessPolicy } from "./access-policy";
 import type { Connector } from "./connectors";
+import type { ChannelPlatform } from "./channels";
 
 export type AgentStatus = "published" | "draft" | "archived" | "eval_failing";
 export type Verdict = "pass" | "fail" | "low_confidence";
@@ -677,7 +678,7 @@ export const EVAL_RUNS: EvalRun[] = [
 /* -------------------------------------------------------------------- Runs */
 export type Run = {
   id: string; agentId: string; agent: string; version: string;
-  source: "Playground" | "API" | "Eval"; status: "success" | "error" | "blocked";
+  source: "Playground" | "API" | "Eval" | "Channel"; status: "success" | "error" | "blocked";
   latencyMs: number; tokens: number; cost: number; time: string; guardrail: string;
   workspaceId?: string;
   caller?: string;
@@ -703,6 +704,9 @@ export const RUNS: Run[] = [
   { id: "run-8a1120", agentId: "resume-screener", agent: AGENT_BY("resume-screener"), version: "v3", source: "API", status: "error", latencyMs: 3600, tokens: 5200, cost: 0.039, time: "2026-10-04T08:46:00Z", guardrail: "n/a (provider timeout)" },
   { id: "run-8a10f4", agentId: "benefits-qa", agent: AGENT_BY("benefits-qa"), version: "v5", source: "API", status: "success", latencyMs: 700, tokens: 2500, cost: 0.0013, time: "2026-10-04T08:40:00Z", guardrail: "passed" },
   { id: "run-8a10c0", agentId: "pto-helper", agent: AGENT_BY("pto-helper"), version: "v3", source: "API", status: "success", latencyMs: 650, tokens: 1700, cost: 0.0008, time: "2026-10-04T08:31:00Z", guardrail: "passed" },
+  /* ---- Channel-sourced runs (federated Okta user via a messaging app) ---- */
+  { id: "run-7f3b40", agentId: "triage-copilot", agent: AGENT_BY("triage-copilot"), version: "v7", source: "Channel", status: "success", latencyMs: 1960, tokens: 8800, cost: 0.031, time: "2026-10-04T09:16:00Z", guardrail: "passed", caller: "slack · @priya.nair", subjectType: "user" },
+  { id: "run-8a1240", agentId: "benefits-qa", agent: AGENT_BY("benefits-qa"), version: "v5", source: "Channel", status: "success", latencyMs: 740, tokens: 2700, cost: 0.0015, time: "2026-10-04T09:15:20Z", guardrail: "passed", caller: "gchat · @diego.fuentes", subjectType: "user" },
 ];
 
 /* ------------------------------------------------------ Tokens & keys */
@@ -719,6 +723,67 @@ export const PROVIDER_KEYS: ProviderKey[] = [
   { provider: "OpenAI", label: "openai-prod", masked: "sk-••••••••••••9c71", added: "2026-05-01T10:05:00Z", status: "active" },
   { provider: "Google", label: "vertex-sa", masked: "svc-••••••••••••d30b", added: "2026-07-14T11:00:00Z", status: "expiring" },
   { provider: "Mistral", label: "mistral-dev", masked: "••••••••••••a118", added: "2026-06-20T09:00:00Z", status: "active" },
+];
+
+/* ---------------------------------------------------------------- Channels */
+/* @backend A messaging-app channel: one platform install bound to ONE workspace, routing to MANY
+   agents. End users are federated internal Okta identities (channel okta_group ∩ agent accessPolicy);
+   a federated human is subjectType "user", a service account "service" — no new subject class.
+   Credentials are MULTI-SECRET (bot token + signing secret), each a masked CredentialRef; the raw
+   secret is write-only to the vault. [ref: channels-design.md, backend/12-channels.md] */
+export type Channel = {
+  id: string;
+  name: string;
+  platform: ChannelPlatform;
+  status: "connected" | "error" | "disconnected" | "setup_pending";
+  agentIds: string[]; // agents reachable through this channel (one workspace -> many agents)
+  defaultAgentId?: string;
+  routing: "slash" | "picker" | "default"; // how a message selects an agent
+  identityMode: "federated" | "service";
+  oktaGroup?: string; // Okta group granted this channel's workspace
+  credentials: Record<string, CredentialRef>; // keyed by credentialField key; masked only
+  webhookUrl?: string; // the Catalyst ingress URL registered in the platform
+  installedBy: string;
+  createdAt: string;
+  updatedAt: string;
+  lastEventAt?: string;
+  workspaceId?: string;
+  accessPolicy?: AccessPolicy;
+};
+
+export const CHANNELS_SEED: Channel[] = [
+  {
+    id: "slack-soc", name: "SOC Slack", platform: "slack", status: "connected",
+    agentIds: ["triage-copilot", "threat-intel-summarizer"], defaultAgentId: "triage-copilot",
+    routing: "slash", identityMode: "federated", oktaGroup: "okta-soc",
+    credentials: {
+      botToken: { masked: "xoxb-7••••••••a4f2", vaultPath: "vault://channel/slack-soc-bot" },
+      signingSecret: { masked: "9f1a••••••••c7d0", vaultPath: "vault://channel/slack-soc-sign" },
+    },
+    webhookUrl: "https://catalyst.internal/channels/slack/events/slack-soc",
+    installedBy: "Priya Nair", createdAt: "2026-09-18T10:00:00Z", updatedAt: "2026-10-03T12:00:00Z",
+    lastEventAt: "2026-10-04T09:16:00Z",
+  },
+  {
+    id: "gchat-people", name: "People Ops Google Chat", platform: "gchat", status: "connected",
+    agentIds: ["benefits-qa", "pto-helper"], defaultAgentId: "benefits-qa",
+    routing: "default", identityMode: "federated", oktaGroup: "okta-people",
+    credentials: {
+      serviceAccountKey: { masked: "svc-••••••••d30b", vaultPath: "vault://channel/gchat-people-sa" },
+    },
+    webhookUrl: "https://catalyst.internal/channels/gchat/events/gchat-people",
+    installedBy: "Diego Fuentes", createdAt: "2026-09-22T09:00:00Z", updatedAt: "2026-10-02T15:30:00Z",
+    lastEventAt: "2026-10-04T09:15:20Z", workspaceId: "trellix-people",
+  },
+  {
+    id: "teams-grc", name: "Compliance Teams", platform: "teams", status: "setup_pending",
+    agentIds: [], routing: "default", identityMode: "federated", oktaGroup: "okta-grc",
+    credentials: {
+      clientSecret: { masked: "", vaultPath: "" },
+    },
+    installedBy: "Sofia Rossi", createdAt: "2026-10-04T08:00:00Z", updatedAt: "2026-10-04T08:00:00Z",
+    workspaceId: "trellix-grc",
+  },
 ];
 
 /* -------------------------------------------------------- Dashboard series */

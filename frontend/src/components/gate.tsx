@@ -12,7 +12,7 @@ import { Button } from "@/components/ui";
 /** Lowest role that grants a permission, for the tooltip copy. */
 const REQUIRED_ROLE: Partial<Record<Permission, Role>> = {
   "agent.create": "builder", "agent.edit": "builder", "eval.run": "builder",
-  "knowledge.manage": "builder", "tool.manage": "builder", "mcp.manage": "builder",
+  "knowledge.manage": "builder", "tool.manage": "builder", "mcp.manage": "builder", "channel.manage": "builder",
   "agent.publish": "publisher",
   "agent.delete": "admin", "key.manage": "admin", "member.manage": "admin", "access.manage": "admin",
 };

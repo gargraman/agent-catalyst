@@ -71,6 +71,23 @@ Legend: **Auth** = console session (signed-in user, RBAC) vs caller token (runti
 | `lib/store.ts:useMcpServer` | GET /v1/mcp-servers/:id | session | yes | - | Single server. |
 | `lib/store.ts:addMcpServer` | POST /v1/mcp-servers | session | yes | yes* | Connect; server runs tool discovery and returns the tool list. |
 
+## Channels (messaging apps — P2)
+
+> Let people talk to hosted agents from Slack/Teams/Google Chat. One channel → one workspace → many
+> agents. Inbound adapter + Okta federation are **P2** (see `backend/12-channels.md`); this FE config +
+> multi-secret credential capture lands ahead of it. Design: `channels-design.md`.
+
+| Source (`file:symbol`) | Method / Path | Auth | Tenant | Async | Notes |
+|---|---|---|---|---|---|
+| `lib/channels.ts:CHANNEL_DEFS` | GET /v1/channel-defs | session | - | - | Per-platform config + **multi-secret** credential field specs + verification scheme (UI renders from this). |
+| `lib/store.ts:useChannels` | GET /v1/channels?workspace=:id | session | yes | - | List connected channels for active workspace. |
+| `lib/store.ts:useChannel` | GET /v1/channels/:id | session | yes | - | Single channel (routing, bound agents, masked creds, status). |
+| `lib/store.ts:useChannelsForAgent` | GET /v1/agents/:id/channels | session | yes | - | Channels routing to an agent (agent-detail cross-link). |
+| `lib/store.ts:addChannel` | POST /v1/channels | session | yes | - | Connect; raw secrets POSTed once to the vault (only masked refs persist); server registers the inbound webhook + returns its ingress URL. Credentials are a `Record<field,{masked,vaultPath}>` (multi-secret). |
+| `lib/store.ts:updateChannel` | PATCH /v1/channels/:id | session | yes | - | Edit routing / bound agents / Okta group / status (pause-resume) / rotate creds. |
+| `lib/store.ts:deleteChannel` | DELETE /v1/channels/:id | session | yes | - | Disconnect + revoke vaulted creds. |
+| `channels/{new,[id]}` ingress (server-only) | POST /channels/{slack\|teams\|gchat}/events/:id | caller (webhook sig) | yes | yes | Inbound platform events: verify signature → federate user→Okta (mint short-lived token) → route→agent → `runtime.invoke()` → reply. Not a FE call; see `backend/12-channels.md`. |
+
 ## Evaluations
 
 | Source (`file:symbol`) | Method / Path | Auth | Tenant | Async | Notes |
@@ -86,14 +103,15 @@ Legend: **Auth** = console session (signed-in user, RBAC) vs caller token (runti
 
 | Source (`file:symbol`) | Method / Path | Auth | Tenant | Async | Notes |
 |---|---|---|---|---|---|
-| `lib/store.ts:useRuns` / `useRunsForAgent` | GET /v1/runs?workspace=:id | session | yes | - | Caller/tenant-attributed runs. |
+| `lib/store.ts:useRuns` / `useRunsForAgent` | GET /v1/runs?workspace=:id | session | yes | - | Caller/tenant-attributed runs. `source` includes `Channel` (messaging-app traffic). |
+| `lib/store.ts:addRun` | none (server-recorded) | - | yes | - | Runs are emitted by `runtime.invoke()` server-side (playground/API/eval/channel). FE-only action so the channel "send test" surfaces a run; remove once runs come from the API. |
 | `dashboard/page.tsx`, `runs/page.tsx`, `evaluations/page.tsx` charts + stat tiles | GET /v1/metrics?workspace=:id (ts) | session | yes | - | Now **per-workspace selectors** `spendSeries`/`runsSeries`/`latencySeries`/`activityFor`/`dashStats`/`runsStats`/`evalStats(ws)` over `data.ts` `*_BY_WS` maps -> workspace-scoped metrics API (replaces the old flat consts). |
 
 ## Access policy (per-resource)
 
 | Source (`file:symbol`) | Method / Path | Auth | Tenant | Async | Notes |
 |---|---|---|---|---|---|
-| `lib/store.ts:setAccessPolicy` | PUT /v1/{agents\|knowledge\|tools\|mcp}/:id/access-policy | session (admin) | yes | - | Persist policy; server enforces on read/manage and at invoke. |
+| `lib/store.ts:setAccessPolicy` | PUT /v1/{agents\|knowledge\|tools\|mcp\|channels}/:id/access-policy | session (admin) | yes | - | Persist policy; server enforces on read/manage and at invoke. |
 | `lib/access-policy.ts:canUse/canManage` | (server-enforced) | both | yes | - | Mirror the checks server-side; client use is UI gating only. |
 
 ## Runtime / invoke

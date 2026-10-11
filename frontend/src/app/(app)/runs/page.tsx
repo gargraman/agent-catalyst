@@ -24,6 +24,7 @@ const STATUS = [
 const SOURCE = [
   { key: "all", label: "All sources" },
   { key: "API", label: "API" },
+  { key: "Channel", label: "Channel" },
   { key: "Playground", label: "Playground" },
   { key: "Eval", label: "Eval" },
 ];
@@ -114,7 +115,7 @@ export default function RunsPage() {
                       </span>
                     </TD>
                     <TD className="whitespace-nowrap text-xs text-ink-2">{wsName(r.workspaceId)}</TD>
-                    <TD><Badge tone={r.source === "API" ? "accent" : r.source === "Playground" ? "violet" : "neutral"}>{r.source}</Badge></TD>
+                    <TD><Badge tone={r.source === "API" ? "accent" : r.source === "Playground" ? "violet" : r.source === "Channel" ? "good" : "neutral"}>{r.source}</Badge></TD>
                     <TD>
                       <span className="inline-flex items-center gap-1.5 text-xs capitalize text-ink-2">
                         <StatusDot tone={r.status === "success" ? "good" : r.status === "blocked" ? "warning" : "critical"} />{r.status}

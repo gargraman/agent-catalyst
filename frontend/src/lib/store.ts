@@ -3,9 +3,9 @@
 import { useRef, useSyncExternalStore } from "react";
 import {
   AGENTS, KNOWLEDGE_BASES, INGESTION_JOBS, MCP_SERVERS, TOOLS_REPO, EVAL_RUNS, RUNS,
-  API_TOKENS, PROVIDER_KEYS, MEMBERS, resolveConfig,
+  API_TOKENS, PROVIDER_KEYS, MEMBERS, CHANNELS_SEED, resolveConfig,
   type Agent, type AgentConfig, type KnowledgeBase, type DataSource, type IngestionJob, type McpServer,
-  type RepoTool, type EvalRun, type Run, type ApiToken, type ProviderKey, type Member,
+  type RepoTool, type EvalRun, type Run, type ApiToken, type ProviderKey, type Member, type Channel,
 } from "./data";
 import { type AccessPolicy, defaultPolicy } from "./access-policy";
 import type { Role } from "./permissions";
@@ -58,6 +58,7 @@ type State = {
   tokens: ApiToken[];
   providerKeys: ProviderKey[];
   members: Member[];
+  channels: Channel[];
   toasts: Toast[];
 };
 
@@ -80,6 +81,7 @@ let state: State = {
   tokens: API_TOKENS,
   providerKeys: PROVIDER_KEYS,
   members: MEMBERS,
+  channels: CHANNELS_SEED.map(tagResource),
   toasts: [],
 };
 
@@ -127,11 +129,11 @@ export function setRoleOverride(role: Role | null) {
 export function setTeamOverride(teams: string[] | null) {
   set({ teamOverride: teams });
 }
-// @backend PUT /v1/{agents|knowledge|tools|mcp}/:id/access-policy - persist per-resource policy;
+// @backend PUT /v1/{agents|knowledge|tools|mcp|channels}/:id/access-policy - persist per-resource policy;
 //   server enforces it on read/manage and at invoke. [ref: frontend-auth-access-plan.md#part-b2]
 /** Admin-configurable per-resource access policy (Part B2). */
 export function setAccessPolicy(
-  kind: "agent" | "knowledge" | "tool" | "mcp",
+  kind: "agent" | "knowledge" | "tool" | "mcp" | "channel",
   id: string,
   policy: AccessPolicy,
 ) {
@@ -139,6 +141,7 @@ export function setAccessPolicy(
   if (kind === "agent") set({ agents: apply(state.agents) });
   else if (kind === "knowledge") set({ knowledgeBases: apply(state.knowledgeBases) });
   else if (kind === "tool") set({ tools: apply(state.tools) });
+  else if (kind === "channel") set({ channels: apply(state.channels) });
   else set({ mcpServers: apply(state.mcpServers) });
   toast("Access policy updated");
 }
@@ -274,6 +277,31 @@ export function addMember(m: Member) {
   set({ members: [m, ...state.members] });
   toast(`Invited ${m.email}`);
 }
+// @backend POST /v1/channels - connect a messaging-app channel; raw credentials are POSTed once to the
+//   vault (only masked refs persist). Server registers the inbound webhook + returns its ingress URL.
+//   [ref: backend/12-channels.md §2-3]
+export function addChannel(c: Channel) {
+  const stamped = tagResource({ ...c, workspaceId: c.workspaceId ?? state.activeWorkspaceId });
+  set({ channels: [stamped, ...state.channels] });
+  toast(`Channel "${stamped.name}" connected`);
+}
+// @backend PATCH /v1/channels/:id - edit binding (routing, bound agents, Okta group, status, rotate creds).
+export function updateChannel(id: string, patch: Partial<Channel>, notify = true) {
+  set({ channels: state.channels.map((c) => (c.id === id ? { ...c, ...patch, updatedAt: nowIso() } : c)) });
+  if (notify) toast("Channel updated");
+}
+// @backend DELETE /v1/channels/:id - disconnect a channel and revoke its vaulted credentials.
+export function deleteChannel(id: string) {
+  set({ channels: state.channels.filter((c) => c.id !== id) });
+  toast("Channel disconnected", "neutral");
+}
+// @backend none (server-recorded) - runs are emitted by runtime.invoke() server-side at every call
+//   (playground/API/eval/channel). This client action exists so the mock's "send test" affordances
+//   surface a run on the Runs page; it goes away once runs come from the API. [ref: backend/10 §1]
+export function addRun(r: Run) {
+  const stamped = { ...r, workspaceId: r.workspaceId ?? tenantOfAgent(r.agentId, state.agents) };
+  set({ runs: [stamped, ...state.runs] });
+}
 
 /* ----------------------------------------------------------------- hooks */
 /** getSnapshot must return a stable reference when nothing changed, or useSyncExternalStore
@@ -330,6 +358,14 @@ export const useTools = () => useSelector((s) => inWs(s.tools, s.activeWorkspace
 export const useEvalRuns = () => useSelector((s) => inWs(s.evalRuns, s.activeWorkspaceId));
 // @backend GET /v1/runs?workspace=:id - list observability runs (caller/tenant attributed).
 export const useRuns = () => useSelector((s) => inWs(s.runs, s.activeWorkspaceId));
+// @backend GET /v1/channels?workspace=:id - list connected messaging channels for active workspace.
+export const useChannels = () => useSelector((s) => inWs(s.channels, s.activeWorkspaceId));
+// @backend GET /v1/channels/:id - single channel (routing, bound agents, masked creds, status).
+export const useChannel = (id: string) => useSelector((s) => s.channels.find((c) => c.id === id));
+// @backend GET /v1/agents/:id/channels - channels routing to this agent (agent-detail cross-link).
+/** Channels that route to a given agent — for the agent detail "Reachable via channels" cross-link. */
+export const useChannelsForAgent = (agentId: string) =>
+  useSelector((s) => inWs(s.channels, s.activeWorkspaceId).filter((c) => c.agentIds.includes(agentId)));
 // @backend GET /v1/agents/:id/evals and /runs - per-agent lists for the detail tabs.
 /** Per-agent, store-backed so new eval/run mutations show on the agent detail tabs. */
 export const useEvalRunsForAgent = (agentId: string) => useSelector((s) => s.evalRuns.filter((e) => e.agentId === agentId));

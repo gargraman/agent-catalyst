@@ -78,6 +78,10 @@ reranking, doc-level ACLs (B6).
 
 **7. Export & integration** — `[P1]` publish → authenticated endpoint (pinned version) + cURL/TS/
 Python export from OpenAPI; scoped tokens (shown once); **never** expose provider keys.
+`[P2]` **messaging-app channels** (Slack/Teams/Google Chat) — host agents behind a chat app instead of
+code: inbound adapter verifies the webhook, federates the sender to an Okta identity (mint short-lived
+token), routes to an agent, and replies. One channel → one workspace → many agents. Design:
+`channels-design.md` + `backend/12-channels.md`.
 
 **8. Modality** — `[P1]` chat only. `[dropped]` voice (not designed).
 

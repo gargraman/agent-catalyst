@@ -489,6 +489,7 @@ const CAPABILITIES: { label: string; permission: Permission }[] = [
   { label: "Create & edit agents", permission: "agent.edit" },
   { label: "Run evaluations", permission: "eval.run" },
   { label: "Manage knowledge/tools/MCP", permission: "knowledge.manage" },
+  { label: "Manage channels", permission: "channel.manage" },
   { label: "Publish agents", permission: "agent.publish" },
   { label: "Delete agents", permission: "agent.delete" },
   { label: "Manage keys & members", permission: "member.manage" },

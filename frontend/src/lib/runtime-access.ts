@@ -1,8 +1,15 @@
 import type { Agent } from "./data";
+import type { ChannelPlatform } from "./channels";
 import type { Role } from "./permissions";
 import { canUse, type Principal } from "./access-policy";
 
-export type RunCtx = { mode: "session" } | { mode: "token"; token: string };
+export type RunCtx =
+  | { mode: "session" }
+  | { mode: "token"; token: string }
+  // A messaging channel: the platform-asserted user has already been federated to an Okta identity and a
+  // short-lived token minted server-side (see docs/channels-design.md §2). So a federated human arrives as
+  // a real "user" principal and a service account as "service" — no new subject class.
+  | { mode: "channel"; platform: ChannelPlatform; identityMode: "federated" | "service"; user?: string; tenant: string; role: Role; teams: string[] };
 export type Session = { tenant: string; role: Role; teams: string[] };
 
 export type RunStatus = "ok" | "expired" | "revoked" | "tenant_mismatch" | "policy_denied";
@@ -51,6 +58,16 @@ export function resolveRun(ctx: RunCtx, agent: Agent, session: Session): RunReso
         scopes: ["*"], expiry: "session",
         // Even run-as-me must match the agent's tenant (e.g. opening another workspace's agent by URL).
         status: (session.tenant === agentTenant ? "ok" : "tenant_mismatch") as RunStatus,
+      }
+    : ctx.mode === "channel"
+    ? {
+        // Federated Okta user (or service account): a real principal with full invoke scope — access is
+        // gated by the agent's accessPolicy below (and by the channel's Okta group upstream), not by a
+        // partial token. The channel okta_group ∩ agent accessPolicy is the end-user access rule.
+        subjectType: (ctx.identityMode === "service" ? "service" : "user") as "user" | "service",
+        tenant: ctx.tenant, role: ctx.role, teams: ctx.teams,
+        scopes: ["*"], expiry: ctx.identityMode === "service" ? "service account" : "minted · 15m",
+        status: (ctx.tenant === agentTenant ? "ok" : "tenant_mismatch") as RunStatus,
       }
     : decodeToken(ctx.token, agent);
 

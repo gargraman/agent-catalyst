@@ -24,7 +24,7 @@ import {
 } from "@/lib/data";
 import {
   useAgent, useTokens, useTools, useKnowledgeBases, useMcpServers, useEvalRunsForAgent,
-  addEvalRun, addToken, revokeToken,
+  useChannelsForAgent, addEvalRun, addToken, revokeToken,
   updateAgent, updateAgentConfig, deleteAgent, duplicateAgent, toast, genId, nowIso,
 } from "@/lib/store";
 import { useAuth, usePrincipal } from "@/lib/auth";
@@ -795,6 +795,7 @@ function Evals({ agent }: { agent: ReturnType<typeof getAgent> & {} }) {
 function Publish({ agent }: { agent: ReturnType<typeof getAgent> & {} }) {
   const [fmt, setFmt] = React.useState("curl");
   const tokens = useTokens().filter((t) => t.agent === agent.name);
+  const channels = useChannelsForAgent(agent.id);
   const [createOpen, setCreateOpen] = React.useState(false);
   const [revokeId, setRevokeId] = React.useState<string | null>(null);
   const [runEvalOpen, setRunEvalOpen] = React.useState(false);
@@ -848,6 +849,24 @@ function Publish({ agent }: { agent: ReturnType<typeof getAgent> & {} }) {
         only if this agent&apos;s access policy permits that caller. The LLM provider key stays the workspace&apos;s vaulted
         key and is never the caller&apos;s.
       </div>
+
+      <SectionCard title="Reachable via channels" desc="Messaging-app channels that route to this agent. People chat with it from Slack, Teams or Google Chat; access still follows this agent's policy.">
+        {channels.length === 0 ? (
+          <p className="text-sm text-muted">Not connected to any channel. <Link href="/channels/new" className="text-accent hover:underline">Connect a channel</Link> to let people reach it from a chat app.</p>
+        ) : (
+          <ul className="space-y-2">
+            {channels.map((c) => (
+              <li key={c.id} className="flex items-center justify-between gap-3 rounded-lg border border-border bg-elevated px-3 py-2">
+                <Link href={`/channels/${c.id}`} className="text-sm text-ink hover:underline">{c.name}</Link>
+                <span className="flex items-center gap-2 text-xs text-muted">
+                  <span className="capitalize">{c.platform}</span>
+                  {c.defaultAgentId === agent.id && <Badge tone="accent">Default</Badge>}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </SectionCard>
 
       <SectionCard title="Integrate" desc="Generated from the OpenAPI spec. The platform token is scoped to this endpoint. Provider keys are never exposed." action={<Segmented options={[{ key: "curl", label: "cURL" }, { key: "ts", label: "TypeScript" }, { key: "python", label: "Python" }]} value={fmt} onChange={setFmt} />}>
         <div className="relative">

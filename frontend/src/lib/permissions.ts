@@ -9,6 +9,7 @@ export type Permission =
   | "knowledge.manage"
   | "tool.manage"
   | "mcp.manage"
+  | "channel.manage"
   | "agent.publish"
   | "agent.delete"
   | "key.manage"
@@ -17,7 +18,7 @@ export type Permission =
 
 const BUILDER: Permission[] = [
   "view", "playground.use", "agent.create", "agent.edit", "eval.run",
-  "knowledge.manage", "tool.manage", "mcp.manage",
+  "knowledge.manage", "tool.manage", "mcp.manage", "channel.manage",
 ];
 const PUBLISHER: Permission[] = [...BUILDER, "agent.publish"];
 const ADMIN: Permission[] = [...PUBLISHER, "agent.delete", "key.manage", "member.manage", "access.manage"];

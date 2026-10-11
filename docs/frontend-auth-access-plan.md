@@ -88,9 +88,9 @@ IAM teams**. No backend in scope.
 
 ## Part A - Identity + permissions (mock now, IAM-ready)
 - `src/lib/permissions.ts` - roles `viewer|builder|publisher|admin`; permissions `view, playground.use,
-  agent.create, agent.edit, eval.run, knowledge.manage, tool.manage, mcp.manage, agent.publish,
-  agent.delete, key.manage, member.manage, access.manage`; role→permission map (viewer → view+playground;
-  builder → +create/edit/eval/knowledge/tool/mcp; publisher → +publish; admin → all).
+  agent.create, agent.edit, eval.run, knowledge.manage, tool.manage, mcp.manage, channel.manage,
+  agent.publish, agent.delete, key.manage, member.manage, access.manage`; role→permission map (viewer →
+  view+playground; builder → +create/edit/eval/knowledge/tool/mcp/channel; publisher → +publish; admin → all).
 - `src/lib/auth.tsx` - `AuthProvider` + `useAuth()` → `{ user, role, permissions, can(p) }`. Role comes
   from the active workspace; a **dev role switcher** overrides it for preview. Same surface real IAM OIDC
   will expose later.

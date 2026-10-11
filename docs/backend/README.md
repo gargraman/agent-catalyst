@@ -35,6 +35,7 @@ containers); where it **extends or pushes back**, the delta is argued inline (se
 | 09 | [09-security-tenancy.md](09-security-tenancy.md) | OIDC/token auth, RBAC + access policies, RLS + Vault envelope encryption, threat model, PII/retention |
 | 10 | [10-observability-monitoring.md](10-observability-monitoring.md) | Per-call log contract, Langfuse, metrics/SLOs/alerts, cost + drift monitoring, async job status |
 | 11 | [11-deployment.md](11-deployment.md) | Containers, compose→k8s, CI/CD + eval gate, secrets, scaling, zero-downtime, backup/DR |
+| 12 | [12-channels.md](12-channels.md) | **(P2)** Messaging channels (Slack/Teams/Google Chat) — inbound adapter, Okta federation, channel DDL, a fourth `invoke()` caller |
 
 ## The two ideas that shape everything
 
