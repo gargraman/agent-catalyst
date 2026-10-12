@@ -86,6 +86,9 @@ create table workspaces (
 );
 
 -- Membership is IAM-sourced (read-mostly). Role is per-workspace (spec B12, frontend MEMBERS).
+-- Scope: this table is workspace access + role ONLY. The `teams` dimension is NOT stored here (or anywhere):
+-- teams are Okta groups read live from the OIDC `groups` claim per request (09 §2.1) / the channel-minted
+-- token (12 §4). So "team" membership has no row — do not add a teams column or join table for it.
 create table memberships (
   id            uuid primary key default gen_random_uuid(),
   workspace_id  uuid not null references workspaces(id),

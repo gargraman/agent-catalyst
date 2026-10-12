@@ -7,8 +7,11 @@ export type RunCtx =
   | { mode: "session" }
   | { mode: "token"; token: string }
   // A messaging channel: the platform-asserted user has already been federated to an Okta identity and a
-  // short-lived token minted server-side (see docs/channels-design.md §2). So a federated human arrives as
-  // a real "user" principal and a service account as "service" — no new subject class.
+  // short-lived token minted server-side (see docs/channels-design.md §2, backend/12 §4). So a federated
+  // human arrives as a real "user" principal and a service account as "service" — no new subject class.
+  // `teams` are the user's Okta groups (same model as the console, lib/iam.ts); `role` is a fixed baseline
+  // invoke role, NOT a console RBAC tier. The channel user needs NO workspace membership — authorization is
+  // channel okta_group ∩ agent accessPolicy.
   | { mode: "channel"; platform: ChannelPlatform; identityMode: "federated" | "service"; user?: string; tenant: string; role: Role; teams: string[] };
 export type Session = { tenant: string; role: Role; teams: string[] };
 

@@ -19,6 +19,11 @@ Both are served by the `api` process (00 §2); different routers, different Fast
 (`deps.session_principal` vs `deps.caller_token`). The FE map writes paths as `/v1/...`; in the builder
 console those resolve under `/api/v1/...` via the reverse proxy (`backend-integration-plan` Part 2).
 
+The **console session** dependency also reads the OIDC **`groups` claim** and resolves it to
+`Principal.teams` (Okta groups → teams, `09 §2.1`); the **caller token** carries `scopes.teams`. A **third
+ingress** — messaging channels (`POST /channels/{platform}/events`) — is documented in `12` and is not part
+of this builder/runtime catalog; it mints its own identity (teams = the end user's Okta groups).
+
 **Error envelope.** Every non-2xx returns one shape; `api/errors.py` maps typed exceptions → HTTP:
 
 ```json

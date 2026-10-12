@@ -1,7 +1,7 @@
 "use client";
 
 /* Admin-configurable per-resource access policy editor (Part B2). Set who may USE
-   (invoke/bind) and who may MANAGE (edit/publish) a resource, by IAM role and team.
+   (invoke/bind) and who may MANAGE (edit/publish) a resource, by IAM role and team (Okta group).
    Shown read-only to non-admins. Enforcement lives in access-policy.ts + runtime-access.ts. */
 
 import * as React from "react";
@@ -70,7 +70,7 @@ function GrantRow({
           <Chips options={ROLE_ORDER} selected={roles} onToggle={onRoles} disabled={disabled} label={(r) => ROLE_LABEL[r]} />
         </div>
         <div className="space-y-1">
-          <p className="text-[11px] uppercase tracking-wide text-muted">IAM teams</p>
+          <p className="text-[11px] uppercase tracking-wide text-muted">Teams (Okta groups)</p>
           <Chips options={TEAMS} selected={teams} onToggle={onTeams} disabled={disabled} label={(t) => t} />
         </div>
       </div>

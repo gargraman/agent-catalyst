@@ -95,6 +95,8 @@ CREATE TABLE channel_agents (
 A **third ingress plane** beyond console-session and caller-token (`09 §1`):
 
 ```python
+CHANNEL_INVOKE_ROLE = "viewer"   # baseline; see "Role & membership" below
+
 def resolve_channel_principal(ch: Channel, msg: InboundMessage) -> MintedToken:
     if ch.identity_mode == "service":
         return mint_service_token(ch.okta_service_account)      # client-credentials
@@ -102,14 +104,28 @@ def resolve_channel_principal(ch: Channel, msg: InboundMessage) -> MintedToken:
     sub = okta.lookup_subject(email)                            # email is the join key
     if sub is None:
         raise Unmapped(email)                                   # -> friendly in-chat denial
+    groups = okta.groups_for(sub)                               # the user's Okta groups (= teams)
+    if ch.okta_group and ch.okta_group not in groups:          # COARSE GATE — enforce it here, before mint
+        raise NotInChannelGroup(email)                          # -> friendly in-chat denial
     if ch.platform == "teams":
+        # OBO-exchanged token must resolve to the same {CHANNEL_INVOKE_ROLE, teams = Okta groups}.
         return entra_obo_exchange(msg.platform_token, target=OKTA_AUD)   # true token exchange
-    return mint_catalyst_token(sub, workspace=ch.workspace_id)  # direct mint (slack, gchat)
+    # Direct mint (slack, gchat): baseline role, teams = the user's Okta groups.
+    return mint_catalyst_token(sub, workspace=ch.workspace_id, role=CHANNEL_INVOKE_ROLE, teams=groups)
 ```
 
 The minted token feeds the existing `can_use(policy, role, teams, subject_id)` (`09 §6`) exactly like a
-caller token — Okta groups are the `teams`. **End-user access = channel `okta_group` ∩ the agent's
-`access_policy`.**
+caller token — Okta groups are the `teams`, the **same model the console uses** (`09 §2.1`).
+**End-user access = two gates:** the channel `okta_group` (coarse — checked above, before mint) ∩ the
+agent's `access_policy` (fine — evaluated in `resolveRun`). Both must pass.
+
+**Role & membership.** The channel plane is **membership-independent** (`09 §1`): a federated end user needs
+**no workspace `memberships` row** (unlike the console `get_workspace_ctx` guard, `09 §3`). The minted
+`role` is a fixed **baseline invoke role** (`CHANNEL_INVOKE_ROLE`) — invoke requires no builder+ privilege,
+so any `useRoles`-based policy treats channel users as this baseline and real authorization rides on
+`teams` (Okta groups) ∩ the agent's policy. Role is **not** derived from Okta groups (consistent with the
+console: groups → teams, not roles). Tenancy still holds: the channel is pinned to one `workspace_id` and
+RLS (`09 §7`) partitions every query, so a channel user can reach only **that** workspace's bound agents.
 
 ## 5. Invoke mapping (`03`)
 

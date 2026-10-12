@@ -5,16 +5,23 @@
 > agents execute tools/MCP that reach internal systems, so this doc is not optional hardening — it is
 > the thing that keeps a prompt-injected agent from becoming an SSRF/exfiltration primitive.
 
-## 1. Two auth planes (do not conflate them)
+## 1. Three auth planes (do not conflate them)
 
-| Plane | Who | Credential | Used by |
-|---|---|---|---|
-| **Console session** | a signed-in builder/PM (a human) | OIDC session (Trellix IAM) | all `/api/v1/*` builder routes |
-| **Caller token** | an external app/service calling a published agent | scoped bearer token | `POST /v1/agents/:id/invoke` only |
+| Plane | Who | Credential | Authorization basis | Used by |
+|---|---|---|---|---|
+| **Console session** | a signed-in builder/PM (a human) | OIDC session (Trellix IAM) | **workspace `memberships`** (role_in) + RBAC + resource policy | all `/api/v1/*` builder routes |
+| **Caller token** | an external app/service calling a published agent | scoped bearer token | token's `{tenant, role, teams, scopes}` + resource policy | `POST /v1/agents/:id/invoke` only |
+| **Channel** (12) | an end user in Slack/Teams/GChat | federated → minted Catalyst token | channel `okta_group` ∩ resource policy — **membership-independent** (no `memberships` row required) | `POST /channels/{platform}/events` |
 
-The frontend already models this split (`lib/auth.tsx` session vs `lib/runtime-access.ts` token decode).
-The server is now the source of truth; the FE token decode becomes **preview-only** (Playground shows
-what a token *would* resolve to; the real check is server-side).
+The frontend already models this split (`lib/auth.tsx` session vs `lib/runtime-access.ts` token decode,
+which also has a channel arm). The server is now the source of truth; the FE token decode becomes
+**preview-only** (Playground shows what a token *would* resolve to; the real check is server-side).
+
+> **Note the differing authorization bases.** Only the console plane requires workspace `memberships`
+> (`get_workspace_ctx`, §3). The caller-token and channel planes authorize off the token's resolved
+> identity (tenant pinned by the token/channel) + per-resource policy — a channel end user can invoke a
+> workspace's agent **without** a `memberships` row (12 §4). Tenancy is still enforced: the channel is
+> pinned to one `workspace_id` and RLS (§7) partitions every query.
 
 ## 2. Console authN — OIDC/SSO
 
@@ -30,7 +37,8 @@ class Principal:
     subject_id: str            # OIDC sub
     email: str
     display_name: str
-    memberships: dict[str, str]  # {workspace_id: role}  — from IAM / memberships table (01)
+    memberships: dict[str, str]  # {workspace_id: role}  — app-managed, from the memberships table (01)
+    teams: frozenset[str]        # Okta groups, from the OIDC `groups` claim (NOT the memberships table)
 
     def role_in(self, workspace_id: str) -> str | None:
         return self.memberships.get(workspace_id)
@@ -43,11 +51,32 @@ async def get_principal(request: Request) -> Principal:
     claims = await oidc.verify(token)               # signature, iss, aud, exp, nbf
     if not claims:
         raise Unauthorized()
-    return await load_principal(claims["sub"])      # joins memberships (01)
+    teams = groups_to_teams(claims.get("groups", []))   # Okta groups claim -> teams (see 2.1)
+    return await load_principal(claims["sub"], teams=teams)   # joins memberships (01); teams from claim
 ```
 
 CSRF: state-changing console routes require a CSRF token (double-submit cookie) since the session is
 cookie-based. Pure bearer API clients (no cookie) are exempt.
+
+### 2.1 Teams = Okta groups (the group dimension)
+
+`teams` is the group dimension of the access model, and it is sourced from **Okta groups** carried in the
+OIDC **`groups` claim** — not from the `memberships` table and not stored in Postgres. `groups_to_teams`
+normalizes the claim (e.g. maps each group's display name / id to a team slug) into `Principal.teams`.
+Keep this decoupled from tenancy:
+
+- **Workspace + role-per-workspace stay app-managed** in `memberships` (§1, §3) — Okta-group membership does
+  **not** grant workspace access; app access is still "member of ≥1 workspace".
+- **Teams (Okta groups) drive fine-grained access** only: the `teams` term of per-resource `access_policy`
+  (§5) and the channel end-user gate (12). The same `teams` semantics are reused by the channel plane
+  (12 §4), so console and chat share one model.
+- Requires the IdP to emit a `groups` claim scoped to this product (configure the scope/claim on the
+  Trellix IAM / Okta app registration). No SCIM or directory sync is needed for teams — they are read live
+  from the token on each request.
+
+> *Deferred:* if group membership should instead gate **workspace entry** (the literal "workspace = Okta
+> group" model), that is a different design — group-per-workspace-role groups + a claim parser that
+> JIT-provisions `memberships` + deprovisioning — and is out of scope here.
 
 ## 3. Workspace scoping — the tenancy guard (layer 1)
 
@@ -123,7 +152,10 @@ def can_use(policy: dict, *, role: str, teams: set[str], subject_id: str) -> boo
 ```
 
 At invoke, the caller-token's resolved identity (teams/scopes) is fed to `can_use` before the runtime
-touches a provider — so access policy is enforced on the **runtime path**, not just the console.
+touches a provider — so access policy is enforced on the **runtime path**, not just the console. On the
+**console** path the `teams` argument is `Principal.teams` (the Okta groups from the OIDC groups claim,
+§2.1); on the **channel** path it is the minted token's `teams` (the end user's Okta groups, 12 §4) — one
+`can_use`, three sources of `teams`.
 
 ## 6. Caller tokens (published invoke authN)
 

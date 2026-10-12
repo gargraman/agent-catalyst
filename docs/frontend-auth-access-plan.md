@@ -16,9 +16,16 @@ authorization come from IAM. There are **two distinct access contexts**:
 **Key principle:** build-time visibility is not run-time access.
 `effective access = agent config ∩ caller grants ∩ caller tenant ∩ resource access policy`.
 
-**Boundary with IAM:** role *definitions*, user↔role *assignment*, and *team/group membership* live in
-**Trellix IAM** (managed there, read here). What admins configure **in this app** is the **per-resource
-access policy** - which roles/teams may use or manage each agent, KB, tool, and MCP server.
+**Boundary with IAM:** role *definitions*, user↔role *assignment*, and **workspace membership** live in
+**Trellix IAM** (app-managed `memberships`, read here). **Teams are Okta groups**, carried in the OIDC
+**`groups` claim** and normalized to team slugs at request time (not stored, not the `memberships` table) —
+see `backend/09 §2.1`. What admins configure **in this app** is the **per-resource access policy** - which
+roles/teams (Okta groups) may use or manage each agent, KB, tool, and MCP server.
+
+> **Scope note (decision):** Okta groups map to the **teams** dimension, not to workspaces. Okta-group
+> membership drives fine-grained resource access (and the channel end-user gate), but **does not gate
+> workspace/app entry** — that stays the app-managed `memberships` model above. The literal "workspace =
+> Okta group" model (group-per-workspace-role + JIT-provisioned memberships) is a deferred alternative.
 
 **Caller token vs provider key (do not conflate):** the caller token governs **tools/knowledge/MCP**
 access; the **LLM provider key stays the workspace's vaulted key** (server-side), never the caller's.

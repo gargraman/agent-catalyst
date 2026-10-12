@@ -13,9 +13,10 @@ import {
 } from "./store";
 
 // @backend session - replace MOCK_PROFILE with the signed-in OIDC session (Auth.js + Trellix IAM):
-//   name/email + role-per-workspace memberships + teams come from token claims. The useAuth /
-//   useWorkspace / usePrincipal surface stays identical; only this source changes, and the dev
-//   role/team overrides are dropped. [ref: frontend-auth-access-plan.md#part-e]
+//   name/email + role-per-workspace memberships are app-managed (IAM directory); teams are Okta groups
+//   from the OIDC `groups` claim (backend/09 §2.1), not a directory read. The useAuth / useWorkspace /
+//   usePrincipal surface stays identical; only this source changes, and the dev role/team overrides are
+//   dropped. [ref: frontend-auth-access-plan.md#part-e]
 const profile = MOCK_PROFILE;
 
 /** Role for a workspace from the IAM profile; viewer if not a member. */
