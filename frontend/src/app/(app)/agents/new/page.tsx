@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { useRouter } from "next/navigation";
-import { ArrowLeft, Bot, Check, Database, FileText, Headphones, MessageSquare, Plug, Rocket, Sparkles } from "lucide-react";
+import { ArrowLeft, Bot, Check, Database, FileText, Headphones, MessageSquare, Plug, Rocket, Sparkles, TriangleAlert } from "lucide-react";
 import {
   Card, CardHeader, CardTitle, CardContent, CardDescription, Badge, Button, Field, Input, Select, Textarea, EmptyState,
 } from "@/components/ui";
@@ -247,7 +247,13 @@ export default function NewAgentPage() {
                     <button key={kb.id} onClick={() => setKnowledgeBases((l) => toggle(l, kb.id))}
                       className={`flex items-center justify-between rounded-lg border px-3 py-2.5 text-left text-sm ${on ? "border-accent bg-accent-soft" : "border-border bg-elevated hover:border-border-strong"}`}>
                       <span className="min-w-0"><span className="block truncate font-medium text-ink">{kb.name}</span>
-                        <span className="block truncate text-xs text-muted">{kb.docs} docs</span></span>
+                        <span className="block truncate text-xs text-muted">{kb.docs} docs · {kb.embeddingModel}</span>
+                        {kb.status !== "ready" && (
+                          <span className={`mt-0.5 flex items-center gap-1 text-xs ${kb.status === "error" ? "text-critical" : "text-warning"}`}>
+                            <TriangleAlert className="size-3 shrink-0" />
+                            {kb.status === "error" ? "Last ingestion failed" : "Indexing — not ready"}
+                          </span>
+                        )}</span>
                       {on ? <Check className="size-4 text-accent" /> : <span className="size-4 rounded border border-border" />}
                     </button>
                   );

@@ -7,7 +7,7 @@ import {
 } from "lucide-react";
 import {
   Badge, Button, Card, CardContent, CardDescription, CardHeader, CardTitle,
-  EmptyState, Field, Input, PageHeader, Select, StatusDot, Table, TD, TH, THead, TR,
+  EmptyState, Field, PageHeader, Select, StatusDot, Table, TD, TH, THead, TR,
 } from "@/components/ui";
 import { Dialog, ConfirmDialog } from "@/components/dialog";
 import {
@@ -18,9 +18,10 @@ import { StatTile } from "@/components/stat-tile";
 import { GateButton } from "@/components/gate";
 import { AccessNote } from "@/components/access-note";
 import { AccessPolicyEditor } from "@/components/access-policy-editor";
-import { useAuth } from "@/lib/auth";
+import { useAuth, usePrincipal } from "@/lib/auth";
+import { canManage } from "@/lib/access-policy";
 import { type DataSource, type IngestionJob, type KnowledgeBase } from "@/lib/data";
-import { addDataSource, reingest, toast, useAgents, useIngestionJobs, useKnowledgeBase } from "@/lib/store";
+import { addDataSource, reingest, toast, updateAgent, useAgents, useIngestionJobs, useKnowledgeBase } from "@/lib/store";
 import { num, relative } from "@/lib/format";
 
 const kbTone = (s: KnowledgeBase["status"]) => (s === "ready" ? "good" : s === "indexing" ? "warning" : "critical");
@@ -58,6 +59,7 @@ export default function KnowledgeDetailPage() {
   const agents = useAgents();
   const ingestionJobs = useIngestionJobs();
   const { can } = useAuth();
+  const principal = usePrincipal();
 
   const [addOpen, setAddOpen] = React.useState(false);
   const [reingestOpen, setReingestOpen] = React.useState(false);
@@ -65,10 +67,11 @@ export default function KnowledgeDetailPage() {
 
   const [source, setSource] = React.useState<SourceState>(initialSourceState);
 
-  const [bindAgent, setBindAgent] = React.useState(agents[0]?.name ?? "");
-  const [bindVersion, setBindVersion] = React.useState("");
-  const [bindTopK, setBindTopK] = React.useState("6");
-  const [bindCitations, setBindCitations] = React.useState(true);
+  const [bindAgent, setBindAgent] = React.useState("");
+  // Binding mutates the target agent, so restrict the picker to agents the caller can manage (mirrors the
+  // agent's own Knowledge tab, which gates on agent.edit + canManage). The Bind button also requires agent.edit.
+  const bindableAgents = agents.filter((a) => canManage(a.accessPolicy, principal));
+  const effectiveBindAgent = bindAgent || bindableAgents[0]?.id || "";
 
   if (!kb) {
     return (
@@ -91,8 +94,16 @@ export default function KnowledgeDetailPage() {
     setAddOpen(false);
   }
 
+  // @backend PATCH /v1/agents/:id - bind this KB to the selected agent (same action as the agent's
+  //   Knowledge tab). boundAgents is recomputed in the store. [via updateAgent]
   function submitBind() {
-    toast(`Bound to ${bindAgent}`);
+    const agent = agents.find((a) => a.id === effectiveBindAgent);
+    // Defense-in-depth: only bind to an agent the caller is allowed to manage.
+    if (!agent || !kb || !canManage(agent.accessPolicy, principal)) return;
+    if (!agent.knowledgeBases.includes(kb.id)) {
+      updateAgent(agent.id, { knowledgeBases: [...agent.knowledgeBases, kb.id] }, false);
+    }
+    toast(`Bound "${kb.name}" to ${agent.name}`);
     setBindOpen(false);
   }
 
@@ -100,7 +111,7 @@ export default function KnowledgeDetailPage() {
     <div className="space-y-6">
       <div>
         <Button variant="ghost" size="sm" href="/knowledge" className="-ml-2 mb-3"><ArrowLeft className="size-4" /> Knowledge</Button>
-        <PageHeader title={kb.name} description={`Embedding model ${kb.embeddingModel}`}>
+        <PageHeader title={kb.name} description={kb.description || `Embedding model ${kb.embeddingModel}`}>
           <GateButton permission="knowledge.manage" variant="outline" onClick={() => setReingestOpen(true)}><RefreshCw className="size-4" /> Re-ingest</GateButton>
           <GateButton permission="knowledge.manage" variant="primary" onClick={() => setBindOpen(true)}><Link2 className="size-4" /> Bind to agent</GateButton>
         </PageHeader>
@@ -175,16 +186,15 @@ export default function KnowledgeDetailPage() {
           </CardContent>
         </Card>
 
+        {/* KB-owned configuration only. Retrieval settings (top-k/threshold/reranker/injection) belong to
+            the agent that binds this KB and are edited on the agent's Knowledge tab, then frozen per version. */}
         <Card>
-          <CardHeader><CardTitle>Retrieval configuration</CardTitle></CardHeader>
+          <CardHeader><CardTitle>Configuration</CardTitle></CardHeader>
           <CardContent className="pt-1">
             <ConfigRow label="Embedding model" value={kb.embeddingModel} mono />
-            <ConfigRow label="Top-k" value="6" />
-            <ConfigRow label="Similarity threshold" value="0.74" />
-            <ConfigRow label="Hybrid search" value="On (BM25 + vector)" />
-            <ConfigRow label="Reranker" value="bge-reranker-v2 (local)" />
-            <ConfigRow label="Max injected tokens" value="4,000" />
-            <ConfigRow label="Injection strategy" value="Retrieval as a tool" />
+            <ConfigRow label="Index type" value={kb.chunkConfig?.indexType ?? "HNSW"} />
+            <ConfigRow label="Chunk size" value={kb.chunkConfig ? `${num(kb.chunkConfig.size)} tokens` : "—"} />
+            <ConfigRow label="Chunk overlap" value={kb.chunkConfig ? `${num(kb.chunkConfig.overlap)} tokens` : "—"} />
           </CardContent>
         </Card>
       </div>
@@ -204,6 +214,7 @@ export default function KnowledgeDetailPage() {
                   <TH>Job</TH>
                   <TH>Source</TH>
                   <TH className="text-right">Docs</TH>
+                  <TH className="text-right">Chunks</TH>
                   <TH>Duration</TH>
                   <TH>Started</TH>
                   <TH>Status</TH>
@@ -215,6 +226,7 @@ export default function KnowledgeDetailPage() {
                     <TD className="font-mono text-xs text-muted">{j.id}</TD>
                     <TD className="font-medium text-ink">{j.source}</TD>
                     <TD className="text-right tnum">{num(j.docs)}</TD>
+                    <TD className="text-right tnum">{num(j.chunks)}</TD>
                     <TD className="tnum">{j.duration}</TD>
                     <TD>{relative(j.startedAt)}</TD>
                     <TD>
@@ -284,35 +296,26 @@ export default function KnowledgeDetailPage() {
         footer={
           <>
             <Button variant="ghost" onClick={() => setBindOpen(false)}>Cancel</Button>
-            <GateButton permission="knowledge.manage" variant="primary" onClick={submitBind} disabled={!bindAgent}>Bind</GateButton>
+            <GateButton permission="agent.edit" variant="primary" onClick={submitBind} disabled={!effectiveBindAgent}>Bind</GateButton>
           </>
         }
       >
         <div className="space-y-4">
-          <Field label="Agent">
-            <Select value={bindAgent} onChange={(e) => setBindAgent(e.target.value)}>
-              {agents.map((a) => (
-                <option key={a.id} value={a.name}>{a.name}</option>
-              ))}
-            </Select>
-          </Field>
-          <div className="grid gap-4 sm:grid-cols-2">
-            <Field label="Version" hint="Leave blank for the active version">
-              <Input placeholder="v1" value={bindVersion} onChange={(e) => setBindVersion(e.target.value)} />
+          {bindableAgents.length === 0 ? (
+            <p className="py-4 text-center text-xs text-muted">No agents you can manage in this workspace.</p>
+          ) : (
+            <Field label="Agent">
+              <Select value={effectiveBindAgent} onChange={(e) => setBindAgent(e.target.value)}>
+                {bindableAgents.map((a) => (
+                  <option key={a.id} value={a.id}>{a.name}</option>
+                ))}
+              </Select>
             </Field>
-            <Field label="Top-k" hint="Chunks retrieved per query">
-              <Input type="number" min={1} value={bindTopK} onChange={(e) => setBindTopK(e.target.value)} />
-            </Field>
-          </div>
-          <label className="flex items-center gap-2 text-sm text-ink-2">
-            <input
-              type="checkbox"
-              className="size-4 accent-accent"
-              checked={bindCitations}
-              onChange={(e) => setBindCitations(e.target.checked)}
-            />
-            Return citations with answers
-          </label>
+          )}
+          <p className="text-xs text-muted">
+            Retrieval settings (top-k, threshold, reranker, citations) are configured per agent on the
+            agent&apos;s Knowledge tab and frozen into its version snapshot on publish.
+          </p>
         </div>
       </Dialog>
     </div>

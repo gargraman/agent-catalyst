@@ -96,6 +96,15 @@ function connectorSourceName(connector: Connector, fields: Record<string, string
   return primary ? `${connector}: ${primary}` : connector;
 }
 
+// A new web/connector source's true document count is only known after the ingester runs. The mock
+// synthesizes a deterministic placeholder so a completed ingestion reports a plausible non-zero count
+// (a zero-doc "completed" job reads as a silent failure). Consistent with the invented seed counts.
+function nominalDocs(seed: string): number {
+  let h = 0;
+  for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) >>> 0;
+  return 12 + (h % 240); // 12..251
+}
+
 /** Map the picker state to a DataSource (config only, NO credential), or null when skipping.
     Pure — the masked credential is attached separately at submit via finalizeCredential. */
 export function buildDataSource(s: SourceState): DataSource | null {
@@ -108,19 +117,26 @@ export function buildDataSource(s: SourceState): DataSource | null {
         s.files.length === 0 ? "File upload"
           : s.files.length === 1 ? s.files[0].name
             : `${s.files[0].name} (+${s.files.length - 1} more)`;
-      return { name, type: "File", ...base };
+      // One document per uploaded file.
+      return { name, type: "File", ...base, docs: s.files.length };
     }
-    case "Web crawl":
-      return { name: s.seedUrl.trim() || "Web crawl", type: "Web", ...base };
+    case "Web crawl": {
+      // Persist crawl depth into config.fields (backend data_sources.config, 01 §4.4).
+      const name = s.seedUrl.trim() || "Web crawl";
+      return { name, type: "Web", ...base, docs: nominalDocs(name), config: { fields: compact({ depth: s.depth }) } };
+    }
     case "Connector": {
       const fields = fieldsOf(s);
+      const name = connectorSourceName(s.connector, fields);
       return {
-        name: connectorSourceName(s.connector, fields), type: "Connector", ...base,
+        name, type: "Connector", ...base, docs: nominalDocs(name),
         config: { connector: s.connector, fields: compact(fields) },
       };
     }
     case "Manual":
-      return { name: "Manual entry", type: "Manual", ...base };
+      // The pasted text is captured as one document by the real ingester; the mock records its length
+      // (the content itself is not stored in config). [ref: backend/04-rag.md §2]
+      return { name: "Manual entry", type: "Manual", ...base, docs: 1, config: { fields: { chars: String(s.manual.trim().length) } } };
   }
 }
 
@@ -157,11 +173,22 @@ export function summarizeSource(s: SourceState): string {
 
 /** One-line summary of a PERSISTED datasource's connector config (used on the KB-detail source list). */
 export function describeDataSourceConfig(config?: DataSourceConfig): string | null {
-  if (!config?.connector) return null;
+  if (!config) return null;
+  const fields = config.fields ?? {};
+  // Non-connector sources (Web crawl, Manual) carry fields but no connector.
+  if (!config.connector) {
+    const parts: string[] = [];
+    if (fields.depth) parts.push(`Depth ${fields.depth}`);
+    if (fields.chars) parts.push(`${Number(fields.chars).toLocaleString()} characters`);
+    for (const [k, v] of Object.entries(fields)) {
+      if (k !== "depth" && k !== "chars" && v && v.trim()) parts.push(`${k} ${v}`);
+    }
+    if (config.credentialRef) parts.push(config.credentialRef.masked);
+    return parts.length ? parts.join(" · ") : null;
+  }
   const def = CONNECTOR_DEFS[config.connector];
   if (!def) return config.connector; // unknown/legacy connector — show the raw name rather than crash
   const parts: string[] = [];
-  const fields = config.fields ?? {};
   for (const f of def.configFields) {
     const v = fields[f.key];
     if (v && v.trim()) parts.push(`${f.label} ${v}`);

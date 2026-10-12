@@ -141,6 +141,7 @@ DRIFT_TRIGGERS = {
     "guardrail_config",                      # guardrails change behavior (06)
     "tool_bindings",                         # tool set / schema snapshot (01, spec B7)
     "embedding_model", "kb_binding",         # RAG affects quality — a hidden lever (04)
+    "retrieval_config",                      # top_k/threshold/injection/reranker/hybrid also move retrieval (04)
     "capability_substitution",               # a provider downgrade changed behavior (02)
 }
 
@@ -189,6 +190,13 @@ order — see 07 for the dollar model:
 def judge_cache_key(case, baseline_snap, candidate_snap) -> str:
     return sha256(f"{case.id}:{baseline_snap}:{candidate_snap}:{JUDGE_VERSION}")
 ```
+
+> **Snapshot-hash coverage (RAG).** Because the verdict cache keys on `candidate_hash = snapshot_hash`,
+> `snapshot_hash` MUST incorporate the frozen `retrieval_config` **and** each binding's `kb_index_version`
+> (alongside model/params/prompt/guardrails/tools). Otherwise a retrieval change — a re-ingest that bumps
+> `kb_index_version`, or a `top_k`/`threshold` edit — leaves the hash unchanged, so a stale PASS is served
+> from the cache and the publish gate is bypassed silently. This is the hashing counterpart to adding
+> `retrieval_config` to `DRIFT_TRIGGERS` above.
 
 ## 7. Execution flow (the async job)
 

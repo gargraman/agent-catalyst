@@ -41,6 +41,17 @@ function tenantOfAgent(agentId: string, agents: Agent[]): string {
   return agents.find((a) => a.id === agentId)?.workspaceId ?? DEFAULT_WS;
 }
 
+// @backend remove - with the backend, KnowledgeBase.boundAgents is a server-computed rollup on
+//   KnowledgeBaseOut (count of agents whose version binds the KB). The mock derives it client-side so the
+//   count stays consistent across create/update/duplicate/delete; unchanged KBs keep their object identity.
+//   [ref: backend/08-api-surface.md §3 KnowledgeBaseOut.bound_agents]
+function withBoundAgentCounts(agents: Agent[], kbs: KnowledgeBase[]): KnowledgeBase[] {
+  return kbs.map((kb) => {
+    const count = agents.filter((a) => a.knowledgeBases.includes(kb.id)).length;
+    return kb.boundAgents === count ? kb : { ...kb, boundAgents: count };
+  });
+}
+
 /* ----------------------------------------------------------------- state */
 export type Toast = { id: string; tone: "good" | "critical" | "neutral"; message: string };
 
@@ -72,7 +83,7 @@ let state: State = {
   roleOverride: null,
   teamOverride: null,
   agents: seedAgents,
-  knowledgeBases: KNOWLEDGE_BASES.map(tagResource),
+  knowledgeBases: withBoundAgentCounts(seedAgents, KNOWLEDGE_BASES.map(tagResource)),
   ingestionJobs: INGESTION_JOBS,
   mcpServers: MCP_SERVERS.map(tagResource),
   tools: TOOLS_REPO.map(tagResource),
@@ -150,7 +161,8 @@ export function setAccessPolicy(
 // @backend POST /v1/agents - create a draft agent in the active workspace; returns the created id.
 export function addAgent(a: Agent) {
   const stamped = tagResource({ ...a, workspaceId: a.workspaceId ?? state.activeWorkspaceId });
-  set({ agents: [stamped, ...state.agents] });
+  const agents = [stamped, ...state.agents];
+  set({ agents, knowledgeBases: withBoundAgentCounts(agents, state.knowledgeBases) });
   toast(`Agent "${stamped.name}" created as a draft`);
 }
 // @backend PATCH /v1/agents/:id - generic field patch + bind knowledge/tools. Lifecycle transitions
@@ -158,7 +170,10 @@ export function addAgent(a: Agent) {
 //   below (publishAgent/unpublishAgent/archiveAgent/restoreAgent/rollbackVersion), which map to the same
 //   endpoint but centralize the passing-eval guard.
 export function updateAgent(id: string, patch: Partial<Agent>, notify = true) {
-  set({ agents: state.agents.map((a) => (a.id === id ? { ...a, ...patch, updatedAt: nowIso() } : a)) });
+  const agents = state.agents.map((a) => (a.id === id ? { ...a, ...patch, updatedAt: nowIso() } : a));
+  // Recompute KB bound-agent counts only when a binding actually changed (bind/detach).
+  if ("knowledgeBases" in patch) set({ agents, knowledgeBases: withBoundAgentCounts(agents, state.knowledgeBases) });
+  else set({ agents });
   if (notify) toast("Changes saved");
 }
 // @backend PATCH /v1/agents/:id - persist draft config (model params, prompt, memory, retrieval, spend).
@@ -226,8 +241,11 @@ export function rollbackVersion(id: string, label: string) {
 //   no dangling references survive the delete.
 export function deleteAgent(id: string) {
   const a = state.agents.find((x) => x.id === id);
+  const agents = state.agents.filter((x) => x.id !== id);
   set({
-    agents: state.agents.filter((x) => x.id !== id),
+    agents,
+    // The deleted agent's bindings are gone → decrement affected KB counts.
+    knowledgeBases: withBoundAgentCounts(agents, state.knowledgeBases),
     evalRuns: state.evalRuns.filter((e) => e.agentId !== id),
     runs: state.runs.filter((r) => r.agentId !== id),
     tokens: a ? state.tokens.filter((t) => t.agent !== a.name) : state.tokens,
@@ -252,7 +270,9 @@ export function duplicateAgent(id: string): string | null {
     // id-keyed and the new id has no entry) and all other draft-config fields.
     config: resolveConfig(a),
   };
-  set({ agents: [copy, ...state.agents] });
+  const agents = [copy, ...state.agents];
+  // The copy inherits the original's KB bindings → increment affected KB counts.
+  set({ agents, knowledgeBases: withBoundAgentCounts(agents, state.knowledgeBases) });
   toast(`Duplicated as "${copy.name}"`);
   return newId;
 }
@@ -262,17 +282,48 @@ export function addKnowledgeBase(kb: KnowledgeBase) {
   set({ knowledgeBases: [stamped, ...state.knowledgeBases] });
   toast(`Knowledge base "${stamped.name}" created`);
 }
+// @backend remove - real ingestion is an async worker; the FE polls GET /v1/ingestion-jobs (IngestionJobOut)
+//   for the running→completed transition. The mock simulates the terminal flip so the job, KB status, and
+//   source land in a consistent state. Reads fresh `state` at fire time (like toast) and is scheduled from
+//   the action (not an effect), so StrictMode does not double-fire it. [ref: backend/04-rag.md §2]
+function scheduleIngestionCompletion(jobId: string, kbId: string, sourceName: string | null, delayMs = 1800) {
+  setTimeout(() => {
+    const kbName = state.knowledgeBases.find((k) => k.id === kbId)?.name;
+    // Don't clear "indexing" while another job for the same KB is still running.
+    const otherRunning = !!kbName && state.ingestionJobs.some((j) => j.id !== jobId && j.kb === kbName && j.status === "running");
+    set({
+      ingestionJobs: state.ingestionJobs.map((j) =>
+        j.id === jobId ? { ...j, status: "completed" as const, duration: "0m 12s", chunks: j.chunks || j.docs * 18 } : j,
+      ),
+      knowledgeBases: state.knowledgeBases.map((k) => {
+        if (k.id !== kbId) return k;
+        // Only flip the source this job ingested. Reingest (sourceName=null) re-embeds existing docs and
+        // must not touch per-source statuses (which would clobber other syncing/error sources).
+        const sources = sourceName
+          ? k.sources.map((s) => (s.name === sourceName ? { ...s, status: "synced" as const, updatedAt: nowIso() } : s))
+          : k.sources;
+        const status: KnowledgeBase["status"] = otherRunning
+          ? "indexing"
+          : sources.some((s) => s.status === "error")
+            ? "error"
+            : "ready";
+        return { ...k, status, lastSync: nowIso(), sources };
+      }),
+    });
+  }, delayMs);
+}
 // @backend POST /v1/knowledge-bases/:id/sources - attach a source and kick an async ingestion job;
 //   job status streams back (see useIngestionJobs). [ref: backend-integration-plan.md#async-job-flow]
-export function addDataSource(kbId: string, src: DataSource, docs = 0) {
+export function addDataSource(kbId: string, src: DataSource, docs = src.docs) {
   const kbs = state.knowledgeBases.map((kb) =>
     kb.id === kbId ? { ...kb, sources: [src, ...kb.sources], status: "indexing" as const } : kb,
   );
   const job: IngestionJob = {
     id: genId("job"), source: src.name, kb: kbs.find((k) => k.id === kbId)?.name ?? "",
-    status: "running", docs, startedAt: nowIso(), duration: "0m 02s",
+    status: "running", docs, chunks: 0, startedAt: nowIso(), duration: "0m 00s",
   };
   set({ knowledgeBases: kbs, ingestionJobs: [job, ...state.ingestionJobs] });
+  scheduleIngestionCompletion(job.id, kbId, src.name);
   toast(`Ingesting "${src.name}"`);
 }
 // @backend POST /v1/knowledge-bases/:id/reingest - re-run ingestion as an async job.
@@ -281,9 +332,14 @@ export function reingest(kbId: string) {
   if (!kb) return;
   const job: IngestionJob = {
     id: genId("job"), source: kb.sources[0]?.name ?? kb.name, kb: kb.name,
-    status: "running", docs: kb.docs, startedAt: nowIso(), duration: "0m 01s",
+    status: "running", docs: kb.docs, chunks: kb.chunks, startedAt: nowIso(), duration: "0m 00s",
   };
-  set({ ingestionJobs: [job, ...state.ingestionJobs] });
+  // Set the KB to indexing up-front so the running→ready transition is visible.
+  set({
+    knowledgeBases: state.knowledgeBases.map((k) => (k.id === kbId ? { ...k, status: "indexing" as const } : k)),
+    ingestionJobs: [job, ...state.ingestionJobs],
+  });
+  scheduleIngestionCompletion(job.id, kbId, null);
   toast(`Re-ingesting "${kb.name}"`);
 }
 // @backend POST /v1/mcp-servers - connect an MCP server; server performs tool discovery and returns

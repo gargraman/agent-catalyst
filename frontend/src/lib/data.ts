@@ -186,7 +186,9 @@ export const DEFAULT_AGENT_CONFIG: Omit<AgentConfig, "systemPrompt"> = {
   sessionMemory: true,
   maxTurnsRetained: 24,
   longTermMemory: false,
-  retrieval: { injection: "tool", topK: 6, similarityThreshold: 0.72, reranker: "bge", maxInjectedTokens: 4000, hybrid: true },
+  // P1 = vector-only retrieval. hybrid (BM25+vector) and the bge reranker are P2 levers — selectable in
+  // the UI but default OFF. Defaults mirror backend RetrievalConfig. [ref: backend/04-rag.md §6 P1 table]
+  retrieval: { injection: "tool", topK: 6, similarityThreshold: 0.2, reranker: "none", maxInjectedTokens: 2000, hybrid: false },
   guardrails: DEFAULT_GUARDRAILS,
   spend: { monthlyCapUsd: 2000, maxConcurrency: 25, timeoutSec: 30 },
 };
@@ -457,6 +459,10 @@ export type KnowledgeBase = {
   id: string; name: string; embeddingModel: string; docs: number; chunks: number;
   sizeMB: number; lastSync: string; status: "ready" | "indexing" | "error"; boundAgents: number;
   sources: DataSource[];
+  description?: string;
+  // @backend KnowledgeBase.chunkConfig -> knowledge_bases.chunk_config (jsonb). embedding_dim is
+  // server-derived from embeddingModel and is NOT captured here. [ref: backend/01 §4.4, backend/08 KnowledgeBaseCreate]
+  chunkConfig?: { size: number; overlap: number; indexType: "HNSW" | "IVF" };
   workspaceId?: string;
   accessPolicy?: AccessPolicy;
 };
@@ -530,13 +536,15 @@ export const KNOWLEDGE_BASES: KnowledgeBase[] = [
   },
 ];
 
-export type IngestionJob = { id: string; source: string; kb: string; status: "completed" | "running" | "failed" | "queued"; docs: number; startedAt: string; duration: string };
+// @backend GET /v1/ingestion-jobs -> IngestionJobOut (projection of jobs ⋈ data_sources ⋈ knowledge_bases).
+// `chunks` = chunks written by the job; `duration` is server-formatted. [ref: backend/08 §3 IngestionJobOut]
+export type IngestionJob = { id: string; source: string; kb: string; status: "completed" | "running" | "failed" | "queued"; docs: number; chunks: number; startedAt: string; duration: string };
 export const INGESTION_JOBS: IngestionJob[] = [
-  { id: "job-9f20", source: "Confluence: Platform space", kb: "Product Documentation", status: "running", docs: 279, startedAt: "2026-10-04T05:02:00Z", duration: "4m 12s" },
-  { id: "job-9f1a", source: "S3: intel-reports/", kb: "Threat Intel Corpus", status: "running", docs: 5600, startedAt: "2026-10-04T03:30:00Z", duration: "1h 38m" },
-  { id: "job-9e80", source: "docs.trellix.com crawl", kb: "Product Documentation", status: "completed", docs: 1860, startedAt: "2026-10-04T05:00:00Z", duration: "11m 40s" },
-  { id: "job-9e42", source: "ir-templates.docx", kb: "IR Templates", status: "failed", docs: 0, startedAt: "2026-09-25T10:00:00Z", duration: "0m 8s" },
-  { id: "job-9d11", source: "playbooks/ (Git repo)", kb: "XDR Response Playbooks", status: "completed", docs: 320, startedAt: "2026-10-03T22:00:00Z", duration: "6m 02s" },
+  { id: "job-9f20", source: "Confluence: Platform space", kb: "Product Documentation", status: "running", docs: 279, chunks: 5240, startedAt: "2026-10-04T05:02:00Z", duration: "4m 12s" },
+  { id: "job-9f1a", source: "S3: intel-reports/", kb: "Threat Intel Corpus", status: "running", docs: 5600, chunks: 127400, startedAt: "2026-10-04T03:30:00Z", duration: "1h 38m" },
+  { id: "job-9e80", source: "docs.trellix.com crawl", kb: "Product Documentation", status: "completed", docs: 1860, chunks: 36120, startedAt: "2026-10-04T05:00:00Z", duration: "11m 40s" },
+  { id: "job-9e42", source: "ir-templates.docx", kb: "IR Templates", status: "failed", docs: 0, chunks: 0, startedAt: "2026-09-25T10:00:00Z", duration: "0m 8s" },
+  { id: "job-9d11", source: "playbooks/ (Git repo)", kb: "XDR Response Playbooks", status: "completed", docs: 320, chunks: 5720, startedAt: "2026-10-03T22:00:00Z", duration: "6m 02s" },
 ];
 
 /* ---------------------------------------------------------------- Tools/MCP */

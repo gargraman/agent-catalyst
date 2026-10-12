@@ -11,7 +11,7 @@ import {
   summarizeSource, initialSourceState, type SourceState,
 } from "@/components/source-picker";
 import { addDataSource, addKnowledgeBase, genId, nowIso } from "@/lib/store";
-import type { KnowledgeBase } from "@/lib/data";
+import { parseNum, type KnowledgeBase } from "@/lib/data";
 
 const STEPS = ["Basics", "First source", "Review"];
 
@@ -52,6 +52,8 @@ export default function NewKnowledgeBasePage() {
       status: hasSource ? "indexing" : "ready",
       boundAgents: 0,
       sources: [],
+      description: description.trim() || undefined,
+      chunkConfig: { size: parseNum(chunkSize, 800), overlap: parseNum(overlap, 120), indexType: indexType as "HNSW" | "IVF" },
     };
     addKnowledgeBase(kb);
 

@@ -576,7 +576,15 @@ function AttachKbDialog({ agent, open, onClose }: { agent: Agent; open: boolean;
           <button key={kb.id} type="button" onClick={() => toggle(kb.id)} className="flex w-full items-center justify-between gap-3 py-3 text-left">
             <div className="flex items-center gap-3">
               <Database className="size-4 text-muted" />
-              <div><p className="text-sm font-medium text-ink">{kb.name}</p><p className="text-xs text-muted">{num(kb.docs, { compact: true })} docs · {kb.embeddingModel}</p></div>
+              <div>
+                <p className="text-sm font-medium text-ink">{kb.name}</p>
+                <p className="text-xs text-muted">{num(kb.docs, { compact: true })} docs · {kb.embeddingModel} · synced {relative(kb.lastSync)}</p>
+                {kb.status !== "ready" && (
+                  <p className={`mt-0.5 flex items-center gap-1 text-xs ${kb.status === "error" ? "text-critical" : "text-warning"}`}>
+                    <TriangleAlert className="size-3 shrink-0" />{kb.status === "error" ? "Last ingestion failed" : "Indexing — not ready"}
+                  </p>
+                )}
+              </div>
             </div>
             <Toggle on={selected.includes(kb.id)} />
           </button>

@@ -56,6 +56,7 @@ create type eval_verdict      as enum ('pass','fail','low_confidence');
 create type run_source        as enum ('playground','api','eval');
 create type run_status        as enum ('success','error','blocked');
 create type provider_name     as enum ('anthropic','openai','google','mistral','meta','azure','bedrock');
+-- DEPRECATED: ingestion status uses job_status via the generic `jobs` table (§4.8); this enum is unused. Kept only to avoid a migration churn; do not reference in new DDL.
 create type ingest_status     as enum ('queued','running','completed','failed');
 create type member_role       as enum ('admin','publisher','builder','viewer');
 create type tool_kind         as enum ('http','builtin','subagent','mcp');       -- mcp used P2
@@ -198,6 +199,7 @@ create table knowledge_bases (
   embedding_dim   int  not null,                -- e.g. 1536 / 3072 — fixes the vector column width
   chunk_config    jsonb not null default '{}',  -- size, overlap, structure-aware flags (04)
   index_version   int  not null default 1,      -- bumped on re-ingest; part of reproducibility (04)
+  access_policy   jsonb not null default '{"mode":"workspace"}'::jsonb,  -- FE KnowledgeBase.accessPolicy; server enforces on read/manage + at invoke (09). PUT /knowledge/:id/access-policy (08)
   created_at      timestamptz not null default now(),
   unique (workspace_id, slug)
 );
@@ -359,6 +361,7 @@ create table mcp_servers (                        -- P2
   config        jsonb not null default '{}',     -- command/args/env OR url; auth ref vaulted (09)
   last_discovery_at timestamptz,
   health        text not null default 'unknown',
+  access_policy jsonb not null default '{"mode":"workspace"}'::jsonb,  -- FE McpServer.accessPolicy; parity with tools/agents (09). PUT /mcp/:id/access-policy (08)
   created_at    timestamptz not null default now()
 );
 

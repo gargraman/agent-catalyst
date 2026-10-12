@@ -76,13 +76,13 @@ job/stream (00 §5, 10). `Backs`: the `frontend/src/lib/data.ts` symbol (via `st
 |---|---|---|---|
 | `GET /api/v1/knowledge-bases?workspace=:id` | S | — | `useKnowledgeBases` |
 | `GET /api/v1/knowledge-bases/:id` | S | — | `useKnowledgeBase` |
-| `POST /api/v1/knowledge-bases` | S | — | `addKnowledgeBase` (embedding model, chunking) |
-| `POST /api/v1/knowledge-bases/:id/sources` | S | **yes** | `addDataSource` (connector sources carry `config{connector,fields,credentialRef}`; + kick ingestion) |
-| `POST /api/v1/knowledge-bases/:id/reingest` | S | **yes** | `reingest` |
-| `GET /api/v1/ingestion-jobs` (poll/SSE) | S | **yes** | `useIngestionJobs` |
+| `POST /api/v1/knowledge-bases` | S | — | `addKnowledgeBase` → `KnowledgeBaseCreate` (name, embeddingModel, chunkConfig; `embedding_dim` is **server-derived** from the model catalog, never sent by FE) |
+| `POST /api/v1/knowledge-bases/:id/sources` | S | **yes** | `addDataSource` (connector sources carry `config{connector,fields,credentialRef}`; web/manual carry `config.fields{depth…}`; + kick ingestion) |
+| `POST /api/v1/knowledge-bases/:id/reingest` | S | **yes** | `reingest` (distinct `job_kind='reingest'`, projected into the same `IngestionJobOut`) |
+| `GET /api/v1/ingestion-jobs` (poll/SSE) | S | **yes** | `useIngestionJobs` → `IngestionJobOut` (projection of `jobs ⋈ data_sources ⋈ knowledge_bases`; see DTOs §3) |
 | `GET /api/v1/connectors` + presigned upload | S | — | `source-picker.tsx`; returns the connector registry (field specs per connector) + file-upload presign (→ MinIO) |
 | `POST /api/v1/connectors/credentials` | S | — | capture a connector secret/file → vault; returns `{masked, vaultPath}`. FE masks client-side as a mock stand-in (never persists raw). Shared by tool auth secrets. |
-| `POST /api/v1/versions/:vid/retrieval-bindings` | S | — | bind KB→version (04) |
+| `POST /api/v1/versions/:vid/retrieval-bindings` | S | — | server-side **version-create artifact** (04 §9): materialized when a version is snapshotted — one row per bound KB, `kb_index_version` pinned, the draft `retrieval_config` broadcast. **No direct FE caller by design** — the FE edits bindings as the flat `knowledge_bases` + single `retrieval_config` on the agent draft (see `AgentPatch`); per-KB config is P2. |
 
 ### Evaluations
 | Method · Path | Auth | Async | Backs |
@@ -113,7 +113,7 @@ job/stream (00 §5, 10). `Backs`: the `frontend/src/lib/data.ts` symbol (via `st
 | `GET /api/v1/provider-keys?workspace=:id` | S | — | `useProviderKeys` (masked) |
 | `POST /api/v1/provider-keys` (+ `/rotate`,`/revoke`) | S(admin) | — | `addProviderKey` (vaulted; 09) |
 | `GET /api/v1/members?workspace=:id` | S | — | `useMembers` (IAM read-only) |
-| `PUT /api/v1/{agents\|knowledge\|tools\|mcp}/:id/access-policy` | S(admin) | — | `setAccessPolicy` (09) |
+| `PUT /api/v1/{agents\|knowledge\|tools\|mcp\|channels}/:id/access-policy` | S(admin) | — | `setAccessPolicy` (09); each target table carries an `access_policy jsonb` column (01; channels in 12) |
 | `GET /api/v1/agents/:id/guardrails` · `PUT …` | S | — | Guardrails tab (per-version config; 06) |
 | `GET /api/v1/search?q=` | S | — | topbar + list search |
 
@@ -231,8 +231,60 @@ class VersionCreate(BaseModel):          # "Save as new version" = clone the act
     system_prompt: str | None = None
     io_contract: dict | None = None      # typed inputs + output schema (B2.5)
     guardrail_config: dict | None = None # (06)
+    knowledge_bases: list[str] | None = Field(default=None, alias="knowledgeBases")  # bound KB ids frozen into the snapshot (04 §9). Omit = inherit from the cloned base.
+    retrieval_config: dict | None = Field(default=None, alias="retrievalConfig")      # top_k/threshold/hybrid/reranker/max_ctx_tokens/injection — broadcast into one retrieval_binding per bound KB at snapshot time (01 retrieval_bindings)
     note: str = ""
-    # server freezes snapshot_hash + resolves profile_snapshot at create (01 §4.2)
+    # Server freezes snapshot_hash + resolves profile_snapshot at create (01 §4.2), and materializes one
+    # retrieval_binding per bound KB with kb_index_version pinned. snapshot_hash MUST incorporate
+    # retrieval_config + each binding's kb_index_version — otherwise a retrieval change won't bust the
+    # verdict cache (05) and a stale PASS is served. Editing knowledge_bases/retrieval_config is a
+    # DRIFT_TRIGGER (05) → publishable=False until a fresh PASS. (VersionOut mirrors TS Version and does
+    # not inline the resolved bindings; read them via the version/retrieval-bindings detail.)
+```
+
+```python
+# services/api/schemas/knowledge.py — mirrors TS KnowledgeBase / DataSource / IngestionJob (data.ts)
+class ChunkConfig(BaseModel):            # FE KnowledgeBase.chunkConfig; stored in knowledge_bases.chunk_config
+    size: int = 800                      # tokens per chunk
+    overlap: int = 120                   # tokens shared between chunks
+    index_type: str = Field("HNSW", alias="indexType")   # HNSW | IVF
+    class Config: populate_by_name = True
+
+class KnowledgeBaseCreate(BaseModel):    # addKnowledgeBase
+    name: str
+    description: str = ""
+    embedding_model: str = Field(alias="embeddingModel")
+    chunk_config: ChunkConfig = Field(default_factory=ChunkConfig, alias="chunkConfig")
+    # embedding_dim is SERVER-DERIVED from embedding_model via the model catalog (02); never sent by the FE.
+    class Config: populate_by_name = True
+
+class KnowledgeBaseOut(BaseModel):       # mirrors TS KnowledgeBase; stats are server-computed rollups
+    id: str
+    name: str
+    description: str | None = None
+    embedding_model: str = Field(alias="embeddingModel")
+    chunk_config: ChunkConfig | None = Field(default=None, alias="chunkConfig")
+    docs: int                            # count(documents)
+    chunks: int                          # count(chunks)
+    size_mb: float = Field(alias="sizeMB")
+    last_sync: datetime = Field(alias="lastSync")
+    status: str                          # ready | indexing | error
+    bound_agents: int = Field(alias="boundAgents")   # count(agents where kb_id in knowledge_bases)
+    access_policy: dict | None = Field(default=None, alias="accessPolicy")
+    # sources[] (DataSourceOut) included on the detail GET
+    class Config: populate_by_name = True
+
+class IngestionJobOut(BaseModel):        # mirrors TS IngestionJob — projection of jobs ⋈ data_sources ⋈ knowledge_bases
+    id: str
+    source: str                          # data_sources.name (via jobs.ref_id → data_source)
+    kb: str                              # knowledge_bases.name
+    status: str                          # job_status: queued|running|completed|failed|cancelled
+    docs: int                            # progress.done (documents written)
+    chunks: int                          # count(chunks) written by this job
+    started_at: datetime = Field(alias="startedAt")   # jobs.created_at
+    duration: str                        # SERVER-FORMATTED "4m 12s" from created_at→updated_at
+    # kind='ingestion' and kind='reingest' both project into this DTO.
+    class Config: populate_by_name = True
 ```
 
 ```python

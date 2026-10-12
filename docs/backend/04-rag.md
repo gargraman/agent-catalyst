@@ -109,6 +109,12 @@ class RetrievalConfig:
 
 async def search(snapshot, query: str, ctx) -> list[Chunk]:
     binding = snapshot.retrieval_binding                 # pinned KB + index_version + config (01)
+    # Invoke-time KB access policy (09 §effective-access): the caller must be entitled to USE this KB.
+    # Eval runs (ctx.run_source == "eval") carry principal_id=None (00 §runtime), so they HONOR the frozen
+    # snapshot but BYPASS the per-caller KB ACL — the binding was manage-authorized at bind time, and eval
+    # tests the snapshot, not a caller's entitlements. Per-chunk/doc-level ACLs remain P2 (§10).
+    if ctx.run_source != "eval" and not can_use(binding.kb_access_policy, ctx.principal):
+        return []                                        # policy_denied → no retrieval from this KB
     qvec = await embed_one(query, binding.embedding_model)
     rows = await pgvector_knn(                            # namespace-pruned (01 §4.4, 09 §7)
         workspace_id=ctx.workspace_id, kb_id=binding.kb_id,
@@ -129,6 +135,20 @@ where workspace_id = :ws and kb_id = :kb
 order by embedding <=> :qvec
 limit :k;
 ```
+
+### P1 defaults vs the FE seed (single source of truth)
+
+The `RetrievalConfig` above is the P1 contract; the mock's `DEFAULT_AGENT_CONFIG.retrieval` (`data.ts`)
+must match it. Earlier FE seeds enabled P2 levers and disagreed on two numbers — reconcile the FE to this:
+
+| Field | P1 (backend, this file) | FE seed (before reconcile) | Resolution |
+|---|---|---|---|
+| `top_k` | 6 | 6 | — |
+| `similarity_threshold` | 0.2 | 0.72 | FE → 0.2 |
+| `hybrid` | false (P1 vector-only) | true | P2 lever — FE default **off**, still user-selectable |
+| `reranker` | none (P2) | "bge" | P2 lever — FE default **none**, still user-selectable |
+| `max_ctx_tokens` | 2000 | 4000 | FE → 2000 |
+| `metadata_filters` | {} (P2 doc-ACLs, §10) | (no FE field) | P2 only — no P1 FE field |
 
 ## 7. Injection strategies (user choice, spec B6.5)
 

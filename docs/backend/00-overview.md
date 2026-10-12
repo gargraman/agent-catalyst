@@ -176,8 +176,9 @@ scores deterministic + judge, computes the verdict vs the frozen baseline, write
 
 **D. Ingestion (async job)** — `api → MinIO + Redis → ingestion/`
 Upload to MinIO (presigned) → enqueue → worker extracts → chunks → embeds (gateway) → writes
-`chunks` with pgvector embeddings namespaced per `(workspace_id, kb_id)` → updates
-`ingestion_jobs` status. Re-ingest of a *bound* KB raises a stale-index warning + drift trigger (05).
+`chunks` with pgvector embeddings namespaced per `(workspace_id, kb_id)` → updates the generic
+`jobs` row (`kind=ingestion`/`reingest`) status (01 §4.8; there is no separate `ingestion_jobs` table).
+Re-ingest of a *bound* KB raises a stale-index warning + drift trigger (05).
 
 ## 6. Configuration & settings
 

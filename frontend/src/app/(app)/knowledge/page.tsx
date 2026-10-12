@@ -5,11 +5,11 @@ import {
   Database, Plus, FileText, Globe, Plug, Pencil, RefreshCw, AlertTriangle, CheckCircle2, Boxes,
 } from "lucide-react";
 import {
-  Card, CardContent, CardHeader, CardTitle, Badge, StatusDot, Table, THead, TH, TR, TD, PageHeader, Button, Progress,
+  Card, CardContent, CardHeader, CardTitle, Badge, StatusDot, Table, THead, TH, TR, TD, PageHeader, Button,
 } from "@/components/ui";
 import { StatTile } from "@/components/stat-tile";
 import { GateButton } from "@/components/gate";
-import { useIngestionJobs, useKnowledgeBases } from "@/lib/store";
+import { toast, useIngestionJobs, useKnowledgeBases } from "@/lib/store";
 import { usePrincipal } from "@/lib/auth";
 import { canUse } from "@/lib/access-policy";
 import { num, relative } from "@/lib/format";
@@ -62,10 +62,6 @@ export default function KnowledgePage() {
               <div><div className="text-muted">Size</div><div className="tnum font-medium text-ink-2">{kb.sizeMB} MB</div></div>
             </div>
 
-            {kb.status === "indexing" && (
-              <div className="mt-3"><div className="mb-1 flex justify-between text-xs text-muted"><span>Indexing</span><span className="tnum">72%</span></div><Progress value={72} tone="warning" /></div>
-            )}
-
             <ul className="mt-3 space-y-2">
               {kb.sources.map((s) => {
                 const Icon = srcIcon[s.type];
@@ -90,7 +86,8 @@ export default function KnowledgePage() {
       <Card>
         <CardHeader>
           <div><CardTitle>Ingestion jobs</CardTitle><p className="mt-0.5 text-xs text-muted">Extract, chunk and embed runs across all sources.</p></div>
-          <Button variant="secondary" size="sm"><RefreshCw className="size-4" /> Refresh</Button>
+          {/* @backend GET /v1/ingestion-jobs (poll/SSE) — with the backend this refetches; the mock store is already live. */}
+          <Button variant="secondary" size="sm" onClick={() => toast("Ingestion jobs are up to date")}><RefreshCw className="size-4" /> Refresh</Button>
         </CardHeader>
         <CardContent className="pt-0">
           <Table>
