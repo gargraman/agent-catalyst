@@ -4,14 +4,18 @@ import { useRef, useSyncExternalStore } from "react";
 import {
   AGENTS, KNOWLEDGE_BASES, INGESTION_JOBS, MCP_SERVERS, TOOLS_REPO, EVAL_RUNS, RUNS,
   API_TOKENS, PROVIDER_KEYS, MEMBERS, CHANNELS_SEED, resolveConfig, getVersions,
+  WORKSPACE_SETTINGS, LIMITS, defaultWorkspaceSettings, defaultLimits,
   type Agent, type AgentConfig, type KnowledgeBase, type DataSource, type IngestionJob, type McpServer,
   type RepoTool, type EvalRun, type Run, type ApiToken, type ProviderKey, type Member, type Channel,
+  type WorkspaceSettings, type Limits,
 } from "./data";
 import { type AccessPolicy, defaultPolicy } from "./access-policy";
 import type { Role } from "./permissions";
+import { DEFAULT_WORKSPACE_ID } from "./iam";
+import { maskSecret } from "./secrets";
 
 /* ----------------------------------------------------------- tenancy seed */
-const DEFAULT_WS = "trellix-xdr";
+const DEFAULT_WS = DEFAULT_WORKSPACE_ID;
 /** A few seeds live in other workspaces so switching tenant shows a different set. */
 const WS_OVERRIDES: Record<string, string> = {
   "compliance-qa": "trellix-grc",
@@ -70,6 +74,8 @@ type State = {
   providerKeys: ProviderKey[];
   members: Member[];
   channels: Channel[];
+  workspaceSettings: Record<string, WorkspaceSettings>;
+  limits: Record<string, Limits>;
   toasts: Toast[];
 };
 
@@ -93,6 +99,8 @@ let state: State = {
   providerKeys: PROVIDER_KEYS,
   members: MEMBERS,
   channels: CHANNELS_SEED.map(tagResource),
+  workspaceSettings: WORKSPACE_SETTINGS,
+  limits: LIMITS,
   toasts: [],
 };
 
@@ -139,6 +147,28 @@ export function setRoleOverride(role: Role | null) {
 }
 export function setTeamOverride(teams: string[] | null) {
   set({ teamOverride: teams });
+}
+// @backend PATCH /v1/workspaces/:id - update workspace config (name, default provider/model). Admin only.
+//   Name/default provider/model are app-editable; slug is immutable (it is the endpoint URL segment).
+//   [ref: backend/01 §4.1, backend/08 settings]
+export function updateWorkspaceSettings(wsId: string, patch: Partial<WorkspaceSettings>) {
+  const cur = state.workspaceSettings[wsId] ?? defaultWorkspaceSettings();
+  set({ workspaceSettings: { ...state.workspaceSettings, [wsId]: { ...cur, ...patch } } });
+  toast("Workspace settings saved");
+}
+// @backend POST /v1/workspaces/:id/archive - archive a workspace (unpublishes its endpoints). Admin only.
+export function archiveWorkspace(wsId: string) {
+  const cur = state.workspaceSettings[wsId] ?? defaultWorkspaceSettings();
+  set({ workspaceSettings: { ...state.workspaceSettings, [wsId]: { ...cur, archivedAt: nowIso() } } });
+  toast("Workspace archived", "neutral");
+}
+// @backend PUT /v1/workspaces/:id/limits - per-workspace spend ceiling + max concurrency + request
+//   timeout. Admin only. Stored in P1; ENFORCED at runtime in P2 (BudgetGuard + Redis semaphores).
+//   [ref: backend/01 §4.8, backend/07 §3]
+export function updateLimits(wsId: string, patch: Partial<Limits>) {
+  const cur = state.limits[wsId] ?? defaultLimits();
+  set({ limits: { ...state.limits, [wsId]: { ...cur, ...patch } } });
+  toast("Limits saved");
 }
 // @backend PUT /v1/{agents|knowledge|tools|mcp|channels}/:id/access-policy - persist per-resource policy;
 //   server enforces it on read/manage and at invoke. [ref: frontend-auth-access-plan.md#part-b2]
@@ -396,17 +426,27 @@ export function revokeToken(id: string) {
   set({ tokens: state.tokens.filter((t) => t.id !== id) });
   toast("Token revoked", "neutral");
 }
-// @backend POST /v1/provider-keys - store a provider key in the vault (value never returned);
-//   also rotate/revoke. [ref: backend-integration-plan.md#part-5]
+// @backend POST /v1/provider-keys - store a provider key in the vault (value never returned).
+//   [ref: backend-integration-plan.md#part-5]
 export function addProviderKey(k: ProviderKey) {
   set({ providerKeys: [k, ...state.providerKeys] });
   toast(`Provider key "${k.label}" added`);
 }
-// @backend none (IAM-managed) - membership changes happen in Trellix IAM, not here; Settings deep-
-//   links to IAM instead of inviting. This action is unused by the UI and can be removed.
-export function addMember(m: Member) {
-  set({ members: [m, ...state.members] });
-  toast(`Invited ${m.email}`);
+// @backend POST /v1/provider-keys/:id/rotate - replace the vaulted secret; the display mask + rotated_at
+//   update and the old secret stops working. Admin only. [ref: backend/01 §4.3, backend/09 §9]
+export function rotateProviderKey(id: string) {
+  set({
+    providerKeys: state.providerKeys.map((k) =>
+      k.id === id ? { ...k, masked: maskSecret(`sk-${genId("rot")}${genId("")}`), rotatedAt: nowIso(), status: "active" } : k,
+    ),
+  });
+  toast("Key rotated");
+}
+// @backend POST /v1/provider-keys/:id/revoke - revoke a key; agents using it fail until replaced.
+//   Admin only. Kept as a tombstone (status=revoked) rather than deleted. [ref: backend/01 §4.3]
+export function revokeProviderKey(id: string) {
+  set({ providerKeys: state.providerKeys.map((k) => (k.id === id ? { ...k, status: "revoked" } : k)) });
+  toast("Key revoked", "neutral");
 }
 // @backend POST /v1/channels - connect a messaging-app channel; raw credentials are POSTed once to the
 //   vault (only masked refs persist). Server registers the inbound webhook + returns its ingress URL.
@@ -510,5 +550,13 @@ export const useTokens = () => useSelector((s) => s.tokens);
 export const useProviderKeys = () => useSelector((s) => s.providerKeys);
 // @backend GET /v1/members?workspace=:id - IAM-sourced members + role-per-workspace (read-only).
 export const useMembers = () => useSelector((s) => s.members);
+// Stable fallbacks: useSelector caches by reference, so returning a fresh default object each call
+// would loop. All workspaces are seeded, so these only guard an unseeded tenant.
+const FALLBACK_WS_SETTINGS = defaultWorkspaceSettings();
+const FALLBACK_LIMITS = defaultLimits();
+// @backend GET /v1/workspaces/:id - active workspace config (name, default provider/model, archived).
+export const useWorkspaceSettings = () => useSelector((s) => s.workspaceSettings[s.activeWorkspaceId] ?? FALLBACK_WS_SETTINGS);
+// @backend GET /v1/workspaces/:id/limits - active workspace spend/concurrency/timeout ceilings.
+export const useLimits = () => useSelector((s) => s.limits[s.activeWorkspaceId] ?? FALLBACK_LIMITS);
 // @backend none - toasts are local UI state.
 export const useToasts = () => useSelector((s) => s.toasts);

@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { createPortal } from "react-dom";
 import { X } from "lucide-react";
 import { Button } from "./ui";
 import { cn } from "@/lib/utils";
@@ -16,6 +17,10 @@ export function Dialog({
   footer?: React.ReactNode;
   size?: "sm" | "md" | "lg";
 }) {
+  // Portal target only exists on the client; gate render so SSR emits nothing and hydration matches.
+  // useSyncExternalStore returns false on the server and true on the client without a setState effect.
+  const mounted = React.useSyncExternalStore(() => () => {}, () => true, () => false);
+
   React.useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
@@ -28,10 +33,12 @@ export function Dialog({
     };
   }, [open, onClose]);
 
-  if (!open) return null;
+  if (!open || !mounted) return null;
   const width = size === "sm" ? "max-w-md" : size === "lg" ? "max-w-3xl" : "max-w-xl";
 
-  return (
+  // Portal to <body> so the fixed overlay escapes any transformed/overflow-clipped ancestor
+  // (e.g. the Tabs content wrapper's `animate-in`), which would otherwise trap and clip it.
+  return createPortal(
     <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto p-4 sm:p-6">
       <div className="fixed inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
       <div
@@ -51,7 +58,8 @@ export function Dialog({
         <div className="max-h-[70vh] overflow-y-auto px-5 py-5">{children}</div>
         {footer && <div className="flex items-center justify-end gap-2 border-t border-border px-5 py-4">{footer}</div>}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 

@@ -15,6 +15,7 @@ const REQUIRED_ROLE: Partial<Record<Permission, Role>> = {
   "knowledge.manage": "builder", "tool.manage": "builder", "mcp.manage": "builder", "channel.manage": "builder",
   "agent.publish": "publisher",
   "agent.delete": "admin", "key.manage": "admin", "member.manage": "admin", "access.manage": "admin",
+  "settings.manage": "admin",
 };
 
 export function requirementText(permission: Permission): string {

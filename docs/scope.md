@@ -1,4 +1,4 @@
-# Scoping Doc — Agent Catalyst
+# Scoping Doc — Agent Platform
 
 > An internal platform to build, configure, test, and publish LLM-powered agents.
 >
@@ -88,7 +88,9 @@
     the chat core + eval loop are proven. *(This is the single biggest cut.)*
   - **MCP tool integration** and **sub-agent delegation** — powerful, but not needed to prove
     the core loop; they multiply the runtime + security surface.
-  - **Cost/spend controls + concurrency limits** — ops hardening, not core value.
+  - **Cost/spend controls + concurrency limits** — ops hardening, not core value. *(The console
+    exposes per-workspace spend/concurrency/timeout knobs in P1, but runtime **enforcement**
+    — budget reservation + concurrency semaphores — is P2; see backend/07, backend/01 §4.8.)*
   - **Multi-user auth / RBAC / org management** — single trusted team assumed for v1.
   - **Rich deployment-status dashboard** — v1 gets a simple published/unpublished list, not
     live deployment telemetry.

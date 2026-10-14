@@ -1,6 +1,8 @@
 /* ============================================================
-   Agent Catalyst - mock data (sensible, internally consistent)
+   Mock data (sensible, internally consistent).
    No real secrets. Numbers are illustrative sample data.
+   Org-derived fragments (email/docs domain, default-workspace fallback) read
+   from src/lib/org.ts; the rest is demo content the backend will own.
    ============================================================ */
 
 /* @backend remove - every exported seed array (AGENTS, KNOWLEDGE_BASES, INGESTION_JOBS, MCP_SERVERS,
@@ -13,6 +15,8 @@
 import type { AccessPolicy } from "./access-policy";
 import type { Connector } from "./connectors";
 import type { ChannelPlatform } from "./channels";
+import { ORG } from "./org";
+import { DEFAULT_WORKSPACE_ID } from "./iam";
 
 export type AgentStatus = "published" | "draft" | "archived" | "eval_failing";
 export type Verdict = "pass" | "fail" | "low_confidence";
@@ -38,12 +42,12 @@ export const MODELS: ModelRef[] = [
 
 export type Member = { name: string; email: string; role: "Admin" | "Publisher" | "Builder" | "Viewer"; lastActive: string };
 export const MEMBERS: Member[] = [
-  { name: "Raman Garg", email: "raman.garg@trellix.com", role: "Admin", lastActive: "2026-10-04T09:12:00Z" },
-  { name: "Priya Nair", email: "priya.nair@trellix.com", role: "Publisher", lastActive: "2026-10-04T07:40:00Z" },
-  { name: "Diego Fuentes", email: "diego.fuentes@trellix.com", role: "Builder", lastActive: "2026-10-03T18:22:00Z" },
-  { name: "Mei-Ling Chen", email: "meiling.chen@trellix.com", role: "Builder", lastActive: "2026-10-03T14:05:00Z" },
-  { name: "Omar Haddad", email: "omar.haddad@trellix.com", role: "Viewer", lastActive: "2026-10-01T11:48:00Z" },
-  { name: "Sofia Rossi", email: "sofia.rossi@trellix.com", role: "Publisher", lastActive: "2026-10-02T16:30:00Z" },
+  { name: "Raman Garg", email: `raman.garg@${ORG.emailDomain}`, role: "Admin", lastActive: "2026-10-04T09:12:00Z" },
+  { name: "Priya Nair", email: `priya.nair@${ORG.emailDomain}`, role: "Publisher", lastActive: "2026-10-04T07:40:00Z" },
+  { name: "Diego Fuentes", email: `diego.fuentes@${ORG.emailDomain}`, role: "Builder", lastActive: "2026-10-03T18:22:00Z" },
+  { name: "Mei-Ling Chen", email: `meiling.chen@${ORG.emailDomain}`, role: "Builder", lastActive: "2026-10-03T14:05:00Z" },
+  { name: "Omar Haddad", email: `omar.haddad@${ORG.emailDomain}`, role: "Viewer", lastActive: "2026-10-01T11:48:00Z" },
+  { name: "Sofia Rossi", email: `sofia.rossi@${ORG.emailDomain}`, role: "Publisher", lastActive: "2026-10-02T16:30:00Z" },
 ];
 
 export type Version = {
@@ -260,7 +264,7 @@ export const AGENTS: Agent[] = [
   {
     id: "docs-assistant",
     name: "Product Docs Assistant",
-    description: "Answers product and configuration questions grounded in the Trellix documentation set, with citations.",
+    description: `Answers product and configuration questions grounded in the ${ORG.orgName} documentation set, with citations.`,
     status: "published", provider: "Anthropic", model: "claude-haiku-4-5",
     owner: "Sofia Rossi", createdAt: "2026-05-20T11:00:00Z", updatedAt: "2026-10-04T06:45:00Z",
     activeVersion: "v11", versions: 11, tags: ["support", "rag", "q&a"],
@@ -472,7 +476,7 @@ export const KNOWLEDGE_BASES: KnowledgeBase[] = [
     id: "product-docs", name: "Product Documentation", embeddingModel: "text-embedding-3-large",
     docs: 2140, chunks: 41820, sizeMB: 186.4, lastSync: "2026-10-04T05:00:00Z", status: "ready", boundAgents: 1,
     sources: [
-      { name: "docs.trellix.com crawl", type: "Web", status: "synced", docs: 1860, updatedAt: "2026-10-04T05:00:00Z" },
+      { name: `${ORG.docsDomain} crawl`, type: "Web", status: "synced", docs: 1860, updatedAt: "2026-10-04T05:00:00Z" },
       { name: "admin-guide.pdf", type: "File", status: "synced", docs: 1, updatedAt: "2026-09-30T10:00:00Z" },
       { name: "Confluence: Platform space", type: "Connector", status: "syncing", docs: 279, updatedAt: "2026-10-04T05:02:00Z" },
     ],
@@ -542,7 +546,7 @@ export type IngestionJob = { id: string; source: string; kb: string; status: "co
 export const INGESTION_JOBS: IngestionJob[] = [
   { id: "job-9f20", source: "Confluence: Platform space", kb: "Product Documentation", status: "running", docs: 279, chunks: 5240, startedAt: "2026-10-04T05:02:00Z", duration: "4m 12s" },
   { id: "job-9f1a", source: "S3: intel-reports/", kb: "Threat Intel Corpus", status: "running", docs: 5600, chunks: 127400, startedAt: "2026-10-04T03:30:00Z", duration: "1h 38m" },
-  { id: "job-9e80", source: "docs.trellix.com crawl", kb: "Product Documentation", status: "completed", docs: 1860, chunks: 36120, startedAt: "2026-10-04T05:00:00Z", duration: "11m 40s" },
+  { id: "job-9e80", source: `${ORG.docsDomain} crawl`, kb: "Product Documentation", status: "completed", docs: 1860, chunks: 36120, startedAt: "2026-10-04T05:00:00Z", duration: "11m 40s" },
   { id: "job-9e42", source: "ir-templates.docx", kb: "IR Templates", status: "failed", docs: 0, chunks: 0, startedAt: "2026-09-25T10:00:00Z", duration: "0m 8s" },
   { id: "job-9d11", source: "playbooks/ (Git repo)", kb: "XDR Response Playbooks", status: "completed", docs: 320, chunks: 5720, startedAt: "2026-10-03T22:00:00Z", duration: "6m 02s" },
 ];
@@ -736,20 +740,47 @@ export const RUNS: Run[] = [
 ];
 
 /* ------------------------------------------------------ Tokens & keys */
-export type ApiToken = { id: string; name: string; agent: string; prefix: string; created: string; lastUsed: string; scopes: string };
+// `agent` names the published endpoint this token is bound to (one token -> one endpoint, 01 §4.7).
+export type ApiToken = { id: string; name: string; agent: string; prefix: string; created: string; lastUsed: string; scopes: string; expires?: string };
 export const API_TOKENS: ApiToken[] = [
   { id: "tok-1", name: "soc-dashboard-prod", agent: "SOC Triage Copilot", prefix: "ac_live_7Q2…", created: "2026-09-10T10:00:00Z", lastUsed: "2026-10-04T09:13:00Z", scopes: "invoke" },
   { id: "tok-2", name: "support-widget", agent: "Product Docs Assistant", prefix: "ac_live_Kp9…", created: "2026-08-02T14:00:00Z", lastUsed: "2026-10-04T09:14:00Z", scopes: "invoke" },
   { id: "tok-3", name: "intel-cron", agent: "Threat Intel Summarizer", prefix: "ac_live_Zx4…", created: "2026-09-25T09:00:00Z", lastUsed: "2026-10-04T08:58:00Z", scopes: "invoke" },
 ];
 
-export type ProviderKey = { provider: string; label: string; masked: string; added: string; status: "active" | "expiring" };
+// `region` is optional and provider-dependent (e.g. Vertex/Bedrock); maps to provider_keys.region (01 §4.3).
+export type ProviderKey = { id: string; provider: string; label: string; masked: string; region?: string; added: string; rotatedAt?: string; status: "active" | "expiring" | "revoked" };
 export const PROVIDER_KEYS: ProviderKey[] = [
-  { provider: "Anthropic", label: "anthropic-prod", masked: "sk-ant-••••••••••••4f2a", added: "2026-05-01T10:00:00Z", status: "active" },
-  { provider: "OpenAI", label: "openai-prod", masked: "sk-••••••••••••9c71", added: "2026-05-01T10:05:00Z", status: "active" },
-  { provider: "Google", label: "vertex-sa", masked: "svc-••••••••••••d30b", added: "2026-07-14T11:00:00Z", status: "expiring" },
-  { provider: "Mistral", label: "mistral-dev", masked: "••••••••••••a118", added: "2026-06-20T09:00:00Z", status: "active" },
+  { id: "pk-anthropic-prod", provider: "Anthropic", label: "anthropic-prod", masked: "sk-ant-••••••••••••4f2a", added: "2026-05-01T10:00:00Z", status: "active" },
+  { id: "pk-openai-prod", provider: "OpenAI", label: "openai-prod", masked: "sk-••••••••••••9c71", added: "2026-05-01T10:05:00Z", status: "active" },
+  { id: "pk-vertex-sa", provider: "Google", label: "vertex-sa", masked: "svc-••••••••••••d30b", region: "us-east1", added: "2026-07-14T11:00:00Z", status: "expiring" },
+  { id: "pk-mistral-dev", provider: "Mistral", label: "mistral-dev", masked: "••••••••••••a118", added: "2026-06-20T09:00:00Z", status: "active" },
 ];
+
+/* --------------------------------------------- Workspace settings & limits */
+// @backend remove - seed stand-ins for per-workspace config the server owns. WorkspaceSettings maps to
+//   workspaces (default_provider/default_model/archived_at); Limits maps to the workspace-scoped rows of
+//   spend_limits + concurrency_limits + the runtime request-timeout knob. [ref: backend/01 §4.1, §4.8]
+export type WorkspaceSettings = { defaultProvider: string; defaultModel: string; archivedAt?: string };
+export type Limits = { monthlySpendUsd: number; maxConcurrent: number; requestTimeoutS: number };
+
+export const defaultWorkspaceSettings = (): WorkspaceSettings => ({ defaultProvider: "Anthropic", defaultModel: "claude-opus-5-5" });
+export const defaultLimits = (): Limits => ({ monthlySpendUsd: 2000, maxConcurrent: 25, requestTimeoutS: 30 });
+
+export const WORKSPACE_SETTINGS: Record<string, WorkspaceSettings> = {
+  "trellix-xdr": { defaultProvider: "Anthropic", defaultModel: "claude-opus-5-5" },
+  "trellix-grc": { defaultProvider: "Anthropic", defaultModel: "claude-sonnet-5-5" },
+  "trellix-labs": { defaultProvider: "OpenAI", defaultModel: "gpt-5" },
+  "trellix-people": { defaultProvider: "Anthropic", defaultModel: "claude-sonnet-5-5" },
+};
+
+// Spend and concurrency are per-workspace ceilings (not per-endpoint). Enforced at runtime in P2.
+export const LIMITS: Record<string, Limits> = {
+  "trellix-xdr": { monthlySpendUsd: 2000, maxConcurrent: 25, requestTimeoutS: 30 },
+  "trellix-grc": { monthlySpendUsd: 1000, maxConcurrent: 10, requestTimeoutS: 30 },
+  "trellix-labs": { monthlySpendUsd: 500, maxConcurrent: 10, requestTimeoutS: 30 },
+  "trellix-people": { monthlySpendUsd: 750, maxConcurrent: 10, requestTimeoutS: 30 },
+};
 
 /* ---------------------------------------------------------------- Channels */
 /* @backend A messaging-app channel: one platform install bound to ONE workspace, routing to MANY
@@ -832,7 +863,7 @@ const SPEND_SERIES_BY_WS: Record<string, Series[]> = {
   "trellix-grc": [{ name: "Google", values: [1, 1, 2, 2, 3, 3, 4, 4] }],
   "trellix-labs": [{ name: "Mistral", values: [3, 2, 1, 1, 0, 0, 0, 0] }],
 };
-export const spendSeries = (ws?: string): Series[] => SPEND_SERIES_BY_WS[ws ?? ""] ?? SPEND_SERIES_BY_WS["trellix-xdr"];
+export const spendSeries = (ws?: string): Series[] => SPEND_SERIES_BY_WS[ws ?? ""] ?? SPEND_SERIES_BY_WS[DEFAULT_WORKSPACE_ID];
 
 export const RUNS_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 const RUNS_SERIES_BY_WS: Record<string, Series[]> = {
@@ -841,7 +872,7 @@ const RUNS_SERIES_BY_WS: Record<string, Series[]> = {
   "trellix-grc": [{ name: "Runs", values: [28, 34, 40, 36, 52, 12, 9] }],
   "trellix-labs": [{ name: "Runs", values: [4, 2, 1, 0, 0, 0, 0] }],
 };
-export const runsSeries = (ws?: string): Series[] => RUNS_SERIES_BY_WS[ws ?? ""] ?? RUNS_SERIES_BY_WS["trellix-xdr"];
+export const runsSeries = (ws?: string): Series[] => RUNS_SERIES_BY_WS[ws ?? ""] ?? RUNS_SERIES_BY_WS[DEFAULT_WORKSPACE_ID];
 
 export const LATENCY_LABELS = ["Sep 29", "Sep 30", "Oct 1", "Oct 2", "Oct 3", "Oct 4"];
 const LATENCY_SERIES_BY_WS: Record<string, Series[]> = {
@@ -850,7 +881,7 @@ const LATENCY_SERIES_BY_WS: Record<string, Series[]> = {
   "trellix-grc": [{ name: "p95 latency (ms)", values: [2680, 2640, 2600, 2620, 2650, 2640] }],
   "trellix-labs": [{ name: "p95 latency (ms)", values: [0, 0, 0, 0, 0, 0] }],
 };
-export const latencySeries = (ws?: string): Series[] => LATENCY_SERIES_BY_WS[ws ?? ""] ?? LATENCY_SERIES_BY_WS["trellix-xdr"];
+export const latencySeries = (ws?: string): Series[] => LATENCY_SERIES_BY_WS[ws ?? ""] ?? LATENCY_SERIES_BY_WS[DEFAULT_WORKSPACE_ID];
 
 export type Activity = { who: string; action: string; target: string; time: string; tone: "good" | "warning" | "critical" | "neutral" };
 const ACTIVITY_BY_WS: Record<string, Activity[]> = {
@@ -878,7 +909,7 @@ const ACTIVITY_BY_WS: Record<string, Activity[]> = {
     { who: "Raman Garg", action: "archived", target: "Engineering Onboarding Buddy", time: "2026-08-14T10:00:00Z", tone: "neutral" },
   ],
 };
-export const activityFor = (ws?: string): Activity[] => ACTIVITY_BY_WS[ws ?? ""] ?? ACTIVITY_BY_WS["trellix-xdr"];
+export const activityFor = (ws?: string): Activity[] => ACTIVITY_BY_WS[ws ?? ""] ?? ACTIVITY_BY_WS[DEFAULT_WORKSPACE_ID];
 
 /* Headline stat tiles (illustrative, not derivable from the seed lists) keyed by workspace. */
 export type DashStats = { spendDelta: string; evalDelta: string; evalSpark: number[]; callsDelta: string };
@@ -888,7 +919,7 @@ const DASH_STATS_BY_WS: Record<string, DashStats> = {
   "trellix-grc": { spendDelta: "3.2%", evalDelta: "0.0 pts", evalSpark: [84, 84, 85, 84, 85, 85, 84, 85], callsDelta: "5.1%" },
   "trellix-labs": { spendDelta: "0.0%", evalDelta: "0.0 pts", evalSpark: [0, 0, 0, 0, 0, 0, 0, 0], callsDelta: "0.0%" },
 };
-export const dashStats = (ws?: string): DashStats => DASH_STATS_BY_WS[ws ?? ""] ?? DASH_STATS_BY_WS["trellix-xdr"];
+export const dashStats = (ws?: string): DashStats => DASH_STATS_BY_WS[ws ?? ""] ?? DASH_STATS_BY_WS[DEFAULT_WORKSPACE_ID];
 
 export type RunsStats = {
   runsToday: number; runsTodayDelta: string;
@@ -902,7 +933,7 @@ const RUNS_STATS_BY_WS: Record<string, RunsStats> = {
   "trellix-grc": { runsToday: 210, runsTodayDelta: "+4.0%", successDelta: "-0.2pts", successSpark: [97, 98, 97, 98, 98, 97, 98], p95ms: 2640, p95Delta: "-10ms", spendToday: 6.4, spendTodayDelta: "+2.1%", spendTodaySpark: [1, 2, 2, 3, 3, 4, 4] },
   "trellix-labs": { runsToday: 0, runsTodayDelta: "0.0%", successDelta: "0.0pts", successSpark: [0, 0, 0, 0, 0, 0, 0], p95ms: 0, p95Delta: "0ms", spendToday: 0, spendTodayDelta: "0.0%", spendTodaySpark: [0, 0, 0, 0, 0, 0, 0] },
 };
-export const runsStats = (ws?: string): RunsStats => RUNS_STATS_BY_WS[ws ?? ""] ?? RUNS_STATS_BY_WS["trellix-xdr"];
+export const runsStats = (ws?: string): RunsStats => RUNS_STATS_BY_WS[ws ?? ""] ?? RUNS_STATS_BY_WS[DEFAULT_WORKSPACE_ID];
 
 export type EvalStats = {
   runs30d: string; runs30dDelta: string; runs30dSpark: number[];
@@ -916,7 +947,7 @@ const EVAL_STATS_BY_WS: Record<string, EvalStats> = {
   "trellix-grc": { runs30d: "6", runs30dDelta: "+2", runs30dSpark: [0, 1, 1, 0, 1, 1, 2], passRate: "84.5%", passRateDelta: "-1.1pts", passRateSpark: [86, 86, 85, 85, 84, 85, 84], driftDelta: "+1", driftSpark: [0, 0, 1, 0, 1, 0, 1], qualityDelta: "+0.3pts", qualitySpark: [83, 84, 84, 85, 84, 85, 85] },
   "trellix-labs": { runs30d: "0", runs30dDelta: "0", runs30dSpark: [0, 0, 0, 0, 0, 0, 0], passRate: "0.0%", passRateDelta: "0.0pts", passRateSpark: [0, 0, 0, 0, 0, 0, 0], driftDelta: "0", driftSpark: [0, 0, 0, 0, 0, 0, 0], qualityDelta: "0.0pts", qualitySpark: [0, 0, 0, 0, 0, 0, 0] },
 };
-export const evalStats = (ws?: string): EvalStats => EVAL_STATS_BY_WS[ws ?? ""] ?? EVAL_STATS_BY_WS["trellix-xdr"];
+export const evalStats = (ws?: string): EvalStats => EVAL_STATS_BY_WS[ws ?? ""] ?? EVAL_STATS_BY_WS[DEFAULT_WORKSPACE_ID];
 
 /* ------------------------------------------------------------- selectors */
 export const getAgent = (id: string) => AGENTS.find((a) => a.id === id);

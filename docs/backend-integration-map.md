@@ -30,6 +30,7 @@ Legend: **Auth** = console session (signed-in user, RBAC) vs caller token (runti
 
 | Source (`file:symbol`) | Method / Path | Auth | Tenant | Async | Notes |
 |---|---|---|---|---|---|
+| `lib/org.ts:ORG` | GET /v1/branding (or deploy env/config) | - | - | - | **Per-deployment org branding** (orgName, productName, idpName, email/docs domain, logo). One deployment per org; branding resolved at deploy/build time. Sits **above** workspace tenancy (not tenant-scoped). Color/radius/font tokens live in `app/brand.css`; default tenant is seed-derived (`iam.ts:DEFAULT_WORKSPACE_ID`), not branding. See `docs/backend/13-branding.md`. |
 | `lib/auth.tsx:MOCK_PROFILE` | OIDC session | session | - | - | Replace mock profile with Auth.js + Trellix IAM OIDC; `useAuth`/`useWorkspace`/`usePrincipal` surface unchanged. |
 | `lib/iam.ts:WORKSPACES/TEAMS/MOCK_PROFILE` | GET (IAM directory) | session | - | - | Workspaces, teams, role-per-workspace memberships from IAM for this registered product. |
 | `lib/store.ts:setActiveWorkspace` | session / persist | session | yes | - | Active workspace from session; list from IAM memberships. |
@@ -137,12 +138,18 @@ Legend: **Auth** = console session (signed-in user, RBAC) vs caller token (runti
 
 | Source (`file:symbol`) | Method / Path | Auth | Tenant | Async | Notes |
 |---|---|---|---|---|---|
+| `lib/store.ts:useWorkspaceSettings` | GET /v1/workspaces/:id | session | yes | - | Name/slug read-only identity; default provider/model editable. |
+| `lib/store.ts:updateWorkspaceSettings` | PATCH /v1/workspaces/:id | session (admin) | yes | - | Saves default provider/model; slug immutable. |
+| `lib/store.ts:archiveWorkspace` | POST /v1/workspaces/:id/archive | session (admin) | yes | - | Sets `archived_at`; unpublishes the workspace's endpoints. |
+| `lib/store.ts:useLimits` / `updateLimits` | GET/PUT /v1/workspaces/:id/limits | session (admin) | yes | - | Per-workspace spend + max-concurrency + timeout. **Stored P1, enforced P2** (backend/07). |
 | `lib/store.ts:useTokens` | GET /v1/agents/:id/tokens | session | yes | - | Prefixes only, never the secret. |
-| `lib/store.ts:addToken` | POST /v1/agents/:id/tokens | session | yes | - | Caller token, shown once. |
-| `lib/store.ts:revokeToken` | DELETE /v1/tokens/:id | session | yes | - | Immediate revoke. |
+| `lib/store.ts:addToken` | POST /v1/agents/:id/tokens | session (publisher) | yes | - | Caller token bound to a published endpoint, shown once. |
+| `lib/store.ts:revokeToken` | DELETE /v1/tokens/:id | session (publisher) | yes | - | Immediate revoke. |
 | `lib/store.ts:useProviderKeys` | GET /v1/provider-keys?workspace=:id | session | yes | - | Masked. |
-| `lib/store.ts:addProviderKey` | POST /v1/provider-keys (+rotate/revoke) | session (admin) | yes | - | Stored in vault; value never returned. |
-| `lib/store.ts:useMembers` | GET /v1/members?workspace=:id | session | yes | - | IAM-sourced, read-only; Invite deep-links to IAM (no POST). `addMember` is unused and can be removed. |
+| `lib/store.ts:addProviderKey` | POST /v1/provider-keys | session (admin) | yes | - | Stored in vault; value never returned. |
+| `lib/store.ts:rotateProviderKey` / `revokeProviderKey` | POST /v1/provider-keys/:id/rotate\|revoke | session (admin) | yes | - | Rotate replaces the vaulted secret + mask; revoke tombstones (status=revoked). Audited (09 §12). |
+| `lib/store.ts:useMembers` | GET /v1/members?workspace=:id | session | yes | - | IAM-sourced, read-only; Invite deep-links to IAM (no POST). (`addMember` removed — membership is IAM-managed.) |
+| `settings/page.tsx:RolesAccess` → `lib/store.ts:setAccessPolicy` | PUT /v1/{agents\|knowledge\|tools\|mcp\|channels}/:id/access-policy | session (admin) | yes | - | Roles & access tab now EDITS per-resource policies across all 5 kinds (incl. channels) via `AccessPolicyEditor`. |
 
 ## Guardrails & search
 

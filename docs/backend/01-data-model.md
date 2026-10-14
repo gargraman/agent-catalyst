@@ -79,8 +79,12 @@ create table orgs (
 create table workspaces (
   id          uuid primary key default gen_random_uuid(),
   org_id      uuid not null references orgs(id),
-  slug        text not null,                    -- "trellix-xdr", "trellix-people-ops" (matches FE)
-  name        text not null,
+  slug        text not null,                    -- "trellix-xdr", "trellix-people-ops" (matches FE). Immutable: it is the published-endpoint URL segment.
+  name        text not null,                    -- IAM-owned identity (read-only in the console)
+  default_provider provider_name,              -- FE WorkspaceSettings.defaultProvider (app-editable, admin; PATCH /workspaces/:id)
+  default_model text,                           -- FE WorkspaceSettings.defaultModel (app-editable, admin)
+  archived_at   timestamptz,                   -- set by POST /workspaces/:id/archive (unpublishes the workspace's endpoints)
+  request_timeout_s int not null default 30,   -- FE Limits.requestTimeoutS; per-workspace RunContext.deadline_s default (00 §4)
   created_at  timestamptz not null default now(),
   unique (org_id, slug)
 );
@@ -181,6 +185,7 @@ create table provider_keys (
   workspace_id  uuid not null references workspaces(id),
   provider      provider_name not null,
   label         text not null,
+  region        text,                           -- optional, provider-dependent (e.g. Vertex/Bedrock) (FE: region)
   masked        text not null,                  -- "sk-ant-…x7f2" for display only (FE: masked)
   vault_path    text not null,                  -- where the ciphertext DEK-wrapped key lives (09)
   status        text not null default 'active', -- active | expiring | revoked
@@ -407,14 +412,14 @@ create table published_endpoints (
 create table api_tokens (                         -- caller tokens for published invoke (FE ApiToken)
   id            uuid primary key default gen_random_uuid(),
   workspace_id  uuid not null references workspaces(id),
-  endpoint_id   uuid not null references published_endpoints(id),
+  endpoint_id   uuid not null references published_endpoints(id),  -- FE selects the endpoint at create time (no endpoint-less tokens)
   name          text not null,
   prefix        text not null,                   -- shown in UI (FE prefix)
   token_hash    text not null,                   -- sha256 of secret; secret shown ONCE (09)
   scopes        jsonb not null default '{}',     -- tenant/role/teams/scopes claims (runtime-access)
   created_at    timestamptz not null default now(),
   last_used_at  timestamptz,
-  expires_at    timestamptz,
+  expires_at    timestamptz,                      -- FE Create dialog: none | 30d | 90d (FE ApiToken.expires)
   revoked_at    timestamptz
 );
 
@@ -481,11 +486,14 @@ create table audit_logs (                         -- spec B12: publish, re-point
   created_at    timestamptz not null default now()
 );
 
--- P2, created now, enforced later (07)
+-- Tables created in P1, ENFORCED at runtime in P2 (07). The console edits the WORKSPACE-scoped rows
+-- (scope='workspace') of both via PUT /workspaces/:id/limits (admin); that endpoint composes the FE
+-- Limits object = { monthlySpendUsd (spend_limits), maxConcurrent (concurrency_limits), requestTimeoutS
+-- (workspaces.request_timeout_s) }. Per-endpoint rows (scope='endpoint') remain available for P2.
 create table spend_limits (
   id uuid primary key default gen_random_uuid(),
   workspace_id uuid not null references workspaces(id),
-  scope text not null,                            -- 'workspace' | 'endpoint'
+  scope text not null,                            -- 'workspace' | 'endpoint' (console edits the 'workspace' row; FE Limits.monthlySpendUsd)
   scope_id uuid,
   monthly_budget_usd numeric(12,2) not null,
   hard_cap boolean not null default true
@@ -493,7 +501,7 @@ create table spend_limits (
 create table concurrency_limits (
   id uuid primary key default gen_random_uuid(),
   workspace_id uuid not null references workspaces(id),
-  scope text not null, scope_id uuid,
+  scope text not null, scope_id uuid,             -- console edits the 'workspace' row; FE Limits.maxConcurrent (workspace-wide)
   max_concurrent int not null
 );
 ```

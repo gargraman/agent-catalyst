@@ -119,6 +119,11 @@ Roles per workspace (01 `member_role`): `viewer | builder | publisher | admin`.
 | **Mint/revoke caller tokens** | | | ✓ | ✓ |
 | **Provider keys, MCP servers, connectors** | | | | ✓ |
 | Set access policy, manage members, retention | | | | ✓ |
+| **Edit workspace config + limits, archive workspace** | | | | ✓ |
+
+> Workspace config (default provider/model), per-workspace limits (spend/concurrency/timeout), and archive
+> are **admin-only** — the FE gates them on the `settings.manage` permission. Caller-token mint/revoke stays
+> **publisher+** (above), since a publisher owns the endpoints they publish.
 
 ```python
 # services/api/auth/rbac.py

@@ -115,8 +115,13 @@ job/stream (00 §5, 10). `Backs`: the `frontend/src/lib/data.ts` symbol (via `st
 | `GET /api/v1/runs?workspace=:id` | S | — | `useRuns` / `RUNS` |
 | `GET /api/v1/runs/:id` | S | — | run detail + spans |
 | `GET /api/v1/metrics/{spend,volume,latency,activity}` | S | — | dashboard/runs charts (§7) |
+| `GET /api/v1/workspaces/:id` | S | — | `useWorkspaceSettings` (name/slug read-only; default provider/model) |
+| `PATCH /api/v1/workspaces/:id` | S(admin) | — | `updateWorkspaceSettings` (default provider/model; slug immutable) |
+| `POST /api/v1/workspaces/:id/archive` | S(admin) | — | `archiveWorkspace` (sets `archived_at`, unpublishes endpoints) |
+| `GET /api/v1/workspaces/:id/limits` · `PUT …` | S(admin) | — | `useLimits` / `updateLimits` — per-workspace spend + concurrency + timeout. **Stored P1, enforced P2** (07) |
 | `GET /api/v1/provider-keys?workspace=:id` | S | — | `useProviderKeys` (masked) |
-| `POST /api/v1/provider-keys` (+ `/rotate`,`/revoke`) | S(admin) | — | `addProviderKey` (vaulted; 09) |
+| `POST /api/v1/provider-keys` | S(admin) | — | `addProviderKey` (vaulted; 09) |
+| `POST /api/v1/provider-keys/:id/rotate` · `…/revoke` | S(admin) | — | `rotateProviderKey` / `revokeProviderKey` (audited; 09 §12) |
 | `GET /api/v1/members?workspace=:id` | S | — | `useMembers` (IAM read-only) |
 | `PUT /api/v1/{agents\|knowledge\|tools\|mcp\|channels}/:id/access-policy` | S(admin) | — | `setAccessPolicy` (09); each target table carries an `access_policy jsonb` column (01; channels in 12) |
 | `GET /api/v1/agents/:id/guardrails` · `PUT …` | S | — | Guardrails tab (per-version config; 06) |
@@ -355,14 +360,33 @@ class RunOut(BaseModel):                  # mirrors TS Run
     class Config: populate_by_name = True
 
 class ApiTokenOut(BaseModel):            # mirrors TS ApiToken — NEVER includes the secret
-    id: str; name: str; agent: str; prefix: str
+    id: str; name: str; agent: str; prefix: str   # `agent` = the bound published endpoint (selected at create)
     created: datetime; last_used: datetime | None = Field(default=None, alias="lastUsed")
+    expires: datetime | None = None      # from api_tokens.expires_at (FE Create: none|30d|90d)
     scopes: str                          # human-readable display summary (matches FE ApiToken.scopes: string)
     # NOTE: the STRUCTURED authorization claims (api_tokens.scopes jsonb, 01 §4.7 — teams/scopes/subject)
     # are read server-side at invoke (09 §6) and are deliberately NOT returned on the wire.
 
 class ApiTokenCreated(ApiTokenOut):      # returned ONCE on mint
     secret: str                          # shown once; only the hash is stored (01 §4.7, 09)
+
+# services/api/schemas/settings.py — workspace config + per-workspace limits (admin-only writes)
+class WorkspaceSettingsOut(BaseModel):   # mirrors TS WorkspaceSettings; name/slug are read-only identity
+    default_provider: str | None = Field(default=None, alias="defaultProvider")
+    default_model: str | None = Field(default=None, alias="defaultModel")
+    archived_at: datetime | None = Field(default=None, alias="archivedAt")
+    class Config: populate_by_name = True
+class WorkspaceSettingsPatch(BaseModel): # PATCH /workspaces/:id — slug is NOT patchable
+    default_provider: str | None = Field(default=None, alias="defaultProvider")
+    default_model: str | None = Field(default=None, alias="defaultModel")
+    class Config: populate_by_name = True
+class LimitsOut(BaseModel):              # mirrors TS Limits; composed from spend_limits+concurrency_limits+workspaces
+    monthly_spend_usd: float = Field(alias="monthlySpendUsd")
+    max_concurrent: int = Field(alias="maxConcurrent")       # workspace-wide (not per-endpoint)
+    request_timeout_s: int = Field(alias="requestTimeoutS")
+    class Config: populate_by_name = True
+class LimitsPut(LimitsOut):             # PUT /workspaces/:id/limits (admin). Stored P1; ENFORCED P2 (07)
+    pass
 ```
 
 > **FE/BE field alignment is load-bearing.** The FE already uses camelCase (`calls30d`, `qualityDelta`).

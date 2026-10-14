@@ -14,14 +14,15 @@ export type Permission =
   | "agent.delete"
   | "key.manage"
   | "member.manage"
-  | "access.manage";
+  | "access.manage"
+  | "settings.manage";
 
 const BUILDER: Permission[] = [
   "view", "playground.use", "agent.create", "agent.edit", "eval.run",
   "knowledge.manage", "tool.manage", "mcp.manage", "channel.manage",
 ];
 const PUBLISHER: Permission[] = [...BUILDER, "agent.publish"];
-const ADMIN: Permission[] = [...PUBLISHER, "agent.delete", "key.manage", "member.manage", "access.manage"];
+const ADMIN: Permission[] = [...PUBLISHER, "agent.delete", "key.manage", "member.manage", "access.manage", "settings.manage"];
 
 export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
   viewer: ["view", "playground.use"],
