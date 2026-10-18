@@ -12,6 +12,7 @@ import {
 } from "@/components/source-picker";
 import { addDataSource, addKnowledgeBase, genId, nowIso } from "@/lib/store";
 import { parseNum, type KnowledgeBase } from "@/lib/data";
+import { ORG } from "@/lib/org";
 
 const STEPS = ["Basics", "First source", "Review"];
 
@@ -87,7 +88,7 @@ export default function NewKnowledgeBasePage() {
               <Field label="Description" hint="Optional. What this knowledge base covers.">
                 <Textarea
                   rows={3}
-                  placeholder="Grounds agents in the Trellix product and configuration docs."
+                  placeholder={`Grounds agents in the ${ORG.orgName} product and configuration docs.`}
                   value={description}
                   onChange={(e) => setDescription(e.target.value)}
                 />

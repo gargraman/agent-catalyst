@@ -1,4 +1,4 @@
-# Agent Catalyst — CxO Pitch Cheat Sheet
+# Agent Platform — CxO Pitch Cheat Sheet
 
 **Audience:** CTO + Chief Architect (technical) · **Length:** 10 min · **Ask-first if rushed.**
 

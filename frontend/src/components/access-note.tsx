@@ -5,12 +5,13 @@
 
 import { Info } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { ORG } from "@/lib/org";
 
 const COPY = {
   build: "What you can see here is build-time visibility. Binding a tool or knowledge base lets the agent use it only if the caller is also granted it at run time.",
   run: "Run-time access to tools, knowledge and MCP is governed by the running user's token and tenant, not by whoever built or published the agent.",
   both: "Build-time visibility is not run-time access. A builder can bind any resource they can see, but at run time it is used only if the caller's token, tenant and the resource's access policy all allow it.",
-  export: "Callers authenticate with their own Trellix IAM token (usually a service account). Access to tools and knowledge is scoped to that token and its tenant; the LLM provider key stays the workspace's vaulted key.",
+  export: `Callers authenticate with their own ${ORG.idpName} token (usually a service account). Access to tools and knowledge is scoped to that token and its tenant; the LLM provider key stays the workspace's vaulted key.`,
 } as const;
 
 export function AccessNote({

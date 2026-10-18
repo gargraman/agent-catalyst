@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this repo is
 
-**Agent Catalyst** — an internal platform to **build → configure → test → publish** LLM agents, with
+**Agent Platform** — an internal platform to **build → configure → test → publish** LLM agents, with
 guardrails, provider-agnosticism, and a drift-aware evaluation core. The defensible engineering lives
 in exactly two places (per `docs/scope.md`): the **provider abstraction / runtime** and the
 **eval + drift-detection** core. The other ~90% (dashboard, config CRUD, versioning, token mint,

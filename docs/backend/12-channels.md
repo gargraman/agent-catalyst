@@ -38,7 +38,7 @@ services/api/channels/
   router.py          # POST /channels/{platform}/events  — one ingress route per platform
   verify.py          # per-platform signature/JWT verification (the trust anchor)
   normalize.py       # platform event → InboundMessage (text, thread_id, platform_user, channel_id)
-  federate.py        # platform email → Okta subject → minted Catalyst token (09)
+  federate.py        # platform email → Okta subject → minted Agent Platform token (09)
   route.py           # channel + message → (agent_id, version_snapshot)
   deliver.py         # reply back to the platform (buffer SSE → single message, v1)
   install.py         # builder-side: create/connect a Channel, store vaulted creds (08)
@@ -111,11 +111,14 @@ def resolve_channel_principal(ch: Channel, msg: InboundMessage) -> MintedToken:
         # OBO-exchanged token must resolve to the same {CHANNEL_INVOKE_ROLE, teams = Okta groups}.
         return entra_obo_exchange(msg.platform_token, target=OKTA_AUD)   # true token exchange
     # Direct mint (slack, gchat): baseline role, teams = the user's Okta groups.
-    return mint_catalyst_token(sub, workspace=ch.workspace_id, role=CHANNEL_INVOKE_ROLE, teams=groups)
+    return mint_platform_token(sub, workspace=ch.workspace_id, role=CHANNEL_INVOKE_ROLE, teams=groups)
 ```
 
-The minted token feeds the existing `can_use(policy, role, teams, subject_id)` (`09 §6`) exactly like a
-caller token — Okta groups are the `teams`, the **same model the console uses** (`09 §2.1`).
+The minted token feeds the unified `can_use(policy, *, role, teams, subject)` (`09 §5`) exactly like a
+caller token — Okta groups are the `teams`, the **same model the console uses** (`09 §2.1`). A channel
+caller has no owner `subject`, so a `private` agent is denied (admin excepted). Note the channel's
+`okta_group` (this gate) is distinct from a workspace's optional backing group (`workspaces.okta_group`,
+`01`): one gates *this channel's* end users, the other may auto-grant *space membership*.
 **End-user access = two gates:** the channel `okta_group` (coarse — checked above, before mint) ∩ the
 agent's `access_policy` (fine — evaluated in `resolveRun`). Both must pass.
 

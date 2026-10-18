@@ -116,16 +116,21 @@ job/stream (00 §5, 10). `Backs`: the `frontend/src/lib/data.ts` symbol (via `st
 | `GET /api/v1/runs/:id` | S | — | run detail + spans |
 | `GET /api/v1/metrics/{spend,volume,latency,activity}` | S | — | dashboard/runs charts (§7) |
 | `GET /api/v1/workspaces/:id` | S | — | `useWorkspaceSettings` (name/slug read-only; default provider/model) |
-| `PATCH /api/v1/workspaces/:id` | S(admin) | — | `updateWorkspaceSettings` (default provider/model; slug immutable) |
+| `PATCH /api/v1/workspaces/:id` | S(admin) | — | `updateWorkspaceSettings` (default provider/model, `access_mode`; slug immutable) |
 | `POST /api/v1/workspaces/:id/archive` | S(admin) | — | `archiveWorkspace` (sets `archived_at`, unpublishes endpoints) |
 | `GET /api/v1/workspaces/:id/limits` · `PUT …` | S(admin) | — | `useLimits` / `updateLimits` — per-workspace spend + concurrency + timeout. **Stored P1, enforced P2** (07) |
 | `GET /api/v1/provider-keys?workspace=:id` | S | — | `useProviderKeys` (masked) |
 | `POST /api/v1/provider-keys` | S(admin) | — | `addProviderKey` (vaulted; 09) |
 | `POST /api/v1/provider-keys/:id/rotate` · `…/revoke` | S(admin) | — | `rotateProviderKey` / `revokeProviderKey` (audited; 09 §12) |
-| `GET /api/v1/members?workspace=:id` | S | — | `useMembers` (IAM read-only) |
-| `PUT /api/v1/{agents\|knowledge\|tools\|mcp\|channels}/:id/access-policy` | S(admin) | — | `setAccessPolicy` (09); each target table carries an `access_policy jsonb` column (01; channels in 12) |
+| `GET /api/v1/members?workspace=:id` | S | — | `useMembers` — space roster (app-managed; identity from org Okta) |
+| `POST /api/v1/workspaces/:id/invites` · `GET …` | S(admin) | — | `inviteMember` / `useInvites` — invite a member (`member.manage`); `workspace_invites` (01) |
+| `DELETE /api/v1/workspaces/:id/invites/:id` | S(admin) | — | `revokeInvite` (`member.manage`) |
+| `DELETE /api/v1/members/:id` | S(admin) | — | `removeMember` — remove from the space roster (`member.manage`) |
+| `POST /api/v1/workspaces/:id/join` | S | — | `joinWorkspace` — self-join an `access_mode = 'open'` space; assigns the default join role (09 §3) |
+| `PUT /api/v1/{agents\|knowledge\|tools\|mcp\|channels}/:id/access-policy` | S(admin) | — | `setAccessPolicy` (09 §5); body is the unified `AccessPolicy` (`visibility: workspace\|restricted\|private`, role/team lists, `owner?`); each target table carries an `access_policy jsonb` column (01; channels in 12) |
 | `GET /api/v1/agents/:id/guardrails` · `PUT …` | S | — | Guardrails tab (per-version config; 06) |
 | `GET /api/v1/search?q=` | S | — | topbar + list search |
+| `GET /v1/branding` | public | — | `lib/org.ts:ORG` → `OrgBrand` (name/product/idp/domains + token values). **Optional — multi-org deployments only.** The default one-deploy-per-org model bakes branding at build/deploy time (env / `org.config.json`), so there is **no per-request branding call** (13 §2). Unauthenticated, cacheable, not tenant-scoped; sits *above* the workspace planes. |
 
 ### Tools & MCP (P2 — routes reserved)
 | Method · Path | Auth | Async | Backs |
@@ -379,6 +384,7 @@ class WorkspaceSettingsOut(BaseModel):   # mirrors TS WorkspaceSettings; name/sl
 class WorkspaceSettingsPatch(BaseModel): # PATCH /workspaces/:id — slug is NOT patchable
     default_provider: str | None = Field(default=None, alias="defaultProvider")
     default_model: str | None = Field(default=None, alias="defaultModel")
+    access_mode: str | None = Field(default=None, alias="accessMode")  # 'open' | 'restricted' (01 workspace_access)
     class Config: populate_by_name = True
 class LimitsOut(BaseModel):              # mirrors TS Limits; composed from spend_limits+concurrency_limits+workspaces
     monthly_spend_usd: float = Field(alias="monthlySpendUsd")
@@ -464,8 +470,8 @@ FastAPI emits OpenAPI 3.1 from the Pydantic models above. Two consumers:
 
 ```bash
 # format=curl — only the scoped caller token placeholder; NEVER a provider key (09)
-curl -N https://catalyst.internal/v1/agents/soc-triage-copilot/invoke \
-  -H "Authorization: Bearer $AGENT_CATALYST_TOKEN" \
+curl -N https://agent-platform.internal/v1/agents/soc-triage-copilot/invoke \
+  -H "Authorization: Bearer $AGENT_PLATFORM_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"messages":[{"role":"user","content":"Triage alert 8831"}],"inputs":{"severity":"high"},"stream":true}'
 ```

@@ -4,7 +4,7 @@ import * as React from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
-  Activity, Bot, Check, ChevronsUpDown, Database, Gauge, LayoutDashboard,
+  Activity, Bot, Check, ChevronsUpDown, Database, Gauge, Globe, LayoutDashboard,
   LogOut, Menu, MessageSquare, MessagesSquare, Plug, Plus, Search, Settings, ShieldCheck, X,
 } from "lucide-react";
 import { ThemeToggle } from "./theme-toggle";
@@ -14,7 +14,8 @@ import { cn } from "@/lib/utils";
 import { useAuth, useWorkspace } from "@/lib/auth";
 import { ROLE_LABEL, ROLE_ORDER, type Role } from "@/lib/permissions";
 import { TEAMS } from "@/lib/iam";
-import { toast } from "@/lib/store";
+import { toast, joinWorkspace } from "@/lib/store";
+import { ORG } from "@/lib/org";
 
 type NavItem = { href: string; label: string; icon: React.ComponentType<{ className?: string }> };
 const NAV: { group: string; items: NavItem[] }[] = [
@@ -60,15 +61,13 @@ const roleTone: Record<Role, string> = {
 };
 
 function Brand() {
+  const Logo = ORG.logo;
   return (
     <Link href="/dashboard" className="flex items-center gap-2.5">
       <span className="inline-flex size-8 items-center justify-center rounded-lg bg-accent text-accent-ink">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M12 2 4 6v6c0 5 3.5 8 8 10 4.5-2 8-5 8-10V6l-8-4Z" />
-          <path d="M9 12l2 2 4-4" />
-        </svg>
+        <Logo />
       </span>
-      <span className="text-[15px] font-semibold tracking-tight text-ink">Agent Catalyst</span>
+      <span className="text-[15px] font-semibold tracking-tight text-ink">{ORG.productName}</span>
     </Link>
   );
 }
@@ -109,7 +108,7 @@ function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
 }
 
 function WorkspaceSwitcher() {
-  const { workspaces, workspace, setWorkspace } = useWorkspace();
+  const { workspaces, joinable, workspace, setWorkspace } = useWorkspace();
   const { role } = useAuth();
   const [open, setOpen] = React.useState(false);
   const ref = useDismiss(() => setOpen(false));
@@ -143,6 +142,22 @@ function WorkspaceSwitcher() {
               {w.id === current?.id && <Check className="size-3.5 text-accent" />}
             </button>
           ))}
+          {joinable.length > 0 && (
+            <>
+              <p className="px-2 pb-1 pt-2 text-[10px] uppercase tracking-wide text-muted">Open spaces</p>
+              {joinable.map((w) => (
+                <button
+                  key={w.id}
+                  onClick={() => { joinWorkspace(w.id); setOpen(false); }}
+                  className="flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-elevated"
+                >
+                  <span className="inline-flex size-6 items-center justify-center rounded-md bg-overlay text-[10px] font-bold text-ink-2">{w.short}</span>
+                  <span className="min-w-0 flex-1 truncate text-sm text-ink-2">{w.name}</span>
+                  <span className="inline-flex items-center gap-1 text-[11px] font-medium text-accent"><Globe className="size-3" />Join</span>
+                </button>
+              ))}
+            </>
+          )}
         </div>
       )}
     </div>
@@ -197,7 +212,7 @@ function UserMenu() {
                 </button>
               ))}
             </div>
-            <p className="pt-1.5 text-[11px] leading-snug text-muted">Dev-only override. Real role comes from Trellix IAM.</p>
+            <p className="pt-1.5 text-[11px] leading-snug text-muted">Dev-only override. Real role comes from {ORG.idpName}.</p>
           </div>
           <div className="border-t border-border px-3 py-2">
             <p className="pb-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted">Preview teams</p>
@@ -270,7 +285,7 @@ function ContextBanner() {
   if (overridden) {
     return (
       <div className="border-b border-border bg-accent-soft/60 px-4 py-1.5 text-center text-xs text-accent md:px-6">
-        Previewing as {ROLE_LABEL[role]}. This overrides your Trellix IAM role.
+        Previewing as {ROLE_LABEL[role]}. This overrides your {ORG.idpName} role.
       </div>
     );
   }

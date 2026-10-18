@@ -11,17 +11,18 @@
 |---|---|---|---|---|
 | **Console session** | a signed-in builder/PM (a human) | OIDC session (Trellix IAM) | **workspace `memberships`** (role_in) + RBAC + resource policy | all `/api/v1/*` builder routes |
 | **Caller token** | an external app/service calling a published agent | scoped bearer token | token's `{tenant, role, teams, scopes}` + resource policy | `POST /v1/agents/:id/invoke` only |
-| **Channel** (12) | an end user in Slack/Teams/GChat | federated → minted Catalyst token | channel `okta_group` ∩ resource policy — **membership-independent** (no `memberships` row required) | `POST /channels/{platform}/events` |
+| **Channel** (12) | an end user in Slack/Teams/GChat | federated → minted Agent Platform token | channel `okta_group` ∩ resource policy — **membership-independent** (no `memberships` row required) | `POST /channels/{platform}/events` |
 
 The frontend already models this split (`lib/auth.tsx` session vs `lib/runtime-access.ts` token decode,
 which also has a channel arm). The server is now the source of truth; the FE token decode becomes
 **preview-only** (Playground shows what a token *would* resolve to; the real check is server-side).
 
-> **Note the differing authorization bases.** Only the console plane requires workspace `memberships`
-> (`get_workspace_ctx`, §3). The caller-token and channel planes authorize off the token's resolved
-> identity (tenant pinned by the token/channel) + per-resource policy — a channel end user can invoke a
-> workspace's agent **without** a `memberships` row (12 §4). Tenancy is still enforced: the channel is
-> pinned to one `workspace_id` and RLS (§7) partitions every query.
+> **Note the differing authorization bases.** The console plane authorizes off workspace `memberships`
+> (`get_workspace_ctx`, §3) — a user is a member by invite or by self-joining an `access: "open"` space
+> (§2.1). The caller-token and channel planes authorize off the token's resolved identity (tenant pinned by
+> the token/channel) + per-resource policy — a channel end user can invoke a workspace's agent **without** a
+> `memberships` row (12 §4). Tenancy is still enforced: the channel is pinned to one `workspace_id` and RLS
+> (§7) partitions every query.
 
 ## 2. Console authN — OIDC/SSO
 
@@ -65,18 +66,26 @@ OIDC **`groups` claim** — not from the `memberships` table and not stored in P
 normalizes the claim (e.g. maps each group's display name / id to a team slug) into `Principal.teams`.
 Keep this decoupled from tenancy:
 
-- **Workspace + role-per-workspace stay app-managed** in `memberships` (§1, §3) — Okta-group membership does
-  **not** grant workspace access; app access is still "member of ≥1 workspace".
+- **Workspace membership + role-per-workspace are app-managed** in `memberships` (§1, §3): a user joins a
+  space either by a **space admin's invite** or by **self-joining an `access: "open"` space** (Google Chat /
+  Teams model). App entry = **member of ≥1 space, OR at least one open space to join** (§3). Identity still
+  comes from org Okta; the *roster* is the app's.
 - **Teams (Okta groups) drive fine-grained access** only: the `teams` term of per-resource `access_policy`
   (§5) and the channel end-user gate (12). The same `teams` semantics are reused by the channel plane
-  (12 §4), so console and chat share one model.
+  (12 §4), so console and chat share one model. Teams are **distinct** from the optional per-space backing
+  group below — functional groups (SOC/…) are not space membership.
 - Requires the IdP to emit a `groups` claim scoped to this product (configure the scope/claim on the
-  Trellix IAM / Okta app registration). No SCIM or directory sync is needed for teams — they are read live
+  org Okta app registration). No SCIM or directory sync is needed for teams — they are read live
   from the token on each request.
 
-> *Deferred:* if group membership should instead gate **workspace entry** (the literal "workspace = Okta
-> group" model), that is a different design — group-per-workspace-role groups + a claim parser that
-> JIT-provisions `memberships` + deprovisioning — and is out of scope here.
+> **Optional per-space backing Okta group (reversal of the earlier "deferred" decision).** Earlier revisions
+> deferred the "workspace = Okta group" model as out of scope. We now **adopt a bounded version**: a
+> workspace MAY carry an optional backing Okta group (`workspaces.okta_group`, 01) that **auto-grants
+> membership** to users in that group at the default join role — useful for team-backed/open spaces. It is
+> **optional and not authoritative**: the app `memberships` roster remains the system of record (invites and
+> self-joins write to it), so a space needs no backing group and group removal is reconciled on next login.
+> We deliberately did **not** adopt group-per-workspace-**role** proliferation; role is an app roster
+> attribute, assigned on invite/join, not encoded in the group.
 
 ## 3. Workspace scoping — the tenancy guard (layer 1)
 
@@ -95,7 +104,13 @@ async def get_workspace_ctx(
     ws_id = request.headers.get("X-Workspace-Id") or request.query_params.get("workspace")
     role = principal.role_in(ws_id)
     if role is None:
-        raise Forbidden("not a member of this workspace")
+        # Not a member yet. Open spaces are joinable by any org member (self-service, default join role);
+        # restricted spaces require an invite, so selecting one you don't belong to is still a 403.
+        ws = await load_workspace(ws_id)
+        if ws and ws.access_mode == "open":
+            role = await join_workspace(principal.subject_id, ws_id, role=DEFAULT_JOIN_ROLE)  # upsert membership
+        else:
+            raise Forbidden("not a member of this workspace")
     # Pin tenant for RLS — SET LOCAL resets at txn end, so this is per-request (01 §6).
     await db.execute(text("SET LOCAL app.workspace_id = :w"), {"w": ws_id})
     return WorkspaceCtx(workspace_id=ws_id, role=role, principal=principal)
@@ -108,7 +123,8 @@ async def get_workspace_ctx(
 
 ## 4. RBAC — roles and what they gate
 
-Roles per workspace (01 `member_role`): `viewer | builder | publisher | admin`.
+Roles per workspace (01 `member_role`): `viewer | builder | publisher | admin`. **`admin` is the Space
+Manager** — it owns member management, access policy, keys, and workspace settings (no separate role).
 
 | Action | viewer | builder | publisher | admin |
 |---|:--:|:--:|:--:|:--:|
@@ -118,12 +134,16 @@ Roles per workspace (01 `member_role`): `viewer | builder | publisher | admin`.
 | **Publish / re-point / unpublish** | | | ✓ | ✓ |
 | **Mint/revoke caller tokens** | | | ✓ | ✓ |
 | **Provider keys, MCP servers, connectors** | | | | ✓ |
-| Set access policy, manage members, retention | | | | ✓ |
+| Set access policy, retention | | | | ✓ |
+| **Invite / remove members, change member role, set `access_mode`** | | | | ✓ |
 | **Edit workspace config + limits, archive workspace** | | | | ✓ |
 
-> Workspace config (default provider/model), per-workspace limits (spend/concurrency/timeout), and archive
-> are **admin-only** — the FE gates them on the `settings.manage` permission. Caller-token mint/revoke stays
-> **publisher+** (above), since a publisher owns the endpoints they publish.
+> Member management (invite / remove / role change), the space's `access_mode`, workspace config (default
+> provider/model), per-workspace limits, and archive are **admin-only** (the Space Manager) — the FE gates
+> member management on `member.manage` and the rest on `settings.manage`. Caller-token mint/revoke stays
+> **publisher+**, since a publisher owns the endpoints they publish. **Self-joining an `access: "open"`
+> space is not a per-role action** — any authenticated org member may join (§3), landing at the default
+> join role (`viewer`).
 
 ```python
 # services/api/auth/rbac.py
@@ -141,26 +161,48 @@ def require_role(min_role: str):
 
 ## 5. Per-resource access policies
 
-Agents/KBs/tools/MCP carry an `access_policy` jsonb (01), mirroring the FE `AccessPolicy`. The FE
-`access-policy.ts` `canUse`/`canManage` is **UI gating only**; the server re-checks identically on read,
-manage, and — critically — **at invoke**.
+Agents/KBs/tools/MCP/channels carry an `access_policy` jsonb (01) with the **same shape as the FE
+`AccessPolicy`** (`access-policy.ts`): `{ visibility, useRoles, useTeams, manageRoles, manageTeams, owner? }`.
+One shape, three sharing tiers (modelled on Google Chat / MS Teams / Splunk):
+
+- **`workspace`** — every space member may use/manage (default).
+- **`restricted`** — gated by **role AND team**, evaluated **separately for use vs manage**; a restricted
+  policy that names neither a role nor a team **fails closed** (grants no one).
+- **`private`** — only the **owner** (+ space admins) may use/manage.
+
+The FE `canUse`/`canManage` is **UI gating only**; the server re-checks identically on read, manage, and
+— critically — **at invoke**.
 
 ```python
 # services/runtime/access.py  (shared by api reads AND runtime invoke)
-def can_use(policy: dict, *, role: str, teams: set[str], subject_id: str) -> bool:
-    mode = policy.get("mode", "workspace")
-    if mode == "workspace":   return True                      # any workspace member
-    if mode == "teams":       return bool(teams & set(policy["teams"]))
-    if mode == "principals":  return subject_id in policy["principals"]
-    if mode == "private":     return subject_id == policy["owner"]
-    return False
+def _matches(roles, teams, *, role, user_teams) -> bool:
+    if not roles and not teams: return False                  # restricted naming neither → fail closed
+    role_ok = not roles or role in roles
+    team_ok = not teams or bool(user_teams & set(teams))
+    return role_ok and team_ok
+
+def can_use(policy: dict, *, role: str, teams: set[str], subject: str | None) -> bool:
+    vis = policy.get("visibility", "workspace")
+    if vis == "workspace":  return True                        # any space member
+    if role == "admin":     return True                        # space admin (Space Manager) bypass
+    if vis == "private":    return subject is not None and subject == policy.get("owner")
+    return _matches(policy.get("useRoles", []), policy.get("useTeams", []), role=role, user_teams=teams)
+
+def can_manage(policy: dict, *, role: str, teams: set[str], subject: str | None) -> bool:
+    vis = policy.get("visibility", "workspace")
+    if vis == "workspace":  return True
+    if role == "admin":     return True                        # admins can always fix a restricted/private policy
+    if vis == "private":    return subject is not None and subject == policy.get("owner")
+    return _matches(policy.get("manageRoles", []), policy.get("manageTeams", []), role=role, user_teams=teams)
 ```
 
-At invoke, the caller-token's resolved identity (teams/scopes) is fed to `can_use` before the runtime
-touches a provider — so access policy is enforced on the **runtime path**, not just the console. On the
-**console** path the `teams` argument is `Principal.teams` (the Okta groups from the OIDC groups claim,
-§2.1); on the **channel** path it is the minted token's `teams` (the end user's Okta groups, 12 §4) — one
-`can_use`, three sources of `teams`.
+At invoke, the caller-token's resolved identity (role/teams) is fed to `can_use` before the runtime touches
+a provider — so access policy is enforced on the **runtime path**, not just the console. A token/channel
+caller carries **no owner subject**, so a `private` resource is denied to every run-time caller except an
+admin token (fail closed). On the **console** path the `teams` argument is `Principal.teams` (the Okta
+groups from the OIDC groups claim, §2.1) and `subject` is the signed-in user; on the **channel** path
+`teams` is the minted token's `teams` (the end user's Okta groups, 12 §4) — one model, three sources of
+`teams`.
 
 ## 6. Caller tokens (published invoke authN)
 

@@ -3,15 +3,15 @@
 import { useRef, useSyncExternalStore } from "react";
 import {
   AGENTS, KNOWLEDGE_BASES, INGESTION_JOBS, MCP_SERVERS, TOOLS_REPO, EVAL_RUNS, RUNS,
-  API_TOKENS, PROVIDER_KEYS, MEMBERS, CHANNELS_SEED, resolveConfig, getVersions,
+  API_TOKENS, PROVIDER_KEYS, MEMBERS, INVITES, CHANNELS_SEED, resolveConfig, getVersions,
   WORKSPACE_SETTINGS, LIMITS, defaultWorkspaceSettings, defaultLimits,
   type Agent, type AgentConfig, type KnowledgeBase, type DataSource, type IngestionJob, type McpServer,
-  type RepoTool, type EvalRun, type Run, type ApiToken, type ProviderKey, type Member, type Channel,
+  type RepoTool, type EvalRun, type Run, type ApiToken, type ProviderKey, type Member, type Invite, type Channel,
   type WorkspaceSettings, type Limits,
 } from "./data";
 import { type AccessPolicy, defaultPolicy } from "./access-policy";
 import type { Role } from "./permissions";
-import { DEFAULT_WORKSPACE_ID } from "./iam";
+import { DEFAULT_WORKSPACE_ID, MOCK_PROFILE } from "./iam";
 import { maskSecret } from "./secrets";
 
 /* ----------------------------------------------------------- tenancy seed */
@@ -73,6 +73,10 @@ type State = {
   tokens: ApiToken[];
   providerKeys: ProviderKey[];
   members: Member[];
+  invites: Invite[];
+  // @backend remove - spaces the mock user self-joined this session (open spaces). Real membership is the
+  //   session roster from the IAM/join endpoints; this shim merges into the effective profile in auth.tsx.
+  joinedWorkspaceIds: string[];
   channels: Channel[];
   workspaceSettings: Record<string, WorkspaceSettings>;
   limits: Record<string, Limits>;
@@ -98,6 +102,8 @@ let state: State = {
   tokens: API_TOKENS,
   providerKeys: PROVIDER_KEYS,
   members: MEMBERS,
+  invites: INVITES,
+  joinedWorkspaceIds: [],
   channels: CHANNELS_SEED.map(tagResource),
   workspaceSettings: WORKSPACE_SETTINGS,
   limits: LIMITS,
@@ -140,6 +146,16 @@ export function setActiveWorkspace(id: string) {
   if (id === state.activeWorkspaceId) return;
   set({ activeWorkspaceId: id });
 }
+// @backend POST /v1/workspaces/:id/join - self-join an `access: "open"` space; server assigns the
+//   default join role (DEFAULT_JOIN_ROLE, iam.ts) and returns the new membership. The joinedWorkspaceIds
+//   shim is merged into the effective profile in auth.tsx and goes away once membership is session-sourced.
+export function joinWorkspace(id: string) {
+  if (!state.joinedWorkspaceIds.includes(id)) {
+    set({ joinedWorkspaceIds: [...state.joinedWorkspaceIds, id] });
+  }
+  set({ activeWorkspaceId: id });
+  toast("Joined space");
+}
 // @backend remove - roleOverride/teamOverride are dev-only preview switches; delete once the real
 //   IAM session supplies role-per-workspace + teams. [ref: frontend-auth-access-plan.md#part-e]
 export function setRoleOverride(role: Role | null) {
@@ -178,13 +194,38 @@ export function setAccessPolicy(
   id: string,
   policy: AccessPolicy,
 ) {
-  const apply = <T extends WithTenant>(arr: T[]) => arr.map((r) => (keyOf(r) === id ? { ...r, accessPolicy: policy } : r));
+  // A private resource is owner-scoped: stamp the current user as owner if the editor didn't supply one.
+  const stamped: AccessPolicy =
+    policy.visibility === "private" && !policy.owner ? { ...policy, owner: MOCK_PROFILE.email } : policy;
+  const apply = <T extends WithTenant>(arr: T[]) => arr.map((r) => (keyOf(r) === id ? { ...r, accessPolicy: stamped } : r));
   if (kind === "agent") set({ agents: apply(state.agents) });
   else if (kind === "knowledge") set({ knowledgeBases: apply(state.knowledgeBases) });
   else if (kind === "tool") set({ tools: apply(state.tools) });
   else if (kind === "channel") set({ channels: apply(state.channels) });
   else set({ mcpServers: apply(state.mcpServers) });
   toast("Access policy updated");
+}
+
+/* ------------------------------------------------------------- members / invites */
+// @backend POST /v1/workspaces/:id/invites - invite a member to the space (space admin → `member.manage`).
+export function inviteMember(email: string, role: Member["role"]) {
+  if (state.invites.some((i) => i.email === email) || state.members.some((m) => m.email === email)) {
+    toast("Already a member or invited", "neutral");
+    return;
+  }
+  const invite: Invite = { email, role, invitedBy: MOCK_PROFILE.name, invitedAt: nowIso(), status: "pending" };
+  set({ invites: [invite, ...state.invites] });
+  toast("Invitation sent");
+}
+// @backend DELETE /v1/workspaces/:id/invites/:id - revoke a pending invite (space admin).
+export function revokeInvite(email: string) {
+  set({ invites: state.invites.filter((i) => i.email !== email) });
+  toast("Invitation revoked", "neutral");
+}
+// @backend DELETE /v1/members/:id - remove a member from the space (space admin).
+export function removeMember(email: string) {
+  set({ members: state.members.filter((m) => m.email !== email) });
+  toast("Member removed", "neutral");
 }
 
 /* --------------------------------------------------------------- actions */
@@ -548,8 +589,13 @@ export const useRunsForAgent = (agentId: string) => useSelector((s) => s.runs.fi
 export const useTokens = () => useSelector((s) => s.tokens);
 // @backend GET /v1/provider-keys?workspace=:id - list vaulted provider keys (masked).
 export const useProviderKeys = () => useSelector((s) => s.providerKeys);
-// @backend GET /v1/members?workspace=:id - IAM-sourced members + role-per-workspace (read-only).
+// @backend GET /v1/members?workspace=:id - space roster + role-per-workspace (app-managed: invite/join,
+//   space admins can remove — see inviteMember/removeMember). Identity still comes from org Okta.
 export const useMembers = () => useSelector((s) => s.members);
+// @backend GET /v1/workspaces/:id/invites - pending invites for the active space (space admin view).
+export const useInvites = () => useSelector((s) => s.invites);
+// @backend remove - session-local record of open spaces the user joined this session (merged in auth.tsx).
+export const useJoinedWorkspaceIds = () => useSelector((s) => s.joinedWorkspaceIds);
 // Stable fallbacks: useSelector caches by reference, so returning a fresh default object each call
 // would loop. All workspaces are seeded, so these only guard an unseeded tenant.
 const FALLBACK_WS_SETTINGS = defaultWorkspaceSettings();

@@ -15,10 +15,11 @@ import { CopyButton } from "@/components/copy-button";
 import { GateButton } from "@/components/gate";
 import { Member, type WorkspaceSettings, type Limits } from "@/lib/data";
 import {
-  useMembers, useProviderKeys, useTokens,
+  useMembers, useInvites, useProviderKeys, useTokens,
   useAgents, useKnowledgeBases, useMcpServers, useTools, useChannels,
   useWorkspaceSettings, useLimits, useActiveWorkspaceId,
   addProviderKey, rotateProviderKey, revokeProviderKey,
+  inviteMember, revokeInvite, removeMember,
   addToken, revokeToken,
   updateWorkspaceSettings, archiveWorkspace, updateLimits,
   genId, nowIso,
@@ -38,8 +39,8 @@ const roleTone: Record<Member["role"], "violet" | "accent" | "neutral"> = {
   Admin: "violet", Publisher: "accent", Builder: "neutral", Viewer: "neutral",
 };
 
-const CURL = `curl -N https://catalyst.internal/v1/agents/soc-triage-copilot/invoke \\
-  -H "Authorization: Bearer $AGENT_CATALYST_TOKEN" \\
+const CURL = `curl -N https://agent-platform.internal/v1/agents/soc-triage-copilot/invoke \\
+  -H "Authorization: Bearer $AGENT_PLATFORM_TOKEN" \\
   -H "Content-Type: application/json" \\
   -d '{"messages":[{"role":"user","content":"Triage alert 48213"}],"stream":true}'`;
 
@@ -134,17 +135,37 @@ function WorkspaceForm({ wsId, wsName, settings, canEdit }: {
   );
 }
 
+const MEMBER_ROLES: Member["role"][] = ["Viewer", "Builder", "Publisher", "Admin"];
+
 function Members() {
   const members = useMembers();
+  const invites = useInvites();
+  const { can } = useAuth();
+  const canManageMembers = can("member.manage");
+
+  const [inviteOpen, setInviteOpen] = React.useState(false);
+  const [email, setEmail] = React.useState("");
+  const [role, setRole] = React.useState<Member["role"]>("Builder");
+  const [removeTarget, setRemoveTarget] = React.useState<Member | null>(null);
+
+  const submitInvite = () => {
+    const addr = email.trim();
+    if (!addr) return;
+    inviteMember(addr, role);
+    setEmail("");
+    setRole("Builder");
+    setInviteOpen(false);
+  };
 
   return (
     <div className="space-y-6">
       <Card>
         <CardHeader>
           <div>
-            <CardTitle>Sign-in &amp; roles</CardTitle>
+            <CardTitle>Sign-in &amp; identity</CardTitle>
             <CardDescription>
-              Console sign-in and roles are managed in {ORG.idpName}. {ORG.productName} is a registered product; your role is assigned per workspace there.
+              Everyone signs in through {ORG.idpName} (org-level SSO). Who belongs to <em>this</em> space, and at
+              what role, is managed here — by invite, or by joining if the space is open.
             </CardDescription>
           </div>
           <ShieldCheck className="size-4 text-accent" />
@@ -156,21 +177,21 @@ function Members() {
           <div>
             <div className="flex items-center gap-2">
               <CardTitle>Members &amp; roles</CardTitle>
-              <Badge tone="neutral">Managed in IAM</Badge>
+              <Badge tone="neutral">Space roster</Badge>
             </div>
             <CardDescription>
-              Members and workspace roles are sourced from {ORG.idpName} and shown here read-only. Viewer reads only. Builder creates and tests agents. Publisher can publish and manage keys. Admin manages the workspace.
+              Viewer reads only. Builder creates and tests agents. Publisher can publish and manage keys. Admin manages the space, its members, and access.
             </CardDescription>
           </div>
-          <GateButton permission="member.manage" variant="primary" size="sm" href="#">
-            <Users className="size-4" /> Manage in {ORG.idpName}
+          <GateButton permission="member.manage" variant="primary" size="sm" onClick={() => setInviteOpen(true)}>
+            <Plus className="size-4" /> Invite member
           </GateButton>
         </CardHeader>
         <CardContent className="pt-0">
           <Table>
             <THead>
               <TR>
-                <TH>Member</TH><TH>Email</TH><TH>Role</TH><TH>Last active</TH>
+                <TH>Member</TH><TH>Email</TH><TH>Role</TH><TH>Last active</TH><TH />
               </TR>
             </THead>
             <tbody>
@@ -185,12 +206,84 @@ function Members() {
                   <TD className="text-muted">{m.email}</TD>
                   <TD><Badge tone={roleTone[m.role]}>{m.role}</Badge></TD>
                   <TD className="text-muted tnum">{relative(m.lastActive)}</TD>
+                  <TD className="text-right">
+                    {canManageMembers && (
+                      <Button variant="ghost" size="sm" onClick={() => setRemoveTarget(m)}>Remove</Button>
+                    )}
+                  </TD>
                 </TR>
               ))}
             </tbody>
           </Table>
         </CardContent>
       </Card>
+
+      {invites.length > 0 && (
+        <Card>
+          <CardHeader>
+            <div>
+              <CardTitle>Pending invites</CardTitle>
+              <CardDescription>Invited people join this space once they accept.</CardDescription>
+            </div>
+          </CardHeader>
+          <CardContent className="pt-0">
+            <Table>
+              <THead>
+                <TR><TH>Email</TH><TH>Role</TH><TH>Invited by</TH><TH>Invited</TH><TH /></TR>
+              </THead>
+              <tbody>
+                {invites.map((i) => (
+                  <TR key={i.email}>
+                    <TD className="text-ink">{i.email}</TD>
+                    <TD><Badge tone={roleTone[i.role]}>{i.role}</Badge></TD>
+                    <TD className="text-muted">{i.invitedBy}</TD>
+                    <TD className="text-muted tnum">{relative(i.invitedAt)}</TD>
+                    <TD className="text-right">
+                      {canManageMembers && (
+                        <Button variant="ghost" size="sm" onClick={() => revokeInvite(i.email)}>Revoke</Button>
+                      )}
+                    </TD>
+                  </TR>
+                ))}
+              </tbody>
+            </Table>
+          </CardContent>
+        </Card>
+      )}
+
+      <Dialog
+        open={inviteOpen}
+        onClose={() => setInviteOpen(false)}
+        title="Invite member"
+        description="Send an invite to join this space at the selected role."
+        footer={
+          <>
+            <Button variant="ghost" size="sm" onClick={() => setInviteOpen(false)}>Cancel</Button>
+            <Button variant="primary" size="sm" disabled={!email.trim()} onClick={submitInvite}>Send invite</Button>
+          </>
+        }
+      >
+        <div className="space-y-3">
+          <Field label="Email">
+            <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder={`name@${ORG.emailDomain}`} />
+          </Field>
+          <Field label="Role">
+            <Select value={role} onChange={(e) => setRole(e.target.value as Member["role"])}>
+              {MEMBER_ROLES.map((r) => <option key={r} value={r}>{r}</option>)}
+            </Select>
+          </Field>
+        </div>
+      </Dialog>
+
+      <ConfirmDialog
+        open={removeTarget != null}
+        onClose={() => setRemoveTarget(null)}
+        title={`Remove ${removeTarget?.name ?? "member"}?`}
+        body="They lose access to this space. They can be invited again later."
+        confirmLabel="Remove"
+        tone="danger"
+        onConfirm={() => { if (removeTarget) removeMember(removeTarget.email); }}
+      />
     </div>
   );
 }
@@ -811,7 +904,9 @@ function RolesAccess() {
  *  - @backend GET /v1/agents/:id/tokens - API tokens list [via useTokens]
  *  - @backend POST /v1/agents/:id/tokens - create token bound to a published endpoint, shown once (publisher+) [via addToken]
  *  - @backend DELETE /v1/tokens/:id - revoke token (publisher+) [via revokeToken]
- *  - @backend GET /v1/members?workspace=:id - IAM-sourced members (read-only) [via useMembers]; Invite is a deep link to the IdP (ORG.idpName) (no POST)
+ *  - @backend GET /v1/members?workspace=:id - space roster [via useMembers]; membership is app-managed:
+ *    POST /v1/workspaces/:id/invites (inviteMember), DELETE …/invites/:id (revokeInvite), DELETE /v1/members/:id
+ *    (removeMember) — all space-admin (member.manage). Identity (sign-in) still comes from org Okta.
  *  - @backend PUT /v1/{agents|knowledge|tools|mcp|channels}/:id/access-policy - Roles & access now edits per-resource policies across all 5 kinds (admin) [via setAccessPolicy / AccessPolicyEditor]
  *  - @backend the cURL sample is illustrative; the Authentication note describes the IAM/OIDC integration
  * See src/lib/store.ts markers + docs/backend-integration-map.md for the authoritative contracts.

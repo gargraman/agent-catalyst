@@ -5,7 +5,7 @@
    Shown read-only to non-admins. Enforcement lives in access-policy.ts + runtime-access.ts. */
 
 import * as React from "react";
-import { Lock, Globe } from "lucide-react";
+import { Lock, Globe, User } from "lucide-react";
 import { Button, Separator } from "@/components/ui";
 import { cn } from "@/lib/utils";
 import { TEAMS } from "@/lib/iam";
@@ -90,6 +90,7 @@ export function AccessPolicyEditor({
 }) {
   const [draft, setDraft] = React.useState<AccessPolicy>(policy ?? defaultPolicy());
   const restricted = draft.visibility === "restricted";
+  const isPrivate = draft.visibility === "private";
   const dirty = JSON.stringify(draft) !== JSON.stringify(policy ?? defaultPolicy());
 
   const patch = (p: Partial<AccessPolicy>) => setDraft((d) => ({ ...d, ...p }));
@@ -101,6 +102,7 @@ export function AccessPolicyEditor({
         {([
           { v: "workspace", icon: Globe, title: "All workspace members", sub: "Anyone in this workspace, per their role" },
           { v: "restricted", icon: Lock, title: "Restricted", sub: "Only the roles and teams you list below" },
+          { v: "private", icon: User, title: "Private", sub: "Only the owner (and space admins)" },
         ] as const).map(({ v, icon: Icon, title, sub }) => {
           const on = draft.visibility === v;
           return (
@@ -145,6 +147,16 @@ export function AccessPolicyEditor({
             onTeams={(t) => patch({ manageTeams: toggle(draft.manageTeams, t) })}
             disabled={readOnly}
           />
+        </>
+      )}
+
+      {isPrivate && (
+        <>
+          <Separator />
+          <p className="text-xs text-ink-2">
+            Only the owner{draft.owner ? <> (<span className="text-ink">{draft.owner}</span>)</> : " (set to you on save)"} and
+            space admins can use or manage this resource. Run-time callers (tokens/channels) are always denied.
+          </p>
         </>
       )}
 

@@ -5,7 +5,7 @@
 
 ## Context
 
-Agent Catalyst is registered in **Trellix IAM** as a separate product; the console's authentication and
+Agent Platform is registered in **Trellix IAM** as a separate product; the console's authentication and
 authorization come from IAM. There are **two distinct access contexts**:
 
 1. **Console access (build time)** - who can use the app and what they can do (create, edit, publish,
@@ -16,22 +16,26 @@ authorization come from IAM. There are **two distinct access contexts**:
 **Key principle:** build-time visibility is not run-time access.
 `effective access = agent config ∩ caller grants ∩ caller tenant ∩ resource access policy`.
 
-**Boundary with IAM:** role *definitions*, user↔role *assignment*, and **workspace membership** live in
-**Trellix IAM** (app-managed `memberships`, read here). **Teams are Okta groups**, carried in the OIDC
-**`groups` claim** and normalized to team slugs at request time (not stored, not the `memberships` table) —
-see `backend/09 §2.1`. What admins configure **in this app** is the **per-resource access policy** - which
-roles/teams (Okta groups) may use or manage each agent, KB, tool, and MCP server.
+**Boundary with Okta (spaces model):** **authentication** is org-level **Okta** (OIDC). **Workspace
+membership and the per-workspace role are app-managed** — a user joins a space by a **space admin's invite**
+or by **self-joining an `access: "open"` space** (Google Chat / MS Teams model). Space admins manage members
+in-app. **Teams are Okta groups**, carried in the OIDC **`groups` claim** and normalized to team slugs at
+request time (not stored, not the `memberships` table) — see `backend/09 §2.1`. What admins also configure
+**in this app** is the **per-resource access policy** — which roles/teams (Okta groups), or the owner, may
+use or manage each agent, KB, tool, MCP server, and channel.
 
-> **Scope note (decision):** Okta groups map to the **teams** dimension, not to workspaces. Okta-group
-> membership drives fine-grained resource access (and the channel end-user gate), but **does not gate
-> workspace/app entry** — that stays the app-managed `memberships` model above. The literal "workspace =
-> Okta group" model (group-per-workspace-role + JIT-provisioned memberships) is a deferred alternative.
+> **Scope note (decision, 2026-10-15 — reverses the earlier "deferred" stance):** workspaces now have an
+> `access` mode (`open` = any org member can join · `restricted` = invite-only), and membership is the
+> app-managed roster. A workspace MAY carry an **optional backing Okta group** that auto-grants membership;
+> it is not authoritative (the roster is). We did **not** adopt group-per-workspace-**role** proliferation —
+> role is a roster attribute set on invite/join. Okta groups still map to the **teams** dimension for
+> fine-grained resource access and the channel end-user gate.
 
 **Caller token vs provider key (do not conflate):** the caller token governs **tools/knowledge/MCP**
 access; the **LLM provider key stays the workspace's vaulted key** (server-side), never the caller's.
 
-Everything is **tenant-scoped**: IAM carries each user's workspace memberships and a role **per
-workspace** (Admin in one workspace, Viewer in another is possible).
+Everything is **tenant-scoped**: the app-managed roster carries each user's space memberships and a role
+**per workspace** (Admin in one space, Viewer in another is possible).
 
 ### Access contexts
 ```mermaid
@@ -63,9 +67,9 @@ flowchart TB
   end
 ```
 
-Decisions locked: **Playground = run-as-me + optional run-token preview** · **mock IAM + dev role
-switcher** · **per-resource policies in-app, assignment stays in IAM** · **policy granularity = roles +
-IAM teams**. No backend in scope.
+Decisions locked: **Playground = run-as-me + optional run-token preview** · **org Okta auth + app-managed
+space membership (invite / join-open) + dev role switcher** · **per-resource policies in-app (role, team, or
+owner)** · **policy granularity = roles + Okta teams + `private` owner**. No backend in scope.
 
 > **As-built notes (shipped `b26cd89` → `640453f`):** this doc was the plan; a few details shipped
 > differently —
@@ -91,13 +95,15 @@ IAM teams**. No backend in scope.
 - Scope resources by workspace: `workspaceId` on every resource; **all** store reads filtered by the
   active workspace (lists, agent detail, dashboard, runs, evals); **creates stamp** the active
   `workspaceId`. Tenant banner shows the active workspace.
-- Edge states: no product access → "No access" screen; no active workspace → workspace picker.
+- Edge states: no member *and* no open space to join → "No access" screen; otherwise a space picker that
+  lists member spaces and offers **Join** on open spaces.
 
 ## Part A - Identity + permissions (mock now, IAM-ready)
 - `src/lib/permissions.ts` - roles `viewer|builder|publisher|admin`; permissions `view, playground.use,
   agent.create, agent.edit, eval.run, knowledge.manage, tool.manage, mcp.manage, channel.manage,
-  agent.publish, agent.delete, key.manage, member.manage, access.manage`; role→permission map (viewer →
-  view+playground; builder → +create/edit/eval/knowledge/tool/mcp/channel; publisher → +publish; admin → all).
+  agent.publish, agent.delete, key.manage, member.manage, access.manage, settings.manage`; role→permission
+  map (viewer → view+playground; builder → +create/edit/eval/knowledge/tool/mcp/channel; publisher → +publish;
+  admin → all, incl. `settings.manage` for workspace config/limits/archive).
 - `src/lib/auth.tsx` - `AuthProvider` + `useAuth()` → `{ user, role, permissions, can(p) }`. Role comes
   from the active workspace; a **dev role switcher** overrides it for preview. Same surface real IAM OIDC
   will expose later.
@@ -108,11 +114,14 @@ IAM teams**. No backend in scope.
   read-only, builders can build but not publish, etc.
 
 ## Part B2 - Admin-configurable per-resource access policies
-- `src/lib/access-policy.ts` - each agent/KB/tool/MCP has `accessPolicy: { visibility:
-  "workspace"|"restricted", useRoles[], useTeams[], manageRoles[], manageTeams[] }`; helpers
-  `canUse(resource, principal)` / `canManage(resource, principal)` where principal = `{ role, teams }`.
-- `src/components/access-policy-editor.tsx` - visibility + role + **IAM team** multiselects for Use and
-  Manage; shown only to `access.manage`.
+- `src/lib/access-policy.ts` - each agent/KB/tool/MCP/channel has `accessPolicy: { visibility:
+  "workspace"|"restricted"|"private", useRoles[], useTeams[], manageRoles[], manageTeams[], owner? }`; helpers
+  `canUse(resource, principal)` / `canManage(resource, principal)` where principal = `{ role, teams, subject? }`.
+  `private` = owner-only (by `subject`) plus the admin bypass; at run time callers have no `subject`, so
+  `private` resources are denied to tokens/channels (admin tokens excepted). Same shape as the backend
+  `access_policy` (backend/09 §5, backend/01).
+- `src/components/access-policy-editor.tsx` - visibility (workspace / restricted / private) + role + **Okta
+  team** multiselects for Use and Manage; shown only to `access.manage`.
 - Config surfaces: **Access tab** on agent detail; access editor on KB/tool/MCP; **Roles & access** view
   in Settings.
 - Enforcement: build time (restricted resources hidden/locked); run time (policy is a term in the
@@ -130,8 +139,9 @@ IAM teams**. No backend in scope.
 
 ## Part D - Surface the model + Settings
 - `src/components/access-note.tsx` - build-vs-run access callout reused in Configure/Playground/Publish.
-- Settings: Authentication note (IAM-managed sign-in/roles); Members IAM-sourced/read-mostly + "manage
-  in IAM"; provider-keys vaulted note; **Roles & access** matrix.
+- Settings: Authentication note (org Okta OIDC sign-in); **Members** — app-managed roster, space admins
+  invite/remove in-app (`member.manage`); provider-keys vaulted note; **Roles & access** tab that edits
+  per-resource access policies.
 - Runs: show caller **subject + tenant** attribution.
 
 ## Part E - Real IAM wiring (later, not in scope)
@@ -145,7 +155,7 @@ IAM teams**. No backend in scope.
 - **Viewer:** read-only everywhere; create/edit/publish/manage hidden or disabled; read-only banner.
 - **Builder:** build + manage knowledge/tools/MCP + eval + playground; Publish gated.
 - **Publisher:** + publish/unpublish + endpoint tokens.
-- **Admin:** + keys, members (view/IAM deep-link), delete, and **configures per-resource access policies**.
+- **Admin:** + keys, members (invite/remove in-app), delete, and **configures per-resource access policies**.
 - **Restricted resource:** agent limited to team "SOC" is hidden/locked for a non-SOC builder and
   `policy_denied` for a caller token lacking SOC, even with the tool scopes.
 - **Cross-tenant user:** switching workspace re-derives role + visible resources.
@@ -171,5 +181,7 @@ IAM teams**. No backend in scope.
 
 ## Open decisions (recommended first)
 1. Viewer may use the playground read-only *(recommended)* vs builders+ only.
-2. Members read-only "manage in IAM" *(recommended)* vs in-app invite mock.
+2. ~~Members read-only "manage in IAM" vs in-app invite mock.~~ **Decided (2026-10-15): in-app invite /
+   join-open** — membership is the app-managed roster; space admins invite/remove, open spaces are
+   self-join. Identity (sign-in) still comes from org Okta.
 3. Sign out = reset role + toast *(recommended)* vs full stub login screen.

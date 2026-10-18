@@ -1,14 +1,24 @@
 import type { Role } from "./permissions";
 
+// Per-resource access policy. ONE shape shared by the FE and the backend (backend/09 §5, backend/01
+// `access_policy` jsonb). Three visibility tiers, modelled on Google Chat / MS Teams / Splunk sharing:
+//   workspace  — every space member may use/manage (default)        [Teams standard / Splunk "App"]
+//   restricted — gated by role AND team, separately for use/manage  [Teams private channel]
+//   private    — only the owner (+ space admins) may use/manage     [Splunk "Private"]
 export type AccessPolicy = {
-  visibility: "workspace" | "restricted";
+  visibility: "workspace" | "restricted" | "private";
   useRoles: Role[];
   useTeams: string[];
   manageRoles: Role[];
   manageTeams: string[];
+  // Set only when visibility === "private": the resource owner's subject (email/OIDC subject).
+  owner?: string;
 };
 
-export type Principal = { role: Role; teams: string[] };
+// `subject` is the caller's identity (email/OIDC subject). Present on the console (from the session);
+// absent at invoke time (token/channel callers have no owner identity) — so `private` resources are
+// denied to run-time callers except admin tokens, which is the intended fail-closed behavior.
+export type Principal = { role: Role; teams: string[]; subject?: string };
 
 export function defaultPolicy(): AccessPolicy {
   return { visibility: "workspace", useRoles: [], useTeams: [], manageRoles: [], manageTeams: [] };
@@ -24,24 +34,32 @@ function matches(roles: Role[], teams: string[], p: Principal): boolean {
   return roleOk && teamOk;
 }
 
+// A private resource is reachable only by its owner (by subject) — plus the admin bypass below.
+function isOwner(policy: AccessPolicy, p: Principal): boolean {
+  return !!p.subject && !!policy.owner && p.subject === policy.owner;
+}
+
 /** Can this principal USE (invoke / bind) the resource? Workspace admins can use anything in
     their workspace (RBAC: admin → all, B2 role model). */
 export function canUse(policy: AccessPolicy | undefined, p: Principal): boolean {
   if (!policy || policy.visibility === "workspace") return true;
   if (p.role === "admin") return true;
+  if (policy.visibility === "private") return isOwner(policy, p);
   return matches(policy.useRoles, policy.useTeams, p);
 }
 
 /** Can this principal MANAGE (edit / publish) the resource? Workspace admins can manage anything
-    (RBAC: admin → all, B2 role model) — notably so they can always fix a restricted policy. */
+    (RBAC: admin → all, B2 role model) — notably so they can always fix a restricted/private policy. */
 export function canManage(policy: AccessPolicy | undefined, p: Principal): boolean {
   if (!policy || policy.visibility === "workspace") return true;
   if (p.role === "admin") return true;
+  if (policy.visibility === "private") return isOwner(policy, p);
   return matches(policy.manageRoles, policy.manageTeams, p);
 }
 
 export function policySummary(policy: AccessPolicy | undefined): string {
   if (!policy || policy.visibility === "workspace") return "All workspace members";
+  if (policy.visibility === "private") return "Only the owner";
   const bits: string[] = [];
   if (policy.useRoles.length) bits.push(policy.useRoles.join(", "));
   if (policy.useTeams.length) bits.push(policy.useTeams.join(", "));

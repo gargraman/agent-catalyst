@@ -111,7 +111,7 @@ export default function RunsPage() {
                     <TD>
                       <span className="inline-flex items-center gap-1.5">
                         <Badge tone={isService ? "neutral" : "accent"}>{isService ? "Service" : "User"}</Badge>
-                        <span className="text-xs text-ink-2">{r.caller ?? (r.source === "API" ? "svc: catalyst-gateway" : "you")}</span>
+                        <span className="text-xs text-ink-2">{r.caller ?? (r.source === "API" ? "svc: platform-gateway" : "you")}</span>
                       </span>
                     </TD>
                     <TD className="whitespace-nowrap text-xs text-ink-2">{wsName(r.workspaceId)}</TD>

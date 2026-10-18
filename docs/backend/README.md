@@ -1,6 +1,6 @@
-# Agent Catalyst — Backend Implementation Design
+# Agent Platform — Backend Implementation Design
 
-> The **implementation-level** backend design for Agent Catalyst: the layer *beneath* `docs/spec.md`.
+> The **implementation-level** backend design for Agent Platform: the layer *beneath* `docs/spec.md`.
 > Where `scope.md` decides *whether*, `spec.md` decides *what*, this folder decides **how** — concrete
 > modules, DDL, interfaces, Pydantic/SSE schemas, and the two things most under-served elsewhere:
 > **guardrails** and **cost/COGS**. Code is real skeletons, copy-paste-adaptable.
@@ -36,6 +36,7 @@ containers); where it **extends or pushes back**, the delta is argued inline (se
 | 10 | [10-observability-monitoring.md](10-observability-monitoring.md) | Per-call log contract, Langfuse, metrics/SLOs/alerts, cost + drift monitoring, async job status |
 | 11 | [11-deployment.md](11-deployment.md) | Containers, compose→k8s, CI/CD + eval gate, secrets, scaling, zero-downtime, backup/DR |
 | 12 | [12-channels.md](12-channels.md) | **(P2)** Messaging channels (Slack/Teams/Google Chat) — inbound adapter, Okta federation, channel DDL, a fourth `invoke()` caller |
+| 13 | [13-branding.md](13-branding.md) | **White-labeling** — "organization" vs "workspace", per-deployment org config (`lib/org.ts` ↔ branding source), theme tokens (`app/brand.css`), how to onboard a new org |
 
 ## The two ideas that shape everything
 

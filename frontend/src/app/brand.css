@@ -1,0 +1,38 @@
+/* ============================================================
+   Brand theme — the ONE place for visual tokens (accent, radius, fonts).
+   Edit these to re-skin the app for a new organization; imported by globals.css.
+   Default theme = dark (@theme → :root). Light overrides below as a plain rule.
+   Identity strings/logo live separately in src/lib/org.ts. See frontend/BRANDING.md.
+
+   NOTE: changing the actual typeface also requires editing the next/font import in
+   src/app/layout.tsx — next/font needs static, module-scope calls, so a CSS variable
+   alone cannot swap the font family.
+   ============================================================ */
+@theme {
+  /* accent (brand) — dark defaults.
+     If you change --color-accent, also update the hardcoded accent in
+     src/app/icon.svg and re-export src/app/favicon.ico — static icon assets
+     can't read CSS variables, so they won't track this token automatically. */
+  --color-accent: #3987e5;
+  --color-accent-hover: #4e97ef;
+  --color-accent-soft: #15233a;
+  --color-accent-ink: #ffffff;
+
+  /* series s1 mirrors the accent — kept here with it to prevent drift (s2–s8 are the
+     brand-neutral dataviz palette and stay in globals.css) */
+  --color-s1: #3987e5;
+
+  --radius: 0.7rem;
+  --font-sans: var(--font-geist-sans), system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+/* accent (brand) — light overrides (win over :root via higher specificity) */
+:root.light {
+  --color-accent: #2a6fdb;
+  --color-accent-hover: #2360c4;
+  --color-accent-soft: #e8f0fc;
+  --color-accent-ink: #ffffff;
+
+  --color-s1: #2a78d6;
+}

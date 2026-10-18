@@ -2,6 +2,7 @@ import type { Agent } from "./data";
 import type { ChannelPlatform } from "./channels";
 import type { Role } from "./permissions";
 import { canUse, type Principal } from "./access-policy";
+import { DEFAULT_WORKSPACE_ID } from "./iam";
 
 export type RunCtx =
   | { mode: "session" }
@@ -41,11 +42,11 @@ export type RunResolution = {
 function decodeToken(token: string, agent: Agent): Omit<RunResolution, "grantedTools" | "deniedTools" | "grantedKbs" | "deniedKbs"> {
   const t = token.toLowerCase();
   const subjectType: "user" | "service" = t.includes("user") ? "user" : "service";
-  const tenant = t.includes("grc") ? "trellix-grc" : t.includes("labs") ? "trellix-labs" : (agent.workspaceId ?? "trellix-xdr");
+  const tenant = t.includes("grc") ? "trellix-grc" : t.includes("labs") ? "trellix-labs" : (agent.workspaceId ?? DEFAULT_WORKSPACE_ID);
   const role: Role = t.includes("admin") ? "admin" : t.includes("pub") ? "publisher" : t.includes("view") ? "viewer" : "builder";
   const teams = t.includes("soc") ? ["SOC"] : t.includes("grc") ? ["GRC"] : t.includes("plat") ? ["Platform"] : [];
   const status: RunStatus = t.includes("expired") ? "expired" : t.includes("revoked") ? "revoked"
-    : tenant !== (agent.workspaceId ?? "trellix-xdr") ? "tenant_mismatch" : "ok";
+    : tenant !== (agent.workspaceId ?? DEFAULT_WORKSPACE_ID) ? "tenant_mismatch" : "ok";
   const expiry = t.includes("expired") ? "expired 2d ago" : "in 29 days";
   // scope breadth: "full" grants all; otherwise a deterministic partial subset
   const full = t.includes("full");
@@ -54,7 +55,7 @@ function decodeToken(token: string, agent: Agent): Omit<RunResolution, "grantedT
 }
 
 export function resolveRun(ctx: RunCtx, agent: Agent, session: Session): RunResolution {
-  const agentTenant = agent.workspaceId ?? "trellix-xdr";
+  const agentTenant = agent.workspaceId ?? DEFAULT_WORKSPACE_ID;
   const base = ctx.mode === "session"
     ? {
         subjectType: "user" as const, tenant: session.tenant, role: session.role, teams: session.teams,
@@ -74,6 +75,8 @@ export function resolveRun(ctx: RunCtx, agent: Agent, session: Session): RunReso
       }
     : decodeToken(ctx.token, agent);
 
+  // Run-time callers (token/channel) carry no `subject`, so a `private` agent (owner-only) is denied
+  // here for everyone except an admin token — the intended fail-closed behavior (access-policy.ts).
   const principal: Principal = { role: base.role, teams: base.teams };
   const tools = agent.tools ?? [];
   const kbs = agent.knowledgeBases ?? [];

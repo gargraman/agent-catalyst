@@ -58,7 +58,7 @@ export default function NewChannelPage() {
       routing, identityMode,
       oktaGroup: oktaGroup.trim() || undefined,
       credentials: finalizeChannelCredentials(platform, creds),
-      webhookUrl: `https://catalyst.internal/channels/${platform}/events/${id}`,
+      webhookUrl: `https://agent-platform.internal/channels/${platform}/events/${id}`,
       installedBy: user.name,
       createdAt: nowIso(), updatedAt: nowIso(),
       workspaceId: workspace?.id,

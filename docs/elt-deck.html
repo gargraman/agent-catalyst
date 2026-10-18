@@ -1,0 +1,295 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Agent Platform — AI Champions ELT segment</title>
+<style>
+  /* ============================================================
+     Agent Platform — ELT deck. Self-contained, offline, 16:9.
+     Brand tokens mirror frontend/src/app/brand.css (accent #3987e5, dark default).
+     Nav: → / Space / click-right = next · ← = prev · F = fullscreen · Home/End.
+     Record in fullscreen at 1080p.
+     ============================================================ */
+  :root{
+    --accent:#3987e5; --accent-hi:#4e97ef; --accent-soft:#15233a;
+    --bg:#070a0f; --bg2:#0b1019; --ink:#eef2f7; --ink-dim:#aab4c2; --ink-faint:#67727f;
+    --line:rgba(255,255,255,.10); --line-soft:rgba(255,255,255,.055);
+    --card:rgba(255,255,255,.035); --card-hi:rgba(255,255,255,.015);
+    --radius:1.6rem; --ease:cubic-bezier(.32,.72,0,1);
+    --sans:"Geist",system-ui,-apple-system,"Segoe UI",sans-serif;
+    --mono:"Geist Mono",ui-monospace,"SF Mono",Menlo,monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{
+    background:var(--bg); color:var(--ink); font-family:var(--sans);
+    overflow:hidden; -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility;
+  }
+  /* ambient accent glow (fixed, no repaint on content) */
+  body::before{
+    content:""; position:fixed; inset:0; z-index:0; pointer-events:none;
+    background:
+      radial-gradient(60vw 60vw at 78% 18%, rgba(57,135,229,.16), transparent 60%),
+      radial-gradient(50vw 50vw at 12% 92%, rgba(57,135,229,.08), transparent 55%),
+      linear-gradient(180deg,var(--bg),var(--bg2));
+  }
+  .stage{position:fixed; inset:0; z-index:1}
+  .slide{
+    position:absolute; inset:0; display:flex; flex-direction:column; justify-content:center;
+    padding:clamp(3rem,7vw,8rem); opacity:0; pointer-events:none; visibility:hidden;
+    transition:opacity .7s var(--ease), visibility .7s var(--ease);
+  }
+  .slide.active{opacity:1; pointer-events:auto; visibility:visible}
+  .wrap{width:100%; max-width:1180px; margin:0 auto}
+
+  /* staggered reveal of children on the active slide */
+  .r{opacity:0; transform:translateY(22px); filter:blur(6px);
+     transition:opacity .8s var(--ease), transform .8s var(--ease), filter .8s var(--ease);}
+  .slide.active .r{opacity:1; transform:none; filter:none;
+     transition-delay:calc(var(--i,0)*90ms + 140ms);}
+
+  /* typography */
+  .eyebrow{display:inline-block; font-size:clamp(.62rem,.8vw,.72rem); letter-spacing:.26em;
+    text-transform:uppercase; color:var(--accent-hi); font-weight:600;
+    border:1px solid var(--line); border-radius:999px; padding:.4rem .85rem; background:var(--card);}
+  h1{font-size:clamp(2.6rem,6.2vw,5.2rem); line-height:1.02; letter-spacing:-.03em; font-weight:650;}
+  h2{font-size:clamp(2rem,4.6vw,3.7rem); line-height:1.05; letter-spacing:-.025em; font-weight:620;}
+  .lead{font-size:clamp(1.05rem,1.7vw,1.5rem); color:var(--ink-dim); line-height:1.5; max-width:46ch;}
+  .accent{color:var(--accent-hi)}
+  .foot{font-size:clamp(.72rem,1vw,.9rem); color:var(--ink-faint)}
+  .mono{font-family:var(--mono)}
+
+  /* wordmark */
+  .mark{display:flex; align-items:center; gap:.7rem}
+  .mark svg{width:2.4rem; height:2.4rem; color:var(--accent)}
+  .mark b{font-size:1.25rem; font-weight:620; letter-spacing:-.01em}
+  .mark span{color:var(--ink-faint); font-weight:450}
+
+  /* double-bezel card */
+  .card{background:var(--card-hi); border:1px solid var(--line-soft); border-radius:var(--radius); padding:.5rem;}
+  .card > .core{
+    background:linear-gradient(180deg,rgba(255,255,255,.04),rgba(255,255,255,.012));
+    border:1px solid var(--line); border-radius:calc(var(--radius) - .5rem);
+    padding:clamp(1.1rem,1.8vw,1.6rem); height:100%;
+    box-shadow:inset 0 1px 0 rgba(255,255,255,.06);
+  }
+  .grid3{display:grid; grid-template-columns:repeat(3,1fr); gap:1.1rem}
+  .kicker{font-size:.72rem; letter-spacing:.14em; text-transform:uppercase; color:var(--accent-hi); font-weight:600}
+  .card h3{font-size:clamp(1.1rem,1.5vw,1.35rem); font-weight:600; margin:.55rem 0 .4rem; letter-spacing:-.01em}
+  .card p{color:var(--ink-dim); font-size:clamp(.9rem,1.1vw,1rem); line-height:1.45}
+
+  /* gate / flow pills */
+  .flow{display:flex; align-items:center; flex-wrap:wrap; gap:.55rem}
+  .pill{border:1px solid var(--line); background:var(--card); border-radius:999px;
+    padding:.55rem 1.05rem; font-size:clamp(.82rem,1.05vw,1rem); font-weight:500; white-space:nowrap}
+  .pill.lock{border-color:rgba(57,135,229,.5); background:var(--accent-soft); color:var(--ink)}
+  .pill.ship{border-color:var(--accent); background:var(--accent); color:#fff; font-weight:600}
+  .arrow{color:var(--ink-faint); font-size:1.1rem}
+
+  /* numbered asks */
+  .asks{display:grid; gap:1rem}
+  .ask{display:flex; gap:1.1rem; align-items:flex-start}
+  .num{flex:0 0 auto; width:2.6rem; height:2.6rem; border-radius:999px; display:grid; place-items:center;
+    font-weight:650; font-size:1.1rem; color:var(--accent-hi);
+    border:1px solid rgba(57,135,229,.5); background:var(--accent-soft)}
+  .ask p{font-size:clamp(1.02rem,1.5vw,1.35rem); line-height:1.4; color:var(--ink); padding-top:.25rem}
+  .ask b{color:#fff}
+
+  .spacer{height:clamp(1.2rem,2.4vw,2.2rem)}
+  .spacer-sm{height:clamp(.7rem,1.4vw,1.1rem)}
+
+  /* chrome */
+  .chrome{position:fixed; z-index:3; bottom:1.4rem; left:0; right:0; display:flex;
+    align-items:center; justify-content:center; gap:1rem; pointer-events:none}
+  .dots{display:flex; gap:.5rem}
+  .dot{width:7px; height:7px; border-radius:999px; background:var(--line);
+    transition:background .4s var(--ease), transform .4s var(--ease)}
+  .dot.on{background:var(--accent); transform:scale(1.35)}
+  .count{position:fixed; z-index:3; bottom:1.2rem; right:1.6rem; font-size:.8rem; color:var(--ink-faint); font-family:var(--mono)}
+  .hint{position:fixed; z-index:3; bottom:1.2rem; left:1.6rem; font-size:.74rem; color:var(--ink-faint)}
+  .hint kbd{font-family:var(--mono); border:1px solid var(--line); border-radius:.35rem; padding:.05rem .35rem; color:var(--ink-dim)}
+  @media (max-width:760px){ .grid3{grid-template-columns:1fr} h1{font-size:2.5rem} }
+  @media print{ .chrome,.count,.hint{display:none} }
+</style>
+</head>
+<body>
+<div class="stage" id="stage">
+
+  <!-- 1 · Title -->
+  <section class="slide" data-i>
+    <div class="wrap">
+      <div class="mark r" style="--i:0; margin-bottom:2.2rem">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M12 2 4 6v6c0 5 3.5 8 8 10 4.5-2 8-5 8-10V6l-8-4Z"/><path d="M9 12l2 2 4-4"/>
+        </svg>
+        <b>Agent Platform</b><span>· Trellix</span>
+      </div>
+      <div class="eyebrow r" style="--i:1">Aligned with the AI Champions Program · ELT review</div>
+      <div class="spacer-sm"></div>
+      <h1 class="r" style="--i:2">The control plane that makes<br>the playbook <span class="accent">self&#8209;enforcing</span>.</h1>
+      <div class="spacer"></div>
+      <p class="lead r" style="--i:3">Build, test, and publish AI agents — registered, proven, and governed by default.</p>
+    </div>
+  </section>
+
+  <!-- 2 · Stakes -->
+  <section class="slide" data-i>
+    <div class="wrap">
+      <div class="eyebrow r" style="--i:0">The risk today</div>
+      <div class="spacer-sm"></div>
+      <h2 class="r" style="--i:1">Around forty agents.<br>Almost <span class="accent">zero enforcement</span>.</h2>
+      <div class="spacer"></div>
+      <div class="grid3">
+        <div class="card r" style="--i:2"><div class="core">
+          <div class="kicker">Risk</div><h3>Security &amp; compliance exposure</h3>
+          <p>Ungoverned agents with unscoped access and no audit trail.</p>
+        </div></div>
+        <div class="card r" style="--i:3"><div class="core">
+          <div class="kicker">Cost</div><h3>Duplicated spend</h3>
+          <p>The same agent built twice — and no ceiling on per-agent spend.</p>
+        </div></div>
+        <div class="card r" style="--i:4"><div class="core">
+          <div class="kicker">Quality</div><h3>Silent drift</h3>
+          <p>A model update degrades an agent. Customers notice first.</p>
+        </div></div>
+      </div>
+      <div class="spacer"></div>
+      <p class="lead r" style="--i:5">The AI Champions Playbook set the rules. <span class="accent">Nothing makes them stick.</span></p>
+    </div>
+  </section>
+
+  <!-- 3 · The answer -->
+  <section class="slide" data-i>
+    <div class="wrap">
+      <div class="eyebrow r" style="--i:0">Aligns with the playbook</div>
+      <div class="spacer-sm"></div>
+      <h2 class="r" style="--i:1">The governance layer every<br>agent <span class="accent">passes through</span>.</h2>
+      <div class="spacer"></div>
+      <div class="flow r" style="--i:2">
+        <span class="pill">Register</span><span class="arrow">&rarr;</span>
+        <span class="pill">Evaluate</span><span class="arrow">&rarr;</span>
+        <span class="pill">Scope access</span><span class="arrow">&rarr;</span>
+        <span class="pill lock">Gate &#128274;</span><span class="arrow">&rarr;</span>
+        <span class="pill ship">Ship</span>
+      </div>
+      <div class="spacer"></div>
+      <p class="lead r" style="--i:3">If it isn't registered, evaluated, and scoped — <span class="accent">it doesn't ship.</span>
+      Agent Platform <span class="accent">aligns with</span> the playbook: it's how its rules get enforced — not the program itself.</p>
+      <div class="spacer"></div>
+      <p class="foot r" style="--i:4">A working prototype of the full experience, plus a focused build of the one genuinely hard part — the evaluation &amp; drift core.</p>
+    </div>
+  </section>
+
+  <!-- 4 · RBAC + cost/model governance -->
+  <section class="slide" data-i>
+    <div class="wrap">
+      <div class="eyebrow r" style="--i:0">Who can do what</div>
+      <div class="spacer-sm"></div>
+      <h2 class="r" style="--i:1">Role-based, <span class="accent">least-privilege</span> by default.</h2>
+      <div class="spacer"></div>
+      <div class="flow r" style="--i:2">
+        <span class="pill">Viewer</span><span class="arrow">&rarr;</span>
+        <span class="pill">Builder</span><span class="arrow">&rarr;</span>
+        <span class="pill">Publisher</span><span class="arrow">&rarr;</span>
+        <span class="pill lock">Admin</span>
+      </div>
+      <div class="spacer"></div>
+      <div class="grid3">
+        <div class="card r" style="--i:3"><div class="core">
+          <div class="kicker">Builder &rarr; Publisher</div><h3>Build vs. ship</h3>
+          <p>A builder configures agents but can't publish. Only a publisher ships to production.</p>
+        </div></div>
+        <div class="card r" style="--i:4"><div class="core">
+          <div class="kicker">Admin only</div><h3>Cost &amp; model control</h3>
+          <p>Per-agent budgets, token caps, and which models an agent may use — no quiet runaway spend.</p>
+        </div></div>
+        <div class="card r" style="--i:5"><div class="core">
+          <div class="kicker">Admin only</div><h3>Access &amp; keys</h3>
+          <p>Who can reach what, and the API keys — governed in one place.</p>
+        </div></div>
+      </div>
+      <div class="spacer"></div>
+      <p class="foot r" style="--i:6">Roles come straight from Trellix Okta — no second identity system.</p>
+    </div>
+  </section>
+
+  <!-- 5 · Channels (non-tech reach) -->
+  <section class="slide" data-i>
+    <div class="wrap">
+      <div class="eyebrow r" style="--i:0">Reach</div>
+      <div class="spacer-sm"></div>
+      <h2 class="r" style="--i:1">Anyone can use an agent —<br><span class="accent">no code, no keys</span>.</h2>
+      <div class="spacer"></div>
+      <div class="flow r" style="--i:2">
+        <span class="pill">Slack</span>
+        <span class="pill">Microsoft Teams</span>
+        <span class="pill">Google Chat</span>
+      </div>
+      <div class="spacer"></div>
+      <p class="lead r" style="--i:3">A non-technical employee just <span class="accent">talks to the agent</span> where they already work.</p>
+      <div class="spacer"></div>
+      <div class="grid3" style="grid-template-columns:repeat(2,1fr); max-width:760px">
+        <div class="card r" style="--i:4"><div class="core">
+          <div class="kicker">Identity</div><h3>Federated from Okta</h3>
+          <p>No forwarded tokens — identity is verified, then a short-lived token is minted server-side.</p>
+        </div></div>
+        <div class="card r" style="--i:5"><div class="core">
+          <div class="kicker">Two gates</div><h3>Channel + agent policy</h3>
+          <p>Who's allowed on the channel, and what each agent permits. Everyone sees only what they're cleared for.</p>
+        </div></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 6 · Close -->
+  <section class="slide" data-i>
+    <div class="wrap" style="text-align:center">
+      <h2 class="r" style="--i:0; max-width:20ch; margin:0 auto">The playbook is the law.<br><span class="accent">This is how it enforces itself.</span></h2>
+      <p class="lead r" style="--i:1; max-width:58ch; margin:1.6rem auto 0">Agent Platform aligns with the AI Champions Playbook — one console for the whole agent lifecycle. Adopt it as where agents are registered, proven, and governed, and let us prove it on one area first.</p>
+      <div class="spacer"></div>
+      <div class="mark r" style="--i:2; justify-content:center">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M12 2 4 6v6c0 5 3.5 8 8 10 4.5-2 8-5 8-10V6l-8-4Z"/><path d="M9 12l2 2 4-4"/>
+        </svg>
+        <b>Agent Platform</b><span>· the control plane for our agents</span>
+      </div>
+    </div>
+  </section>
+
+</div>
+
+<div class="chrome"><div class="dots" id="dots"></div></div>
+<div class="count" id="count"></div>
+<div class="hint"><kbd>&larr;</kbd> <kbd>&rarr;</kbd> navigate · <kbd>F</kbd> fullscreen</div>
+
+<script>
+  var slides = Array.prototype.slice.call(document.querySelectorAll('.slide'));
+  var dotsEl = document.getElementById('dots');
+  var countEl = document.getElementById('count');
+  var i = 0;
+  slides.forEach(function(_, n){
+    var d = document.createElement('div'); d.className = 'dot'; d.onclick = function(){ go(n); };
+    d.style.pointerEvents = 'auto'; dotsEl.appendChild(d);
+  });
+  var dots = Array.prototype.slice.call(dotsEl.children);
+  function render(){
+    slides.forEach(function(s,n){ s.classList.toggle('active', n===i); });
+    dots.forEach(function(d,n){ d.classList.toggle('on', n===i); });
+    countEl.textContent = (i+1) + ' / ' + slides.length;
+  }
+  function go(n){ i = Math.max(0, Math.min(slides.length-1, n)); render(); }
+  function next(){ go(i+1); } function prev(){ go(i-1); }
+  document.addEventListener('keydown', function(e){
+    if(e.key==='ArrowRight'||e.key===' '||e.key==='PageDown'||e.key==='ArrowDown'){ e.preventDefault(); next(); }
+    else if(e.key==='ArrowLeft'||e.key==='PageUp'||e.key==='ArrowUp'){ e.preventDefault(); prev(); }
+    else if(e.key==='Home'){ go(0); } else if(e.key==='End'){ go(slides.length-1); }
+    else if(e.key==='f'||e.key==='F'){ if(!document.fullscreenElement){ document.documentElement.requestFullscreen&&document.documentElement.requestFullscreen(); } else { document.exitFullscreen&&document.exitFullscreen(); } }
+  });
+  document.getElementById('stage').addEventListener('click', function(e){
+    var x = e.clientX / window.innerWidth; if(x > 0.32) next(); else prev();
+  });
+  render();
+</script>
+</body>
+</html>

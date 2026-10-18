@@ -50,6 +50,14 @@ export const MEMBERS: Member[] = [
   { name: "Sofia Rossi", email: `sofia.rossi@${ORG.emailDomain}`, role: "Publisher", lastActive: "2026-10-02T16:30:00Z" },
 ];
 
+// @backend workspace_invites (backend/01 §4.1) — a pending invite to join a space, issued by a space
+//   admin. GET/POST /v1/workspaces/:id/invites, DELETE …/invites/:id (backend/08). Membership is
+//   app-managed (invite / join-open), not an IAM-directory read.
+export type Invite = { email: string; role: Member["role"]; invitedBy: string; invitedAt: string; status: "pending" };
+export const INVITES: Invite[] = [
+  { email: `jordan.lee@${ORG.emailDomain}`, role: "Builder", invitedBy: "Raman Garg", invitedAt: "2026-10-13T10:00:00Z", status: "pending" },
+];
+
 export type Version = {
   label: string;
   status: "published" | "evaluated" | "draft" | "deprecated";
@@ -799,7 +807,7 @@ export type Channel = {
   identityMode: "federated" | "service";
   oktaGroup?: string; // Okta group granted this channel's workspace
   credentials: Record<string, CredentialRef>; // keyed by credentialField key; masked only
-  webhookUrl?: string; // the Catalyst ingress URL registered in the platform
+  webhookUrl?: string; // the Agent Platform ingress URL registered in the platform
   installedBy: string;
   createdAt: string;
   updatedAt: string;
@@ -817,7 +825,7 @@ export const CHANNELS_SEED: Channel[] = [
       botToken: { masked: "xoxb-7••••••••a4f2", vaultPath: "vault://channel/slack-soc-bot" },
       signingSecret: { masked: "9f1a••••••••c7d0", vaultPath: "vault://channel/slack-soc-sign" },
     },
-    webhookUrl: "https://catalyst.internal/channels/slack/events/slack-soc",
+    webhookUrl: "https://agent-platform.internal/channels/slack/events/slack-soc",
     installedBy: "Priya Nair", createdAt: "2026-09-18T10:00:00Z", updatedAt: "2026-10-03T12:00:00Z",
     lastEventAt: "2026-10-04T09:16:00Z",
   },
@@ -828,7 +836,7 @@ export const CHANNELS_SEED: Channel[] = [
     credentials: {
       serviceAccountKey: { masked: "svc-••••••••d30b", vaultPath: "vault://channel/gchat-people-sa" },
     },
-    webhookUrl: "https://catalyst.internal/channels/gchat/events/gchat-people",
+    webhookUrl: "https://agent-platform.internal/channels/gchat/events/gchat-people",
     installedBy: "Diego Fuentes", createdAt: "2026-09-22T09:00:00Z", updatedAt: "2026-10-02T15:30:00Z",
     lastEventAt: "2026-10-04T09:15:20Z", workspaceId: "trellix-people",
   },

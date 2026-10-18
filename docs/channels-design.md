@@ -1,7 +1,7 @@
 # Messaging-app channels — design & impact
 
 > Let people **talk to hosted agents from Slack / Microsoft Teams / Google Chat** instead of calling
-> `POST /v1/agents/:id/invoke` with cURL/TS/Python. Agent Catalyst becomes the host; the chat app is the
+> `POST /v1/agents/:id/invoke` with cURL/TS/Python. Agent Platform becomes the host; the chat app is the
 > client. This doc is the cross-cutting design + impact; the backend module spec is `backend/12-channels.md`.
 >
 > Read `scope.md` → `spec.md` → `backend/` first. This extends `spec.md §7 Export & integration`, which
@@ -10,7 +10,7 @@
 ## 1. What a channel is
 
 A **Channel** is a connected messaging-app installation (one Slack workspace / one Teams tenant / one
-Google Chat space-set) bound to **one Agent Catalyst workspace** and routing to **many agents** inside
+Google Chat space-set) bound to **one Agent Platform workspace** and routing to **many agents** inside
 it. It is a new *distribution surface* on top of the existing published runtime — not a new runtime.
 
 ```
@@ -24,7 +24,7 @@ server-side**; binding = **one channel → one workspace → many agents**.
 ## 2. Identity — federate, don't forward (the load-bearing part)
 
 Each platform authenticates the user against **its own** IdP and hands the bot **its own** credential
-(a Google/Entra/Slack token whose audience is the bot) — never an Okta token, never valid at Catalyst.
+(a Google/Entra/Slack token whose audience is the bot) — never an Okta token, never valid at Agent Platform.
 So we federate on the *verified identity*, and mint our own token:
 
 1. **Verify the inbound webhook signature** — the trust anchor. Since we trust the platform's assertion
@@ -32,7 +32,7 @@ So we federate on the *verified identity*, and mint our own token:
    "@alice really said this" and a spoofed request. Per-platform scheme — see §5.
 2. **Read the platform-asserted verified email** + thread id + routed agent. Requires the platform to
    expose email (Slack needs the `users:read.email` scope) and for it to match the Okta identity.
-3. **Mint server-side.** email → Okta subject → short-lived Catalyst token carrying
+3. **Mint server-side.** email → Okta subject → short-lived Agent Platform token carrying
    `{subject, workspace, role, teams(=Okta groups), scopes}`. Use true token exchange where the platform
    supports it (**Teams → Entra on-behalf-of**); otherwise mint directly for the mapped Okta subject
    after verifying the asserted email (**Slack, Google Chat**). Service-to-service uses an **Okta service
@@ -96,7 +96,7 @@ export type Channel = {
   identityMode: "federated" | "service";
   oktaGroup?: string;                   // Okta group granted this channel's workspace
   credentials: Record<string, CredentialRef>; // MULTI-SECRET (extends today's single-ref model)
-  webhookUrl?: string;                  // Catalyst ingress URL registered in the platform
+  webhookUrl?: string;                  // Agent Platform ingress URL registered in the platform
   installedBy: string; createdAt: string; updatedAt: string; lastEventAt?: string;
   accessPolicy?: AccessPolicy;          // who may MANAGE this binding (builders/admins)
 };

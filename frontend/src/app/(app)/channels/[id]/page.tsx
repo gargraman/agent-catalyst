@@ -14,6 +14,7 @@ import { StatTile } from "@/components/stat-tile";
 import { ConfirmDialog } from "@/components/dialog";
 import { AccessPolicyEditor } from "@/components/access-policy-editor";
 import { useAuth, usePrincipal, useWorkspace } from "@/lib/auth";
+import { DEFAULT_WORKSPACE_ID } from "@/lib/iam";
 import { canManage } from "@/lib/access-policy";
 import { CHANNEL_DEFS } from "@/lib/channels";
 import { resolveRun, statusLabel, type RunCtx, type Session } from "@/lib/runtime-access";
@@ -57,7 +58,7 @@ export default function ChannelDetailPage() {
   const boundAgents = channel.agentIds.map((aid) => agents.find((a) => a.id === aid)).filter(Boolean) as typeof agents;
   const target = agents.find((a) => a.id === (channel.defaultAgentId ?? channel.agentIds[0]));
   const manage = canManage(channel.accessPolicy, principal);
-  const tenant = channel.workspaceId ?? workspace?.id ?? "trellix-xdr";
+  const tenant = channel.workspaceId ?? workspace?.id ?? DEFAULT_WORKSPACE_ID;
 
   // Access preview for the default agent, using the channel RunCtx arm — the federated Okta user
   // resolves to a real principal, then is gated by the agent's own access policy.

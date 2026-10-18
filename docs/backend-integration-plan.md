@@ -1,4 +1,4 @@
-# Agent Catalyst — Backend build, frontend integration, deployment & multi-tenancy
+# Agent Platform — Backend build, frontend integration, deployment & multi-tenancy
 
 > Companion to `docs/scope.md` and `docs/spec.md`. Roadmap-level plan (steps + complexity + options),
 > not a line-level implementation plan.
@@ -175,7 +175,7 @@ reverse proxy.
      dev role/team switcher (deleted when real IAM lands).
    - *Caller token (runtime):* `runtime-access.ts`'s decode is a **Playground preview only**; the server
      validates the caller JWT and computes effective access at invoke.
-   - *Per-resource access policies:* persisted via `PUT /api/v1/{agents|knowledge|tools|mcp}/:id/access-policy`
+   - *Per-resource access policies:* persisted via `PUT /api/v1/{agents|knowledge|tools|mcp|channels}/:id/access-policy`
      and **re-enforced server-side** on read/manage and at invoke; client `canUse`/`canManage` are
      UI-gating only. See `frontend-auth-access-plan.md`.
 4. **Streaming** — wire the Playground (standalone `/playground` + the agent-detail tab, both canned
@@ -201,8 +201,8 @@ reverse proxy.
 | `useRuns`/`useRunsForAgent`, dashboard/runs charts + stat tiles | `GET /api/v1/runs[?workspace=:id` \| `/:id]`, `GET /api/v1/metrics/{spend,volume,latency,activity}` |
 | Publish & Export, endpoint OpenAPI/snippets | `POST /api/v1/versions/:vid/publish` (**409** if no PASS eval), `POST /api/v1/agents/:id/repoint`, `GET /api/v1/endpoints/:eid/export?format=curl\|ts\|python`, `GET …/openapi.json` |
 | `useTokens`, `addToken`, `revokeToken` | `GET`/`POST /api/v1/agents/:id/tokens` (secret shown once), `DELETE /api/v1/tokens/:id` |
-| `useProviderKeys`, `addProviderKey` (+rotate/revoke), `useMembers` | `GET /api/v1/provider-keys?workspace=:id`, `POST /api/v1/provider-keys` (+`/rotate`,`/revoke`; admin), `GET /api/v1/members?workspace=:id` (IAM read-only; Invite deep-links to IAM) |
-| `setAccessPolicy`, `canUse`/`canManage` | `PUT /api/v1/{agents\|knowledge\|tools\|mcp}/:id/access-policy` (admin; server-enforced) |
+| `useProviderKeys`, `addProviderKey` (+rotate/revoke), `useMembers`/`useInvites`, `inviteMember`/`revokeInvite`/`removeMember`/`joinWorkspace` | `GET /api/v1/provider-keys?workspace=:id`, `POST /api/v1/provider-keys` (+`/rotate`,`/revoke`; admin), `GET /api/v1/members?workspace=:id` (app-managed roster), `POST`/`GET /api/v1/workspaces/:id/invites` + `DELETE …/invites/:id`, `DELETE /api/v1/members/:id` (`member.manage`), `POST /api/v1/workspaces/:id/join` (self-join open spaces) |
+| `setAccessPolicy`, `canUse`/`canManage` | `PUT /api/v1/{agents\|knowledge\|tools\|mcp\|channels}/:id/access-policy` (admin; server-enforced) |
 | Guardrails tab, topbar/list search | `GET`/`PUT /api/v1/agents/:id/guardrails`, `GET /api/v1/search?q=` |
 | Playground `send()` / published invoke, run feedback | `POST /v1/agents/:id/invoke` (SSE; token or session; `run_source`), `POST /v1/runs/:id/feedback` |
 

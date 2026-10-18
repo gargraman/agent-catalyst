@@ -10,6 +10,8 @@ import { CircleCheck, Database, KeyRound, Lock, Send, TriangleAlert, UserRound, 
 import { Badge, Button, Card, CardContent, CardHeader, CardTitle, Field, Input } from "@/components/ui";
 import { Segmented } from "@/components/tabs";
 import { useAuth, useWorkspace } from "@/lib/auth";
+import { ORG } from "@/lib/org";
+import { DEFAULT_WORKSPACE_ID } from "@/lib/iam";
 import { resolveRun, statusLabel as runStatusLabel, type RunCtx } from "@/lib/runtime-access";
 import { getKb, type Agent } from "@/lib/data";
 import { usd } from "@/lib/format";
@@ -39,7 +41,7 @@ export function Playground({ agent, version }: { agent: Agent; version?: string 
   const [runMode, setRunMode] = React.useState<"session" | "token">("session");
   const [token, setToken] = React.useState("");
 
-  const session = { tenant: workspace?.id ?? agent.workspaceId ?? "trellix-xdr", role, teams };
+  const session = { tenant: workspace?.id ?? agent.workspaceId ?? DEFAULT_WORKSPACE_ID, role, teams };
   const ctx: RunCtx = runMode === "session" ? { mode: "session" } : { mode: "token", token };
   // resolveRun is pure and cheap; compute it per render (no memo deps to keep in sync).
   const res = resolveRun(ctx, agent, session);
@@ -96,7 +98,7 @@ export function Playground({ agent, version }: { agent: Agent; version?: string 
             />
             {runMode === "token" && (
               <Field label="Caller token" hint="Try: user-soc-full, svc-grc, publisher-partial, expired, revoked">
-                <Input value={token} onChange={(e) => setToken(e.target.value)} placeholder="Paste a Trellix IAM token" />
+                <Input value={token} onChange={(e) => setToken(e.target.value)} placeholder={`Paste a ${ORG.idpName} token`} />
               </Field>
             )}
             <div className="grid grid-cols-2 gap-2 text-xs">

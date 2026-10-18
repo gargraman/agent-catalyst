@@ -1,9 +1,11 @@
 @import "tailwindcss";
+@import "./brand.css"; /* brand tokens: accent, radius, fonts, series s1 (one source of truth for look & feel) */
 
 /* ============================================================
-   Agent Catalyst - design tokens
+   Agent Platform - neutral design tokens
    Default theme = dark. `.light` on <html> flips to light.
-   Data/series + status colors come from the validated dataviz palette.
+   Brand/accent tokens live in brand.css; status + series s2–s8 come from the
+   validated dataviz palette and are brand-neutral (do not theme per org).
    ============================================================ */
 @theme {
   /* surfaces (dark defaults) */
@@ -19,20 +21,13 @@
   --color-ink-2: #b9b9c2;
   --color-muted: #83838f;
 
-  /* accent (brand blue) */
-  --color-accent: #3987e5;
-  --color-accent-hover: #4e97ef;
-  --color-accent-soft: #15233a;
-  --color-accent-ink: #ffffff;
-
   /* status (fixed, never themed) */
   --color-good: #0ca30c;
   --color-warning: #fab219;
   --color-serious: #ec835a;
   --color-critical: #d03b3b;
 
-  /* categorical series (dark steps) */
-  --color-s1: #3987e5;
+  /* categorical series (dark steps) — s1 lives in brand.css (mirrors accent) */
   --color-s2: #d95926;
   --color-s3: #199e70;
   --color-s4: #c98500;
@@ -40,10 +35,6 @@
   --color-s6: #2e9e2e;
   --color-s7: #9085e9;
   --color-s8: #e66767;
-
-  --radius: 0.7rem;
-  --font-sans: var(--font-geist-sans), system-ui, -apple-system, "Segoe UI", sans-serif;
-  --font-mono: var(--font-geist-mono), ui-monospace, "SF Mono", Menlo, monospace;
 }
 
 /* light theme overrides (win over :root via higher specificity) */
@@ -59,12 +50,7 @@
   --color-ink-2: #52514e;
   --color-muted: #898781;
 
-  --color-accent: #2a6fdb;
-  --color-accent-hover: #2360c4;
-  --color-accent-soft: #e8f0fc;
-  --color-accent-ink: #ffffff;
-
-  --color-s1: #2a78d6;
+  /* accent + series s1 light overrides live in brand.css */
   --color-s2: #eb6834;
   --color-s3: #1baf7a;
   --color-s4: #eda100;

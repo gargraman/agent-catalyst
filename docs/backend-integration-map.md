@@ -32,10 +32,10 @@ Legend: **Auth** = console session (signed-in user, RBAC) vs caller token (runti
 |---|---|---|---|---|---|
 | `lib/org.ts:ORG` | GET /v1/branding (or deploy env/config) | - | - | - | **Per-deployment org branding** (orgName, productName, idpName, email/docs domain, logo). One deployment per org; branding resolved at deploy/build time. Sits **above** workspace tenancy (not tenant-scoped). Color/radius/font tokens live in `app/brand.css`; default tenant is seed-derived (`iam.ts:DEFAULT_WORKSPACE_ID`), not branding. See `docs/backend/13-branding.md`. |
 | `lib/auth.tsx:MOCK_PROFILE` | OIDC session | session | - | - | Replace mock profile with Auth.js + Trellix IAM OIDC; `useAuth`/`useWorkspace`/`usePrincipal` surface unchanged. |
-| `lib/iam.ts:WORKSPACES/TEAMS/MOCK_PROFILE` | GET (IAM directory) | session | - | - | Workspaces, teams, role-per-workspace memberships from IAM for this registered product. |
-| `lib/store.ts:setActiveWorkspace` | session / persist | session | yes | - | Active workspace from session; list from IAM memberships. |
+| `lib/iam.ts:WORKSPACES/TEAMS/MOCK_PROFILE` | GET (org Okta + app roster) | session | - | - | Identity + teams (Okta `groups` claim); workspaces carry `access` (open/restricted); role-per-workspace is the **app-managed** membership roster (invite / join-open). |
+| `lib/store.ts:setActiveWorkspace` · `joinWorkspace` | session / persist · POST /v1/workspaces/:id/join | session | yes | - | Active workspace from session; member list from the app roster. `joinWorkspace` self-joins an open space (default role). |
 | `lib/store.ts:setRoleOverride/setTeamOverride` | remove | - | - | - | Dev-only preview switches; delete with real IAM (also the switcher UI in `app-shell.tsx`). |
-| `app/(app)/layout.tsx`, `components/app-boundary.tsx` | gate | session | yes | - | No-access / workspace-picker screens driven by OIDC session + memberships. |
+| `app/(app)/layout.tsx`, `components/app-boundary.tsx` | gate | session | yes | - | No-access / space-picker screens driven by the Okta session + app roster; picker offers **Join** on open spaces (no member *and* no open space → no access). |
 
 ## Agents
 
@@ -148,7 +148,8 @@ Legend: **Auth** = console session (signed-in user, RBAC) vs caller token (runti
 | `lib/store.ts:useProviderKeys` | GET /v1/provider-keys?workspace=:id | session | yes | - | Masked. |
 | `lib/store.ts:addProviderKey` | POST /v1/provider-keys | session (admin) | yes | - | Stored in vault; value never returned. |
 | `lib/store.ts:rotateProviderKey` / `revokeProviderKey` | POST /v1/provider-keys/:id/rotate\|revoke | session (admin) | yes | - | Rotate replaces the vaulted secret + mask; revoke tombstones (status=revoked). Audited (09 §12). |
-| `lib/store.ts:useMembers` | GET /v1/members?workspace=:id | session | yes | - | IAM-sourced, read-only; Invite deep-links to IAM (no POST). (`addMember` removed — membership is IAM-managed.) |
+| `lib/store.ts:useMembers` · `useInvites` | GET /v1/members · GET /v1/workspaces/:id/invites | session | yes | - | Space roster + pending invites (app-managed). Identity from org Okta. |
+| `lib/store.ts:inviteMember` · `revokeInvite` · `removeMember` | POST /v1/workspaces/:id/invites · DELETE …/invites/:id · DELETE /v1/members/:id | session (admin) | yes | - | Space admin (`member.manage`) manages the roster — replaces the old IAM deep-link. |
 | `settings/page.tsx:RolesAccess` → `lib/store.ts:setAccessPolicy` | PUT /v1/{agents\|knowledge\|tools\|mcp\|channels}/:id/access-policy | session (admin) | yes | - | Roles & access tab now EDITS per-resource policies across all 5 kinds (incl. channels) via `AccessPolicyEditor`. |
 
 ## Guardrails & search

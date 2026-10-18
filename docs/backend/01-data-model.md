@@ -58,7 +58,9 @@ create type run_status        as enum ('success','error','blocked');
 create type provider_name     as enum ('anthropic','openai','google','mistral','meta','azure','bedrock');
 -- DEPRECATED: ingestion status uses job_status via the generic `jobs` table (§4.8); this enum is unused. Kept only to avoid a migration churn; do not reference in new DDL.
 create type ingest_status     as enum ('queued','running','completed','failed');
-create type member_role       as enum ('admin','publisher','builder','viewer');
+create type member_role       as enum ('admin','publisher','builder','viewer');  -- 'admin' = Space Manager (09 §4)
+create type workspace_access   as enum ('open','restricted');                    -- open = any org member can join; restricted = invite-only (09 §2.1)
+create type invite_status      as enum ('pending','accepted','revoked','expired');
 create type tool_kind         as enum ('http','builtin','subagent','mcp');       -- mcp used P2
 create type data_source_kind  as enum ('file','web','connector','manual');       -- web/connector ingestion P2; FE connector config+credential capture ships ahead of it
 create type job_kind          as enum ('ingestion','eval','mcp_discovery','reingest');
@@ -80,7 +82,9 @@ create table workspaces (
   id          uuid primary key default gen_random_uuid(),
   org_id      uuid not null references orgs(id),
   slug        text not null,                    -- "trellix-xdr", "trellix-people-ops" (matches FE). Immutable: it is the published-endpoint URL segment.
-  name        text not null,                    -- IAM-owned identity (read-only in the console)
+  name        text not null,                    -- display name (app-editable, admin)
+  access_mode workspace_access not null default 'restricted',  -- FE Workspace.access — open = joinable by any org member; restricted = invite-only (09 §2.1, §3)
+  okta_group  text,                             -- FE Workspace.oktaGroup — OPTIONAL backing Okta group that auto-grants membership; NULL = pure invite/join. Not authoritative; roster below is SoR.
   default_provider provider_name,              -- FE WorkspaceSettings.defaultProvider (app-editable, admin; PATCH /workspaces/:id)
   default_model text,                           -- FE WorkspaceSettings.defaultModel (app-editable, admin)
   archived_at   timestamptz,                   -- set by POST /workspaces/:id/archive (unpublishes the workspace's endpoints)
@@ -89,19 +93,39 @@ create table workspaces (
   unique (org_id, slug)
 );
 
--- Membership is IAM-sourced (read-mostly). Role is per-workspace (spec B12, frontend MEMBERS).
+-- Membership is APP-MANAGED (the system of record): a row is created by a space admin's invite acceptance
+-- or by a user self-joining an `access_mode = 'open'` space (09 §2.1, §3). Identity (subject/email) comes
+-- from org Okta; the roster + per-workspace role live here. An optional `workspaces.okta_group` may auto-
+-- upsert rows at the default join role, but is not authoritative.
 -- Scope: this table is workspace access + role ONLY. The `teams` dimension is NOT stored here (or anywhere):
 -- teams are Okta groups read live from the OIDC `groups` claim per request (09 §2.1) / the channel-minted
 -- token (12 §4). So "team" membership has no row — do not add a teams column or join table for it.
 create table memberships (
   id            uuid primary key default gen_random_uuid(),
   workspace_id  uuid not null references workspaces(id),
-  subject_id    text not null,                  -- OIDC subject (IAM user id)
+  subject_id    text not null,                  -- OIDC subject (org Okta user id)
   email         text not null,
   display_name  text not null,
   role          member_role not null,
+  invited_by    text,                           -- subject of the admin who invited (null for self-join / backing-group)
+  joined_at     timestamptz not null default now(),
   last_active_at timestamptz,
   unique (workspace_id, subject_id)
+);
+
+-- Pending invitations to join a restricted (or any) space, issued by a space admin (09 §4). On accept, a
+-- `memberships` row is created at `role` and the invite is marked accepted. FE: Invite (data.ts).
+create table workspace_invites (
+  id            uuid primary key default gen_random_uuid(),
+  workspace_id  uuid not null references workspaces(id),
+  email         text not null,                  -- invitee (org Okta email)
+  role          member_role not null,           -- role granted on accept
+  invited_by    text not null,                  -- admin subject
+  status        invite_status not null default 'pending',
+  token_hash    text,                           -- sha256 of the accept token (we store only the hash)
+  expires_at    timestamptz,
+  created_at    timestamptz not null default now(),
+  unique (workspace_id, email)
 );
 ```
 
@@ -120,8 +144,9 @@ create table agents (
   -- pointers (mutable):
   active_version_id uuid,                        -- FK added after agent_versions (circular); see note
   drift         drift_state not null default 'none',
-  -- access policy (frontend AccessPolicy) stored as jsonb; enforced server-side (09)
-  access_policy jsonb not null default '{"mode":"workspace"}'::jsonb,
+  -- access policy (frontend AccessPolicy) stored as jsonb; enforced server-side (09 §5). Shape:
+  -- { visibility: 'workspace'|'restricted'|'private', useRoles[], useTeams[], manageRoles[], manageTeams[], owner? }
+  access_policy jsonb not null default '{"visibility":"workspace"}'::jsonb,
   created_at    timestamptz not null default now(),
   updated_at    timestamptz not null default now(),
   unique (workspace_id, slug)
@@ -207,7 +232,7 @@ create table knowledge_bases (
   embedding_dim   int  not null,                -- e.g. 1536 / 3072 — fixes the vector column width
   chunk_config    jsonb not null default '{}',  -- size, overlap, structure-aware flags (04)
   index_version   int  not null default 1,      -- bumped on re-ingest; part of reproducibility (04)
-  access_policy   jsonb not null default '{"mode":"workspace"}'::jsonb,  -- FE KnowledgeBase.accessPolicy; server enforces on read/manage + at invoke (09). PUT /knowledge/:id/access-policy (08)
+  access_policy   jsonb not null default '{"visibility":"workspace"}'::jsonb,  -- FE KnowledgeBase.accessPolicy; server enforces on read/manage + at invoke (09). PUT /knowledge/:id/access-policy (08)
   created_at      timestamptz not null default now(),
   unique (workspace_id, slug)
 );
@@ -357,7 +382,7 @@ create table tools (
   description   text not null default '',
   schema        jsonb not null default '{}',     -- JSON schema of args (FE HttpToolConfig.argsSchema)
   config        jsonb not null default '{}',     -- FE HttpToolConfig {method,url,auth,authRef:{masked,vaultPath},headers}; egress allow-list. Raw creds vaulted; only authRef persisted (09)
-  access_policy jsonb not null default '{"mode":"workspace"}'::jsonb,
+  access_policy jsonb not null default '{"visibility":"workspace"}'::jsonb,
   created_at    timestamptz not null default now()
 );
 
@@ -369,7 +394,7 @@ create table mcp_servers (                        -- P2
   config        jsonb not null default '{}',     -- command/args/env OR url; auth ref vaulted (09)
   last_discovery_at timestamptz,
   health        text not null default 'unknown',
-  access_policy jsonb not null default '{"mode":"workspace"}'::jsonb,  -- FE McpServer.accessPolicy; parity with tools/agents (09). PUT /mcp/:id/access-policy (08)
+  access_policy jsonb not null default '{"visibility":"workspace"}'::jsonb,  -- FE McpServer.accessPolicy; parity with tools/agents (09). PUT /mcp/:id/access-policy (08)
   created_at    timestamptz not null default now()
 );
 

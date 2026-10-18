@@ -15,7 +15,7 @@
 
 ## Background / motivation
 
-**Agent Catalyst** is an internal platform to build, evaluate, publish and govern LLM
+**Agent Platform** is an internal platform to build, evaluate, publish and govern LLM
 agents. All data is currently mock/seeded in a client store (`src/lib/data.ts` +
 `src/lib/store.ts`); `@backend` markers indicate where REST calls will replace seeds.
 
@@ -56,6 +56,12 @@ relatable HR use cases. The demo user switches in as Admin and sees themselves.
 ## Key mechanics (from code investigation — so an implementer needn't re-trace)
 
 **Tenancy** (`iam.ts`, `auth.tsx`, `store.ts`):
+
+> **Updated 2026-10-15 (spaces model):** workspaces now carry an `access` mode (open/restricted) and the
+> switcher also lists **joinable open spaces** with a Join action. `workspacesForProfile` was split into
+> `memberWorkspaces` + `joinableWorkspaces`; membership is the app-managed roster (invite / join-open). The
+> line references below predate that change but the People Ops seed itself is unaffected.
+
 - Workspace shape `{ id, name, short }` (`iam.ts:11`); list at `iam.ts:13`. No slug field.
 - Switcher shows only workspaces the user is a member of: `workspacesForProfile`
   filters `WORKSPACES` by `MOCK_PROFILE.memberships` (`iam.ts:29,40`).

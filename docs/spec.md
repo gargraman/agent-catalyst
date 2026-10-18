@@ -1,4 +1,4 @@
-# Agent Catalyst — Requirements & Technical Spec
+# Agent Platform — Requirements & Technical Spec
 
 > Companion to `docs/scope.md`. Decisions live here, in the repo — not in chat history.
 
@@ -7,7 +7,7 @@
 **Why this exists.** Internal developers and PMs waste time and repeat mistakes hand-wiring LLM
 agents (prompt + model + tools + knowledge + guardrails), have no safe/consistent way to test one,
 and — critically — when the underlying model changes, nobody notices the agent silently got worse.
-Agent Catalyst is an internal platform to **build → configure → test → publish** LLM agents, with
+Agent Platform is an internal platform to **build → configure → test → publish** LLM agents, with
 guardrails, model-agnosticism, and a drift-aware evaluation core.
 
 **Governing principle (`docs/scope.md`).** ~90% of this platform is boring CRUD software. Real

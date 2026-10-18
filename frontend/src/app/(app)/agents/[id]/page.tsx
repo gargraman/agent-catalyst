@@ -30,6 +30,7 @@ import {
   publishAgent, unpublishAgent, archiveAgent, restoreAgent, rollbackVersion,
 } from "@/lib/store";
 import { useAuth, usePrincipal } from "@/lib/auth";
+import { ORG } from "@/lib/org";
 import { GateButton } from "@/components/gate";
 import { Term } from "@/components/term";
 import { EvalExplainer, EvalFailingBanner, EvalFailureSummary, PublishBlockedDialog } from "@/components/eval-explainer";
@@ -854,11 +855,11 @@ function Publish({ agent }: { agent: ReturnType<typeof getAgent> & {} }) {
   const [revokeId, setRevokeId] = React.useState<string | null>(null);
   const [runEvalOpen, setRunEvalOpen] = React.useState(false);
   const endpoint = agent.endpoint ?? agent.id;
-  const url = `https://catalyst.internal/v1/agents/${endpoint}/invoke`;
+  const url = `https://agent-platform.internal/v1/agents/${endpoint}/invoke`;
   const snippets: Record<string, string> = {
-    curl: `curl -N ${url} \\\n  -H "Authorization: Bearer $AGENT_CATALYST_TOKEN" \\\n  -H "Content-Type: application/json" \\\n  -d '{"messages":[{"role":"user","content":"Hello"}],"stream":true}'`,
-    ts: `const res = await fetch("${url}", {\n  method: "POST",\n  headers: {\n    Authorization: \`Bearer \${process.env.AGENT_CATALYST_TOKEN}\`,\n    "Content-Type": "application/json",\n  },\n  body: JSON.stringify({ messages: [{ role: "user", content: "Hello" }], stream: true }),\n});`,
-    python: `import os, requests\nres = requests.post(\n    "${url}",\n    headers={"Authorization": f"Bearer {os.environ['AGENT_CATALYST_TOKEN']}"},\n    json={"messages": [{"role": "user", "content": "Hello"}], "stream": True},\n)`,
+    curl: `curl -N ${url} \\\n  -H "Authorization: Bearer $AGENT_PLATFORM_TOKEN" \\\n  -H "Content-Type: application/json" \\\n  -d '{"messages":[{"role":"user","content":"Hello"}],"stream":true}'`,
+    ts: `const res = await fetch("${url}", {\n  method: "POST",\n  headers: {\n    Authorization: \`Bearer \${process.env.AGENT_PLATFORM_TOKEN}\`,\n    "Content-Type": "application/json",\n  },\n  body: JSON.stringify({ messages: [{ role: "user", content: "Hello" }], stream: true }),\n});`,
+    python: `import os, requests\nres = requests.post(\n    "${url}",\n    headers={"Authorization": f"Bearer {os.environ['AGENT_PLATFORM_TOKEN']}"},\n    json={"messages": [{"role": "user", "content": "Hello"}], "stream": True},\n)`,
   };
 
   if (agent.status === "draft") {
@@ -890,7 +891,7 @@ function Publish({ agent }: { agent: ReturnType<typeof getAgent> & {} }) {
         </div>
         <div className="mt-4 grid gap-4 sm:grid-cols-3 text-sm">
           <div><p className="text-xs text-muted">Pinned version</p><p className="font-medium text-ink">{agent.activeVersion}</p></div>
-          <div><p className="text-xs text-muted">Auth</p><p className="font-medium text-ink">Caller&apos;s Trellix IAM token</p></div>
+          <div><p className="text-xs text-muted">Auth</p><p className="font-medium text-ink">Caller&apos;s {ORG.idpName} token</p></div>
           <div><p className="text-xs text-muted">Rate limit</p><p className="font-medium text-ink">60 req/min</p></div>
         </div>
       </SectionCard>
@@ -898,7 +899,7 @@ function Publish({ agent }: { agent: ReturnType<typeof getAgent> & {} }) {
       <AccessNote variant="export" />
       <div className="rounded-lg border border-border bg-elevated/60 px-3 py-2.5 text-xs leading-relaxed text-ink-2">
         <p className="mb-1 font-medium text-ink">Access model</p>
-        Callers authenticate with their own Trellix IAM token, usually a service account rather than a console
+        Callers authenticate with their own {ORG.idpName} token, usually a service account rather than a console
         user. At run time the agent can only reach tools and knowledge the caller&apos;s token and tenant allow, and
         only if this agent&apos;s access policy permits that caller. The LLM provider key stays the workspace&apos;s vaulted
         key and is never the caller&apos;s.
