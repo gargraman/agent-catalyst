@@ -20,6 +20,15 @@ PASS  ⟺  quality(candidate) ≥ quality(baseline) − Q_THRESHOLD      (qualit
 This maps 1:1 to the frontend `EvalRun` type (`quality`, `qualityDelta`, `costDelta`, `latencyDelta`,
 `verdict ∈ pass|fail|low_confidence`, `dimensions[]`, `failingCases[]`, `reason`).
 
+> **The thresholds are a per-workspace eval *policy*, not global constants.** `Q_THRESHOLD`, `EFF_BUDGET`,
+> `MIN_CASES`, and whether a low-confidence suite may still publish are a workspace-scoped **eval policy**
+> owned by the Space Manager (`eval.govern`, 09 §4), persisted on the workspace (01 §4.1) and read/written
+> via `…/eval-policy` (08). It maps 1:1 to the FE `EvalPolicy` type (`minCases`, `qualityThreshold`,
+> `efficiencyBudgetPct`, `allowLowConfidenceOverride`; `src/lib/data.ts` + `setEvalPolicy`/`useEvalPolicy`).
+> The engine reads the policy for the agent's workspace at verdict time, so the pass bar and the efficiency
+> budget are the tenant's choice, not a hard-coded 90/10. The per-run "quality threshold" field on the Run
+> dialog overrides only `qualityThreshold`, only for that one run.
+
 ## 2. The two scoring layers
 
 > **Delta from spec (00 §7.3):** the spec treats judge cost as "caching + Batch." We treat the
@@ -82,6 +91,49 @@ async def judge_case(case, baseline_out, candidate_out) -> JudgeVerdict:
 > drift-detector must never do is drift itself. The judge model id + prompt hash are part of the verdict
 > cache key (§6) and stored on `eval_results.judge_verdict`.
 
+## 2a. Authoring suites & cases — where the inputs/outputs come from (set vs. infer)
+
+A suite is only as good as its cases, and a case's **inputs** and **expected outputs** can each be either
+*set* by an author or *inferred* by the platform. This is the authoring contract the FE now implements
+(agent **Evals** tab → **Eval suites**; `eval.author`, builder+ — 09 §4):
+
+```python
+# the authorable shapes (FE EvalSuite / EvalCaseDef / Assertion / RubricDimension; 01 §4.5):
+EvalCaseDef = {
+  "input":   str,                       # the user message / scenario (SET by author)
+  "vars":    dict[str, str] | None,     # values for the agent's io_contract input variables (SET; typed)
+  "assertions": [{ "kind": AssertionKind, "detail": str | None, "hard": bool }],   # deterministic (SET)
+  "rubric":  [{ "name": str, "weight": float }],                                   # judge dimensions (SET)
+  "expected": str | None,               # OPTIONAL reference answer (SET, or omitted → inferred by pairwise)
+}
+```
+
+**Inputs — mostly set, typed from the I/O contract.** The case `input` message is authored free-text. Its
+`vars` are **typed from the agent's own `io_contract`** (`AgentConfig.inputVariables` — name/type/required/
+default; B2.5): the case editor renders one field per declared variable (boolean → select, number → numeric)
+so authored cases can't drift from the published request schema. The platform *infers* nothing about inputs
+except the defaults it pre-fills from the contract; an author may also import inputs from production traffic
+(§8 feedback loop) or a dataset (§11).
+
+**Outputs — set the *criteria*, infer the *score*.** Authors do **not** hand-write golden outputs (the
+agent is non-deterministic, so a frozen golden would rot). Instead they set the **criteria**:
+
+- **Deterministic assertions** (`assertions[]`, Layer 1): objective, free, run first. `hard: true` forces
+  the case to FAIL regardless of the judge; `hard: false` informs the judge only. Kinds that carry a
+  `detail` (`regex`, `required_fields`, `tool_called`, `exact`) **require** it — the FE save-gates this and
+  the API validates it (422 on a missing required detail).
+- **Judge rubric** (`rubric[]`, Layer 2): the dimensions the LLM-judge scores 1–5; the weighted blend is
+  the case quality.
+- **`expected` is optional** because the primary judgment is **pairwise vs. the frozen baseline** (§2), not
+  vs. a golden. Supply `expected` only when a case has a genuinely reference-able answer; otherwise the
+  score is *inferred* by comparing candidate to baseline under the fixed judge.
+
+**Starter inference.** For a first-time agent with no suite, `generateStarterEval` synthesizes a real,
+editable 12-case **Starter set** (above `MIN_CASES`, so the first verdict is confident) that the author then
+edits — inputs/criteria are inferred once, then owned by the author. A thin authored suite (< `MIN_CASES`)
+honestly yields `low_confidence`; the run's case count **is** the selected suite's size, so "expand the
+suite to earn a confident verdict" is a real, visible loop, not a cosmetic badge.
+
 ## 3. The verdict math
 
 ```python
@@ -92,8 +144,9 @@ def score_quality(results: list[CaseScore], rubric_weights: dict[str, float]) ->
 def efficiency_delta(candidate: RunAgg, baseline: RunAgg) -> EfficiencyDelta:
     """cost%, latency(ms), tokens, tool-call-count deltas — all from the gateway IR (02)."""
 
-def verdict(quality_c, quality_b, eff, det_all_green, n_cases) -> tuple[Verdict, str]:
-    if n_cases < MIN_CASES:                       # default 10 (spec B5 small-set honesty)
+def verdict(quality_c, quality_b, eff, det_all_green, n_cases, policy) -> tuple[Verdict, str]:
+    # policy = the agent's workspace EvalPolicy (§1): MIN_CASES / Q_THRESHOLD / EFF_BUDGET below read from it.
+    if n_cases < policy.min_cases:                 # default 10 (spec B5 small-set honesty)
         return "low_confidence", _reason_small_set(n_cases)
     if not det_all_green:
         return "fail", _reason_hard_assertions()
@@ -150,6 +203,14 @@ def on_version_change(version, changed: set[str]):
         version.publishable = False          # must re-eval; publish → 409 until PASS
 ```
 
+> **Frozen binding columns.** The new `tool_bindings.{risk_tier, requires_approval, subagent_config_id}` (01) ride inside the `tool_bindings` snapshot above, so a risk-tier change is a behavior change that forces re-eval — consistent with tool-schema-snapshot drift and covered by the `snapshot_hash` note below.
+
+> **Owner notification (16).** Flipping `publishable` / an agent's `drift` state used to tell no one —
+> the founding "nobody notices it got worse" problem. The eval worker (§7) now emits an owner-facing
+> notification on a drift **state transition** (`none→watch→regressed`) and on `eval_failed`, deduped per
+> `(agent_id, kind, trigger)` so a stable-failing agent isn't re-notified every run (16 §2). These are
+> **owner** notices, distinct from the ops SLO alerts in `10 §5`.
+
 ```python
 # the gate, enforced at publish AND re-point (08):
 def assert_publishable(version) -> None:
@@ -159,9 +220,12 @@ def assert_publishable(version) -> None:
         raise ConflictError(409, "publish.eval_gate: no eval newer than the last behavior-changing edit.")
     if latest.verdict == "fail":
         raise ConflictError(409, "publish.eval_gate: latest eval failed; fix or roll back before publish.")
-    if latest.verdict == "low_confidence" and not version.audited_override:
-        raise ConflictError(409, "publish.low_confidence: suite below confidence threshold; audited "
-                                 "override required.")
+    if latest.verdict == "low_confidence" and not workspace_policy(version).allow_low_confidence_override:
+        # The override is a per-workspace policy knob (FE EvalPolicy.allowLowConfidenceOverride), toggled by
+        # an admin (eval.govern). When OFF, a low-confidence suite blocks publish until it clears MIN_CASES;
+        # when ON, publishing is allowed and the act is audited (audit_logs row).
+        raise ConflictError(409, "publish.low_confidence: suite below the min-case floor; expand it, or an "
+                                 "admin must enable the workspace low-confidence override.")
     # verdict == "pass" and newer than the last trigger → publishable. (codes mirror 08 error table)
 ```
 

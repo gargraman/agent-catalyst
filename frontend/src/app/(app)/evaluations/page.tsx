@@ -12,8 +12,8 @@ import { GateButton } from "@/components/gate";
 import { Segmented } from "@/components/tabs";
 import { StatTile } from "@/components/stat-tile";
 import { BarChart, Donut } from "@/components/charts";
-import { getVersions, evalStats, verdictTone, verdictLabel, type Agent, type Verdict } from "@/lib/data";
-import { useEvalRuns, useAgents, addEvalRun, genId, nowIso } from "@/lib/store";
+import { getVersions, evalStats, verdictTone, verdictLabel, type Agent } from "@/lib/data";
+import { useEvalRuns, useAgents, useSuitesForAgent, addEvalRun, simulateEvalRun, useEvalPolicy } from "@/lib/store";
 import { useWorkspace } from "@/lib/auth";
 import { pct, relative } from "@/lib/format";
 
@@ -24,8 +24,8 @@ const FILTERS = [
   { key: "low_confidence", label: "Low confidence" },
 ];
 
-const SUITES = ["Golden set", "Regression set", "Smoke set"];
-const JUDGES = ["claude-opus-5-5", "claude-sonnet-5-5"];
+// The judge is FIXED and versioned so the drift-detector can't itself drift (backend/05 §2) — not user-selectable.
+const FIXED_JUDGE = { model: "claude-haiku-4-5", version: "judge-v1" };
 
 /** Version labels for an agent, falling back to the active version when none are recorded. */
 function versionLabelsFor(a: Agent): string[] {
@@ -33,9 +33,6 @@ function versionLabelsFor(a: Agent): string[] {
   return labels.length > 0 ? labels : [a.activeVersion];
 }
 
-function round1(n: number): number {
-  return Math.round(n * 10) / 10;
-}
 
 /* @backend integration points (this page):
  *  - @backend GET /v1/evals - eval run history [via useEvalRuns]
@@ -48,6 +45,7 @@ export default function EvaluationsPage() {
   const agents = useAgents();
   const { workspace } = useWorkspace();
   const stats = evalStats(workspace?.id);
+  const policy = useEvalPolicy();
   const activeAgents = agents.filter((a) => a.status !== "archived");
 
   const [filter, setFilter] = React.useState("all");
@@ -58,14 +56,14 @@ export default function EvaluationsPage() {
   const [agentId, setAgentId] = React.useState(firstAgent?.id ?? "");
   const [version, setVersion] = React.useState(firstLabels[0] ?? "");
   const [baseline, setBaseline] = React.useState(firstLabels[1] ?? firstLabels[0] ?? "");
-  const [suite, setSuite] = React.useState(SUITES[0]);
-  const [judge, setJudge] = React.useState(JUDGES[0]);
-  const [threshold, setThreshold] = React.useState("90");
-  const [budget, setBudget] = React.useState("within 10%");
+  const [suiteId, setSuiteId] = React.useState("");
+  const [threshold, setThreshold] = React.useState(String(policy.qualityThreshold));
   const [mode, setMode] = React.useState("interactive");
 
   const selectedAgent = agents.find((a) => a.id === agentId);
   const versionLabels = selectedAgent ? versionLabelsFor(selectedAgent) : [];
+  const suitesForAgent = useSuitesForAgent(agentId);
+  const selectedSuite = suitesForAgent.find((s) => s.id === suiteId) ?? suitesForAgent[0];
 
   function onAgentChange(id: string) {
     const next = agents.find((a) => a.id === id);
@@ -77,30 +75,12 @@ export default function EvaluationsPage() {
 
   function runEval() {
     if (!selectedAgent) return;
-    const thr = Number(threshold) || 90;
-    const quality = round1(90 + (Math.random() * 12 - 6));
-    const qualityDelta = round1(Math.random() * 8 - 4);
-    const costDelta = round1(Math.random() * 10 - 5);
-    const latencyDelta = Math.round(Math.random() * 160 - 80);
-    const cases = 24 + Math.floor(Math.random() * 57); // 24..80
-    let verdict: Verdict = quality >= thr ? "pass" : "fail";
-    if (cases < 10) verdict = "low_confidence";
-
-    addEvalRun({
-      id: genId("ev"),
-      agentId: selectedAgent.id,
-      agent: selectedAgent.name,
-      version,
-      baseline,
-      quality,
-      qualityDelta,
-      costDelta,
-      latencyDelta,
-      cases,
-      verdict,
-      date: nowIso(),
-      trigger: "Manual run",
-    });
+    // Per-run threshold field overrides the policy quality bar for this run only; everything else comes
+    // from the shared simulateEvalRun (store) so this page and the agent dialog can't diverge.
+    addEvalRun(simulateEvalRun({
+      agent: selectedAgent, version, baseline, suite: selectedSuite,
+      qualityThreshold: Number(threshold) || policy.qualityThreshold, policy,
+    }));
     setOpen(false);
   }
 
@@ -127,7 +107,7 @@ export default function EvaluationsPage() {
           <h1 className="text-xl font-semibold tracking-tight text-ink">Evaluations</h1>
           <p className="mt-1 text-sm text-muted">Track prompt stability and quality or efficiency drift when models or knowledge change.</p>
         </div>
-        <GateButton permission="eval.run" variant="primary" onClick={() => setOpen(true)}><Play className="size-4" /> New eval run</GateButton>
+        <GateButton permission="eval.run" variant="primary" onClick={() => { setThreshold(String(policy.qualityThreshold)); setOpen(true); }}><Play className="size-4" /> New eval run</GateButton>
       </div>
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
@@ -244,24 +224,31 @@ export default function EvaluationsPage() {
           </div>
 
           <div className="grid gap-4 sm:grid-cols-2">
-            <Field label="Eval suite">
-              <Select value={suite} onChange={(e) => setSuite(e.target.value)}>
-                {SUITES.map((s) => <option key={s} value={s}>{s}</option>)}
-              </Select>
+            <Field label="Eval suite" hint={selectedSuite && selectedSuite.cases.length < policy.minCases ? `Below the ${policy.minCases}-case floor — reads as low-confidence.` : undefined}>
+              {suitesForAgent.length === 0 ? (
+                <div className="flex h-9 items-center rounded-md border border-border bg-elevated px-3 text-xs text-muted">No authored suite — uses an ad-hoc sample.</div>
+              ) : (
+                <Select value={selectedSuite?.id ?? ""} onChange={(e) => setSuiteId(e.target.value)}>
+                  {suitesForAgent.map((s) => <option key={s.id} value={s.id}>{s.name} ({s.cases.length} cases)</option>)}
+                </Select>
+              )}
             </Field>
-            <Field label="Judge model">
-              <Select value={judge} onChange={(e) => setJudge(e.target.value)}>
-                {JUDGES.map((j) => <option key={j} value={j}>{j}</option>)}
-              </Select>
+            <Field label="Judge model" hint="Fixed & versioned so the judge can't drift.">
+              <div className="flex h-9 items-center gap-2 rounded-md border border-border bg-elevated px-3 text-sm">
+                <span className="font-mono text-ink">{FIXED_JUDGE.model}</span>
+                <Badge tone="neutral">{FIXED_JUDGE.version}</Badge>
+              </div>
             </Field>
           </div>
 
           <div className="grid gap-4 sm:grid-cols-2">
-            <Field label="Quality threshold" hint="Pass when quality score meets this value.">
+            <Field label="Quality threshold" hint="Defaults to the workspace policy; overrides it for this run.">
               <Input value={threshold} onChange={(e) => setThreshold(e.target.value)} inputMode="decimal" />
             </Field>
-            <Field label="Efficiency budget" hint="Cost and latency tolerance vs baseline.">
-              <Input value={budget} onChange={(e) => setBudget(e.target.value)} />
+            <Field label="Efficiency budget" hint="Governed by the workspace eval policy.">
+              <div className="flex h-9 items-center rounded-md border border-border bg-elevated px-3 text-sm text-ink-2">
+                Cost within <span className="mx-1 font-medium text-ink">{policy.efficiencyBudgetPct}%</span> of baseline
+              </div>
             </Field>
           </div>
 

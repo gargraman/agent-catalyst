@@ -8,7 +8,8 @@ import {
 } from "@/components/ui";
 import { Term } from "@/components/term";
 import { MODELS, type Agent, type ReasoningEffort } from "@/lib/data";
-import { addAgent, genId, nowIso, useKnowledgeBases, useTools } from "@/lib/store";
+import { addAgent, genId, nowIso, useKnowledgeBases, useTools, useMcpServers } from "@/lib/store";
+import { mcpRef } from "@/lib/tools";
 import { usePrincipal, useAuth } from "@/lib/auth";
 import { requirementText } from "@/components/gate";
 import { canUse } from "@/lib/access-policy";
@@ -85,6 +86,11 @@ export default function NewAgentPage() {
   // Only bind resources the builder can actually use in the active workspace (Part B2).
   const kbOptions = useKnowledgeBases().filter((kb) => canUse(kb.accessPolicy, principal));
   const toolOptions = useTools().filter((t) => canUse(t.accessPolicy, principal));
+  // Enabled MCP tools from connected, usable servers — bindable as qualified `mcp:<serverId>/<tool>` refs.
+  const mcpToolOptions = useMcpServers()
+    .filter((s) => s.status === "connected" && canUse(s.accessPolicy, principal))
+    .flatMap((s) => s.tools.filter((t) => t.enabled).map((t) => ({ ref: mcpRef(s.id, t.name), label: t.name, description: t.description, serverName: s.name })));
+  const isValidToolRef = (ref: string) => toolOptions.some((t) => t.name === ref) || mcpToolOptions.some((m) => m.ref === ref);
   const [tplKey, setTplKey] = React.useState("rag");
   const initial = TEMPLATES.find((t) => t.key === "rag")!.preset;
 
@@ -140,7 +146,7 @@ export default function NewAgentPage() {
       calls30d: 0, cost30d: 0, p95ms: 0, evalPass: 0, drift: "none",
       callsSpark: [0, 0, 0, 0, 0, 0, 0],
       knowledgeBases: current.preset.showKnowledge ? knowledgeBases.filter((id) => kbOptions.some((kb) => kb.id === id)) : [],
-      tools: current.preset.showTools ? tools.filter((n) => toolOptions.some((t) => t.name === n)) : [],
+      tools: current.preset.showTools ? tools.filter(isValidToolRef) : [],
       // Persist the config the form actually collects so it survives to the Configure tab
       // (resolveConfig fills the rest from DEFAULT_AGENT_CONFIG). Map the form's output-format
       // vocabulary to the config's { outputFormat, includeCitations } pair.
@@ -276,6 +282,17 @@ export default function NewAgentPage() {
                       className={`flex items-center justify-between rounded-lg border px-3 py-2.5 text-left text-sm ${on ? "border-accent bg-accent-soft" : "border-border bg-elevated hover:border-border-strong"}`}>
                       <span className="min-w-0"><span className="block truncate font-mono text-xs font-medium text-ink">{t.name}</span>
                         <span className="block truncate text-xs text-muted">{t.kind}</span></span>
+                      {on ? <Check className="size-4 text-accent" /> : <span className="size-4 rounded border border-border" />}
+                    </button>
+                  );
+                })}
+                {mcpToolOptions.map((m) => {
+                  const on = tools.includes(m.ref);
+                  return (
+                    <button key={m.ref} onClick={() => setTools((l) => toggle(l, m.ref))}
+                      className={`flex items-center justify-between rounded-lg border px-3 py-2.5 text-left text-sm ${on ? "border-accent bg-accent-soft" : "border-border bg-elevated hover:border-border-strong"}`}>
+                      <span className="min-w-0"><span className="block truncate font-mono text-xs font-medium text-ink">{m.label}</span>
+                        <span className="block truncate text-xs text-muted">MCP · {m.serverName}</span></span>
                       {on ? <Check className="size-4 text-accent" /> : <span className="size-4 rounded border border-border" />}
                     </button>
                   );

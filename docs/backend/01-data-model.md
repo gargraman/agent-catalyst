@@ -28,6 +28,7 @@ erDiagram
   AGENT ||--o{ AGENT_VERSION : has
   AGENT_VERSION ||--o{ RETRIEVAL_BINDING : retrieves_via
   AGENT_VERSION ||--o{ TOOL_BINDING : uses
+  TOOL ||--o| SUBAGENT_CONFIG : delegates_as
   AGENT ||--o{ EVAL_SUITE : owns
   EVAL_SUITE ||--o{ EVAL_CASE : contains
   AGENT_VERSION ||--o{ EVAL_RUN : evaluated_by
@@ -38,13 +39,24 @@ erDiagram
   PUBLISHED_ENDPOINT ||--o{ API_TOKEN : authed_by
   AGENT_VERSION ||--o{ RUN : executes
   RUN ||--o{ SPAN : traces
+  RUN ||--o{ TOOL_APPROVAL : gates
+  AGENT_VERSION ||--o{ TOOL_APPROVAL : scoped_by
   KNOWLEDGE_BASE ||--o{ DATA_SOURCE : includes
   DATA_SOURCE ||--o{ INGESTION_JOB : ingested_by
   DATA_SOURCE ||--o{ DOCUMENT : yields
   DOCUMENT ||--o{ CHUNK : split_into
   WORKSPACE ||--o{ AUDIT_LOG : records
   WORKSPACE ||--o{ JOB : queues
+  WORKSPACE ||--o{ NOTIFICATION : delivers
+  AGENT |o--o{ NOTIFICATION : about
+  AGENT_VERSION ||--o| AGENT_SIGNATURE : dedup_embedding
 ```
+
+> **P0 additions (14/15/16):** `AGENT_SIGNATURE` (dedup embeddings), `NOTIFICATION` (owner-facing), and the
+> non-tenant `platform_admins` roster are detailed in §4.9. `AGENT.registered_at` gates registration (14).
+>
+> **P2 additions (tools/approvals):** `SUBAGENT_CONFIG` (a `kind='subagent'` tool delegating to another agent)
+> and `TOOL_APPROVAL` (human-in-the-loop gate on a `requires_approval` tool call) are detailed in §4.6.
 
 ## 3. Enums (mirror the frontend unions in `data.ts`)
 
@@ -53,7 +65,7 @@ create type agent_status      as enum ('draft','published','archived','eval_fail
 create type version_status    as enum ('draft','evaluated','published','deprecated');
 create type drift_state       as enum ('none','stable','watch','regressed');
 create type eval_verdict      as enum ('pass','fail','low_confidence');
-create type run_source        as enum ('playground','api','eval');
+create type run_source        as enum ('playground','api','eval','tool_test','subagent');  -- tool_test = tool/mcp test-invoke (08); subagent = delegated child run (03 §8)
 create type run_status        as enum ('success','error','blocked');
 create type provider_name     as enum ('anthropic','openai','google','mistral','meta','azure','bedrock');
 -- DEPRECATED: ingestion status uses job_status via the generic `jobs` table (§4.8); this enum is unused. Kept only to avoid a migration churn; do not reference in new DDL.
@@ -62,9 +74,12 @@ create type member_role       as enum ('admin','publisher','builder','viewer'); 
 create type workspace_access   as enum ('open','restricted');                    -- open = any org member can join; restricted = invite-only (09 §2.1)
 create type invite_status      as enum ('pending','accepted','revoked','expired');
 create type tool_kind         as enum ('http','builtin','subagent','mcp');       -- mcp used P2
+create type tool_risk_tier    as enum ('read','write','destructive');           -- risk tier driving the approval gate (P2)
+create type approval_status   as enum ('pending','approved','denied','expired'); -- human-in-the-loop tool approval lifecycle (P2)
 create type data_source_kind  as enum ('file','web','connector','manual');       -- web/connector ingestion P2; FE connector config+credential capture ships ahead of it
-create type job_kind          as enum ('ingestion','eval','mcp_discovery','reingest');
+create type job_kind          as enum ('ingestion','eval','mcp_discovery','reingest','model_deprecation_scan');  -- model_deprecation_scan: P0 detector (16)
 create type job_status        as enum ('queued','running','completed','failed','cancelled');
+create type notification_kind as enum ('drift','budget_threshold','model_deprecated','eval_failed','registration_gate','dedup_flag','approval_requested');  -- owner-facing notifications (16); approval_requested = pending tool approval (P2)
 ```
 
 ## 4. Core DDL
@@ -89,6 +104,12 @@ create table workspaces (
   default_model text,                           -- FE WorkspaceSettings.defaultModel (app-editable, admin)
   archived_at   timestamptz,                   -- set by POST /workspaces/:id/archive (unpublishes the workspace's endpoints)
   request_timeout_s int not null default 30,   -- FE Limits.requestTimeoutS; per-workspace RunContext.deadline_s default (00 §4)
+  -- eval policy (FE EvalPolicy; GET/PUT …/eval-policy — 08). The drift verdict + publish gate (05) read these
+  -- for this workspace instead of global constants; set by the Space Manager (eval.govern — 09 §4).
+  eval_min_cases        int     not null default 10,    -- FE EvalPolicy.minCases — below → low_confidence
+  eval_quality_threshold numeric(5,2) not null default 90, -- FE qualityThreshold — PASS requires quality ≥ this
+  eval_efficiency_budget_pct numeric(5,2) not null default 10, -- FE efficiencyBudgetPct — FAIL if cost over baseline by more
+  eval_allow_low_conf_override boolean not null default false, -- FE allowLowConfidenceOverride — admin may publish a low-conf suite
   created_at  timestamptz not null default now(),
   unique (org_id, slug)
 );
@@ -139,7 +160,12 @@ create table agents (
   name          text not null,
   description   text not null default '',
   status        agent_status not null default 'draft',
-  owner_subject text not null,                  -- creator / owner (FE: owner)
+  owner_subject text not null,                  -- creator / owner — a ROUTABLE OIDC subject (not a display name);
+                                                --   the recipient key for owner notifications (16) and the
+                                                --   compliance "no-owner" check (15). Captured at registration (14 §2).
+  registered_at timestamptz,                    -- P0 registration gate (14 §2): NULL = unregistered → a build/publish
+                                                --   attempt returns 409 `registration.gate`. A flag, NOT an agent_status
+                                                --   value — keeps the eval→lifecycle state machine untouched.
   tags          text[] not null default '{}',
   -- pointers (mutable):
   active_version_id uuid,                        -- FK added after agent_versions (circular); see note
@@ -175,7 +201,10 @@ create table agent_versions (
   -- retrieval + tool bindings are snapshotted into child rows (§4.4, §4.6) AND denormalized here
   -- as a hash so the whole snapshot has one identity:
   snapshot_hash   text not null,                -- sha256 over all frozen fields → version identity (05)
-  publishable     boolean not null default false,  -- set by a PASS eval newer than last trigger (05)
+  publishable     boolean not null default false,  -- set by a PASS eval newer than last trigger (05). FE models the
+                                                    --   INVERSE as Agent.needsReEval (FE versioning is cosmetic): a trigger
+                                                    --   edit or KB re-ingest sets needsReEval=true (publishable=false); a
+                                                    --   PASS clears it. The publish gate (05 §5) reads this flag.
   created_at      timestamptz not null default now(),
   unique (agent_id, label)
 );
@@ -201,6 +230,10 @@ create rule agent_versions_freeze as on update to agent_versions
 Why both child rows *and* a `snapshot_hash`: child rows (`retrieval_bindings`, `tool_bindings`) make
 the snapshot queryable/joinable; `snapshot_hash` gives the version a single content identity so the
 eval engine (05) can detect "did anything that affects behavior change?" in one comparison.
+
+The frozen-at-bind `tool_bindings.{risk_tier, requires_approval, subagent_config_id}` (§4.6) are part of
+the version snapshot and are covered by `snapshot_hash` — so a risk-tier or approval change yields a new
+version identity, consistent with the tool-schema-snapshot drift handling referenced to doc 05.
 
 ### 4.3 Provider keys (vaulted — never plaintext here)
 
@@ -269,22 +302,32 @@ create table chunks (
   ordinal       int not null,
   text          text not null,
   token_count   int not null,
-  embedding     vector(3072),                    -- pgvector; width = kb.embedding_dim (see note)
+  embedding     vector(3072),                    -- pgvector; width = kb.embedding_dim (see dimension note)
   meta          jsonb not null default '{}',     -- {source, docId, chunkId, page…} for citations (04)
   created_at    timestamptz not null default now()
 );
 
 -- Vector index: HNSW for recall/latency balance. Namespace every query by (workspace_id, kb_id).
+-- pgvector's hnsw/ivfflat index the `vector` type up to 2000 dims ONLY; a 3072-dim `vector` column
+-- would FAIL index creation. For >2000 dims, index a half-precision cast (`halfvec`, supported to 4000
+-- dims) — ~half the storage, negligible recall loss; the column stays full-precision `vector`. Queries
+-- cast the probe the same way (`embedding::halfvec(3072)`). For models ≤2000 dims, drop the cast and use
+-- `vector_cosine_ops` directly.
 create index chunks_embedding_hnsw on chunks
-  using hnsw (embedding vector_cosine_ops) with (m = 16, ef_construction = 64);
+  using hnsw ((embedding::halfvec(3072)) halfvec_cosine_ops) with (m = 16, ef_construction = 64);
 create index chunks_ws_kb on chunks (workspace_id, kb_id);
 ```
 
-> **Embedding dimension:** a fixed `vector(N)` column can't vary per row. Options (pick in 04): (a) one
-> dimension org-wide (simplest; `vector(3072)` fits common models, smaller models left-pad/resize), or
-> (b) a `chunks_{dim}` table per distinct dimension. Recommended: **(a) standardize on one embedding
-> model family per org in P1**, revisit if a KB needs a different model. This is called out as a real
-> constraint, not hidden.
+> **Embedding dimension (a real, now-fixed constraint).** A fixed `vector(N)` column can't vary per row,
+> AND pgvector's ANN indexes cap the `vector` type at **2000 dims**. Two independent choices:
+> - **Which dimension:** standardize on **one embedding model family per org in P1** (option (a);
+>   revisit with a `chunks_{dim}` table per dimension only if a KB truly needs a different model). The
+>   `agent_signatures` dedup table (§4.9) is pinned to **1024** — a ≤2000 model so it indexes with plain
+>   `vector_cosine_ops`, no cast.
+> - **How to index >2000 dims:** use the `halfvec` cast above (keeps 3072-dim models like
+>   `text-embedding-3-large` usable), **or** pick a ≤2000-dim model and index `vector` directly. Either
+>   is fine; the DDL above shows the halfvec path because the default `embedding_dim` example is 3072.
+>   HNSW-vs-IVFFlat choice + dataset-size ceiling guidance: see `04 §retrieval`.
 
 ```sql
 -- Which KB(s) a version retrieves from, and how — snapshotted per version (04, reproducibility).
@@ -315,10 +358,10 @@ create table eval_cases (
   id            uuid primary key default gen_random_uuid(),
   workspace_id  uuid not null references workspaces(id),
   suite_id      uuid not null references eval_suites(id),
-  input         jsonb not null,                  -- messages + input vars
-  assertions    jsonb not null default '[]',     -- deterministic checks (schema/regex/tool) (05)
-  rubric        jsonb not null default '{}',     -- judge rubric dimensions (05)
-  expected      jsonb,                           -- reference answer for pairwise judge (05)
+  input         jsonb not null,                  -- FE EvalCaseDef: { message: input, vars: {name->value} } — vars typed from the agent io_contract (B2.5, 05 §2a)
+  assertions    jsonb not null default '[]',     -- FE Assertion[]: [{kind, detail?, hard}] — detail REQUIRED for regex/required_fields/tool_called/exact (422 otherwise) (05 §2a)
+  rubric        jsonb not null default '[]',     -- FE RubricDimension[]: [{name, weight}] — judge scores each 1–5, weighted blend = quality (05)
+  expected      jsonb,                           -- OPTIONAL reference answer; omit → scored pairwise vs baseline, not vs golden (05 §2a)
   created_at    timestamptz not null default now()
 );
 
@@ -380,8 +423,9 @@ create table tools (
   name          text not null,
   kind          tool_kind not null,              -- http | builtin | subagent | mcp
   description   text not null default '',
+  risk_tier     tool_risk_tier not null default 'read',  -- drives the approval gate at bind (see tool_bindings.requires_approval)
   schema        jsonb not null default '{}',     -- JSON schema of args (FE HttpToolConfig.argsSchema)
-  config        jsonb not null default '{}',     -- FE HttpToolConfig {method,url,auth,authRef:{masked,vaultPath},headers}; egress allow-list. Raw creds vaulted; only authRef persisted (09)
+  config        jsonb not null default '{}',     -- FE HttpToolConfig {method,url,auth,authRef:{masked,vaultPath},headers}; raw creds vaulted, only authRef persisted (09). Structured egress sub-schema: config.egress = { mode:'deny_by_default', allow:{ domains text[], cidrs text[], ports int[] } }
   access_policy jsonb not null default '{"visibility":"workspace"}'::jsonb,
   created_at    timestamptz not null default now()
 );
@@ -391,7 +435,7 @@ create table mcp_servers (                        -- P2
   workspace_id  uuid not null references workspaces(id),
   name          text not null,
   transport     text not null,                   -- stdio | http
-  config        jsonb not null default '{}',     -- command/args/env OR url; auth ref vaulted (09)
+  config        jsonb not null default '{}',     -- command/args/env OR url; auth ref vaulted (09). Same structured egress sub-schema as tools: config.egress = { mode:'deny_by_default', allow:{ domains text[], cidrs text[], ports int[] } }
   last_discovery_at timestamptz,
   health        text not null default 'unknown',
   access_policy jsonb not null default '{"visibility":"workspace"}'::jsonb,  -- FE McpServer.accessPolicy; parity with tools/agents (09). PUT /mcp/:id/access-policy (08)
@@ -405,7 +449,22 @@ create table mcp_tools (                          -- discovered catalog, cached 
   name          text not null,
   description   text,
   input_schema  jsonb not null default '{}',
+  risk_tier     tool_risk_tier not null default 'read',  -- set when an operator enables a discovered tool
   enabled       boolean not null default false   -- allow-list (FE McpTool.enabled)
+);
+
+-- A kind='subagent' tool delegates to another agent as a callable (03 §8). One config per tool.
+create table subagent_configs (                    -- P2 (WorkspaceScoped)
+  id                uuid primary key default gen_random_uuid(),
+  workspace_id      uuid not null references workspaces(id),
+  tool_id           uuid not null references tools(id),
+  target_agent_id   uuid not null references agents(id),
+  target_version_id uuid references agent_versions(id),  -- NULL = follow the target's active version; set = pinned
+  max_depth         int not null default 2,          -- delegation depth cap (03 §8)
+  max_fanout        int not null default 3,          -- concurrent children per turn (03 §8)
+  input_mapping     jsonb not null default '{}',     -- how the parent turn's inputs map to the child's io_contract
+  created_at        timestamptz not null default now(),
+  unique (tool_id)
 );
 
 -- Tool/MCP tool bound to a version, with the schema SNAPSHOTTED (spec B7.4 reproducibility).
@@ -417,8 +476,31 @@ create table tool_bindings (
   tool_id       uuid references tools(id),
   mcp_tool_id   uuid references mcp_tools(id),
   schema_snapshot jsonb not null,                -- frozen at bind; drift source if server changes (05)
-  config_snapshot jsonb not null default '{}'
+  config_snapshot jsonb not null default '{}',
+  -- frozen-at-bind governance snapshot (joins the version-snapshot freeze discipline above — §4.2):
+  risk_tier     tool_risk_tier not null default 'read',    -- snapshot of the tool/mcp_tool tier at bind
+  requires_approval boolean not null default false,        -- derived at bind: destructive ⇒ true; write ⇒ per workspace policy
+  subagent_config_id uuid references subagent_configs(id)  -- nullable; set when kind='subagent'
 );
+
+-- Human-in-the-loop approval for a gated (requires_approval) tool call, raised at invoke (WorkspaceScoped).
+-- NOTE: run_id references runs (§4.7, created later); Alembic orders the FK — logical placement is here.
+create table tool_approvals (                      -- P2
+  id              uuid primary key default gen_random_uuid(),
+  workspace_id    uuid not null references workspaces(id),
+  run_id          uuid not null references runs(id),
+  version_id      uuid not null references agent_versions(id),
+  tool_binding_id uuid not null references tool_bindings(id),
+  tool_call_id    text not null,                   -- model-emitted tool-call id this approval gates
+  args_redacted   jsonb not null default '{}',     -- redacted tool args for the approver to review
+  status          approval_status not null default 'pending',
+  requested_at    timestamptz not null default now(),
+  decided_at      timestamptz,
+  decided_by      text,                            -- OIDC subject of the approver
+  decision_reason text,
+  expires_at      timestamptz
+);
+create index on tool_approvals (workspace_id, status, requested_at);
 ```
 
 ### 4.7 Publish, tokens, runs, spans
@@ -453,6 +535,7 @@ create table runs (                               -- one per invoke (FE Run)
   workspace_id  uuid not null references workspaces(id),
   agent_id      uuid not null references agents(id),
   version_id    uuid not null references agent_versions(id),
+  parent_run_id uuid references runs(id),          -- nullable; set for source='subagent' child runs → trace tree / depth accounting (03 §8)
   source        run_source not null,
   status        run_status not null,
   caller        text,                            -- token name or principal (FE caller)
@@ -469,6 +552,7 @@ create table runs (                               -- one per invoke (FE Run)
 );
 create index on runs (workspace_id, created_at desc);
 create index on runs (agent_id, created_at desc);
+create index on runs (parent_run_id);
 create unique index on runs (workspace_id, idempotency_key) where idempotency_key is not null;
 -- runs is high-volume → partition by month (11 §telemetry); heavy trace payloads go to Langfuse (10).
 
@@ -503,18 +587,26 @@ create table jobs (                               -- async job status for ingest
 
 create table audit_logs (                         -- spec B12: publish, re-point, baseline freeze, keys…
   id            uuid primary key default gen_random_uuid(),
-  workspace_id  uuid not null references workspaces(id),
+  workspace_id  uuid references workspaces(id),    -- NULLABLE: org-level actions (e.g. 'org.report.read', 15) have
+                                                   --   no workspace. A NULL row is invisible to the per-workspace RLS
+                                                   --   policy (NULL = app.workspace_id is false) — the §6 carve-out
+                                                   --   lets ONLY the platform-admin elevated path (15 §2) read them.
   actor         text not null,
-  action        text not null,                    -- "publish","repoint","baseline.freeze","token.mint"…
+  action        text not null,                    -- "publish","repoint","baseline.freeze","token.mint",
+                                                   --   "agent.register","agent.import","dedup.override" (14),
+                                                   --   "org.report.read" (15, org-level: workspace_id NULL),
+                                                   --   "tool.bind","tool.approval.request","tool.approval.approve",
+                                                   --   "tool.approval.deny","tool.test_invoke","mcp.test_invoke" (P2)…
   target        text not null,
   meta          jsonb not null default '{}',
   created_at    timestamptz not null default now()
 );
 
--- Tables created in P1, ENFORCED at runtime in P2 (07). The console edits the WORKSPACE-scoped rows
--- (scope='workspace') of both via PUT /workspaces/:id/limits (admin); that endpoint composes the FE
--- Limits object = { monthlySpendUsd (spend_limits), maxConcurrent (concurrency_limits), requestTimeoutS
--- (workspaces.request_timeout_s) }. Per-endpoint rows (scope='endpoint') remain available for P2.
+-- Enforcement phasing (revised 2026-10-19): the per-WORKSPACE MONTHLY spend cap (spend_limits,
+-- scope='workspace') is ENFORCED in P1 (07 §3 — the pitch sells "caps"). concurrency_limits and
+-- per-ENDPOINT spend rows (scope='endpoint') stay P2. The console edits the workspace-scoped rows via
+-- PUT /workspaces/:id/limits (admin); that endpoint composes the FE Limits object = { monthlySpendUsd
+-- (spend_limits, P1), maxConcurrent (concurrency_limits, P2), requestTimeoutS (workspaces.request_timeout_s) }.
 create table spend_limits (
   id uuid primary key default gen_random_uuid(),
   workspace_id uuid not null references workspaces(id),
@@ -528,6 +620,55 @@ create table concurrency_limits (
   workspace_id uuid not null references workspaces(id),
   scope text not null, scope_id uuid,             -- console edits the 'workspace' row; FE Limits.maxConcurrent (workspace-wide)
   max_concurrent int not null
+);
+```
+
+### 4.9 Adoption, notifications & governance (P0 — 14/15/16)
+
+```sql
+-- Dedup signatures for the "reuse first" similarity scanner (14 §3). Reuses the chunks HNSW pattern (§4.4):
+-- one row per agent_version, embedding over {name, description, system_prompt, io_contract} with a PINNED
+-- embedding model. Recomputed on each new version.
+create table agent_signatures (
+  id            uuid primary key default gen_random_uuid(),
+  workspace_id  uuid not null references workspaces(id),
+  agent_id      uuid not null references agents(id),
+  version_id    uuid not null references agent_versions(id),
+  embedding     vector(1024),                     -- dims follow the pinned embed_model (14 §3)
+  embed_model   text not null,                    -- pinned embedding model id (reproducibility, same caveat as KB, 04)
+  created_at    timestamptz not null default now(),
+  unique (version_id)
+);
+create index on agent_signatures using hnsw (embedding vector_cosine_ops);
+create index on agent_signatures (workspace_id, agent_id);
+
+-- Owner-facing notifications (16). OPS alerts (10 §5) go to operators; THESE go to the agent's owner.
+create table notifications (
+  id                uuid primary key default gen_random_uuid(),
+  workspace_id      uuid not null references workspaces(id),
+  agent_id          uuid references agents(id),   -- nullable: not every notification is agent-scoped
+  recipient_subject text not null,                -- routable OIDC subject = agents.owner_subject (+ ws publishers/admins)
+  kind              notification_kind not null,
+  severity          text not null default 'info', -- info | warning | critical (matches 10 §5 severity vocab)
+  title             text not null,
+  payload           jsonb not null default '{}',
+  dedupe_key        text not null,                -- hash(agent_id, kind, trigger) — collapses repeated signals (16 §2)
+  created_at        timestamptz not null default now(),
+  read_at           timestamptz
+);
+create index on notifications (workspace_id, recipient_subject, read_at);
+create index on notifications (workspace_id, created_at desc);
+-- Dedupe is PER RECIPIENT: one event fans out to N recipients (owner + ws publishers/admins, 16 §1) as N
+-- rows sharing a dedupe_key. recipient_subject MUST be in the key, else the 2nd..Nth inserts collide and
+-- only one person is ever notified.
+create unique index on notifications (workspace_id, recipient_subject, dedupe_key) where read_at is null;
+
+-- Platform-admin roster (15 §1). One deployment = one org (13 §4), so this is a single platform-wide role,
+-- NOT workspace- or org_id-scoped. Deliberately no `org_memberships` table. Elevated; read-only governance.
+create table platform_admins (
+  subject     text primary key,                   -- OIDC subject
+  granted_at  timestamptz not null default now(),
+  granted_by  text                                -- subject of the granting platform_admin (NULL = deploy-seeded)
 );
 ```
 
@@ -575,6 +716,9 @@ class AgentVersion(Base, WorkspaceScoped):
 bindings. The runtime imports *only* this dataclass, never the ORM — keeping `runtime/` free of DB
 coupling (00 §3).
 
+The new P2 tables `SubagentConfig` and `ToolApproval` (§4.6) use the same `WorkspaceScoped` mixin as every
+other tenant model, so they inherit `workspace_id` and the RLS policy (§6) automatically.
+
 ## 6. Row-Level Security (defense-in-depth)
 
 App-layer scoping (09) is the primary guard; RLS is the backstop that makes a forgotten `WHERE
@@ -597,7 +741,19 @@ Caveats, stated plainly:
 - RLS only helps if `app.workspace_id` is set **and** the connection pooler doesn't leak the setting
   across checkouts. Use `SET LOCAL` inside the request transaction (resets on commit) and a
   transaction-scoped pool mode. Tested by the isolation suite (`backend-integration-plan.md` M1).
-- Cross-workspace admin reads (e.g. org dashboards) use a separate, explicitly-elevated path, audited.
+- The new `WorkspaceScoped` P0 tables (`notifications`, `agent_signatures`, §4.9) are in the RLS loop like
+  any tenant table — they carry `workspace_id` and get a policy automatically.
+- The new `WorkspaceScoped` P2 tables (`subagent_configs`, `tool_approvals`, §4.6) likewise carry
+  `workspace_id` and join the RLS loop automatically — the §7 CI check (every `WorkspaceScoped` table has
+  an RLS policy) enforces it.
+- **Elevated carve-outs (the only tables that intentionally cross or skip tenant scope):**
+  - Cross-workspace reads (the **org governance report**, 15) use a separate, explicitly-elevated,
+    **audited** path (a `SECURITY DEFINER` function callable only by the platform-admin plane, 15 §2) — the
+    single sanctioned exception to the isolation suite (09 §8).
+  - `audit_logs` rows with `workspace_id = NULL` (org-level actions, e.g. `org.report.read`) are invisible to
+    the per-workspace policy and readable only via that same elevated path.
+  - `platform_admins` (§4.9) is **not** `WorkspaceScoped` (deployment-wide role) → excluded from the loop;
+    access is gated at the application/auth layer (15 §1), not by RLS.
 - pgvector queries must *also* filter `kb_id` + `workspace_id` in the query — RLS covers the row read
   but you still want the index to prune by namespace (performance, §4.4).
 
@@ -621,10 +777,14 @@ Caveats, stated plainly:
 |---|---|---|
 | `runs` | `(workspace_id, created_at desc)`, `(agent_id, created_at desc)` | dashboard/runs pages; time-series |
 | `runs` | partial unique `(workspace_id, idempotency_key)` | dedupe retried published invokes |
+| `runs` | `(parent_run_id)` | subagent trace tree + delegation-depth accounting (03 §8) |
 | `chunks` | HNSW on `embedding`, `(workspace_id, kb_id)` | retrieval recall + namespace prune (04) |
 | `eval_runs` | `(agent_id, started_at desc)` | agent eval history |
 | `agent_versions` | `(agent_id, created_at desc)` | version timeline |
 | `api_tokens` | `token_hash` | O(1) token auth lookup (09) |
 | `spans` | `(run_id)` | trace assembly |
+| `agent_signatures` | HNSW on `embedding`, `(workspace_id, agent_id)` | dedup similarity scan (14 §3) |
+| `notifications` | `(workspace_id, recipient_subject, read_at)`, unique `(workspace_id, recipient_subject, dedupe_key) where read_at is null` | owner inbox + unread count; **per-recipient** dedupe of open notices (16) |
+| `tool_approvals` | `(workspace_id, status, requested_at)` | approver queue of pending tool approvals (P2) |
 
 → Next: `02-provider-gateway.md`.

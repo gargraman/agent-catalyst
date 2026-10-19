@@ -13,6 +13,7 @@ import { useAuth, useWorkspace } from "@/lib/auth";
 import { ORG } from "@/lib/org";
 import { DEFAULT_WORKSPACE_ID } from "@/lib/iam";
 import { resolveRun, statusLabel as runStatusLabel, type RunCtx } from "@/lib/runtime-access";
+import { useMcpServers } from "@/lib/store";
 import { getKb, type Agent } from "@/lib/data";
 import { usd } from "@/lib/format";
 
@@ -41,10 +42,11 @@ export function Playground({ agent, version }: { agent: Agent; version?: string 
   const [runMode, setRunMode] = React.useState<"session" | "token">("session");
   const [token, setToken] = React.useState("");
 
+  const mcpServers = useMcpServers();
   const session = { tenant: workspace?.id ?? agent.workspaceId ?? DEFAULT_WORKSPACE_ID, role, teams };
   const ctx: RunCtx = runMode === "session" ? { mode: "session" } : { mode: "token", token };
   // resolveRun is pure and cheap; compute it per render (no memo deps to keep in sync).
-  const res = resolveRun(ctx, agent, session);
+  const res = resolveRun(ctx, agent, session, mcpServers);
   const blocked = res.status !== "ok";
 
   function send() {

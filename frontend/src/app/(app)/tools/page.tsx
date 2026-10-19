@@ -1,7 +1,8 @@
 "use client";
 
 import * as React from "react";
-import { Boxes, Plug, Plus, RefreshCw, ShieldCheck, Wrench } from "lucide-react";
+import Link from "next/link";
+import { Boxes, Plug, Plus, RefreshCw, ShieldCheck, Trash2, Wrench } from "lucide-react";
 import {
   Card, CardHeader, CardTitle, CardContent, CardDescription, Badge, StatusDot, Button, Field, Input, Select, Textarea,
   Table, THead, TH, TR, TD,
@@ -13,7 +14,9 @@ import { GateButton } from "@/components/gate";
 import { AccessPolicyEditor } from "@/components/access-policy-editor";
 import { useAuth, usePrincipal } from "@/lib/auth";
 import { canUse, policySummary, type AccessPolicy } from "@/lib/access-policy";
-import { useMcpServers, useTools, useAgents, addTool, genId, toast } from "@/lib/store";
+import { useMcpServers, useTools, useAgents, addTool, updateTool, deleteTool, reconnectMcpServer, genId } from "@/lib/store";
+import { mcpAuthLabel } from "@/lib/mcp";
+import { riskTone } from "@/lib/tools";
 import { maskSecret, vaultRef } from "@/lib/secrets";
 import type { HttpToolConfig, McpServer, RepoTool } from "@/lib/data";
 import { relative } from "@/lib/format";
@@ -38,7 +41,9 @@ function AccessControl({ kind, id, policy }: { kind: "tool" | "mcp"; id: string;
 /* @backend integration points (this page):
  *  - @backend GET /v1/tools - tool repository list [via useTools]
  *  - @backend POST /v1/tools - add a repository tool [via addTool]
+ *  - @backend PUT/DELETE /v1/tools/:id - edit/remove a repository tool [via updateTool/deleteTool]
  *  - @backend GET /v1/mcp-servers - connected MCP servers list [via useMcpServers]
+ *  - @backend POST /v1/mcp-servers/:id/discover - reconnect + re-discover [via reconnectMcpServer]
  *  - @backend PUT /v1/{tools|mcp}/:id/access-policy - per-resource access edits [via setAccessPolicy]
  * See src/lib/store.ts markers + docs/backend-integration-map.md for the authoritative contracts.
  */
@@ -89,7 +94,10 @@ function McpTab({ servers }: { servers: McpServer[] }) {
             <Card key={s.id}>
               <CardHeader>
                 <div>
-                  <CardTitle className="flex items-center gap-2"><Plug className="size-4 text-muted" />{s.name}</CardTitle>
+                  <CardTitle className="flex items-center gap-2">
+                    <Plug className="size-4 text-muted" />
+                    <Link href={`/tools/mcp/${s.id}`} className="hover:underline">{s.name}</Link>
+                  </CardTitle>
                   <CardDescription className="font-mono">{s.endpoint}</CardDescription>
                 </div>
                 <Badge tone={s.transport === "http" ? "accent" : "violet"}>{s.transport}</Badge>
@@ -97,11 +105,11 @@ function McpTab({ servers }: { servers: McpServer[] }) {
               <CardContent className="space-y-3 pt-0">
                 <div className="flex items-center justify-between text-xs">
                   <span className="inline-flex items-center gap-1.5 capitalize text-ink-2"><StatusDot tone={tone} />{s.status}</span>
-                  <span className="text-muted">{s.auth} · {s.toolCount} tools · {s.boundAgents} agents</span>
+                  <span className="text-muted">{mcpAuthLabel(s.auth)} · {s.toolCount} tools · {s.boundAgents} agents</span>
                 </div>
                 {s.status === "error" ? (
                   <div className="space-y-2 rounded-lg border border-critical/30 bg-critical/10 p-3">
-                    <p className="text-xs text-ink-2">Discovery failed: token expired. Reconnect to refresh the tool catalog.</p>
+                    <p className="text-xs text-ink-2">Discovery failed. Reconnect to refresh the tool catalog.</p>
                     <GateButton permission="mcp.manage" variant="outline" size="sm" onClick={() => setReconnect(s)}><RefreshCw className="size-3.5" /> Reconnect</GateButton>
                   </div>
                 ) : (
@@ -112,7 +120,9 @@ function McpTab({ servers }: { servers: McpServer[] }) {
                         <Badge tone={t.enabled ? "good" : "neutral"}>{t.enabled ? "enabled" : "disabled"}</Badge>
                       </div>
                     ))}
-                    {s.toolCount > 3 && <button className="text-xs text-accent hover:underline">View all {s.toolCount} tools</button>}
+                    <Link href={`/tools/mcp/${s.id}`} className="inline-block text-xs text-accent hover:underline">
+                      {s.toolCount > 3 ? `View all ${s.toolCount} tools` : "Manage server"}
+                    </Link>
                   </div>
                 )}
                 <div className="text-[11px] text-muted">Last discovery {relative(s.lastDiscovery)}</div>
@@ -150,7 +160,7 @@ function McpTab({ servers }: { servers: McpServer[] }) {
       <ConfirmDialog
         open={!!reconnect}
         onClose={() => setReconnect(null)}
-        onConfirm={() => toast("Reconnected and re-discovered tools")}
+        onConfirm={() => { if (reconnect) reconnectMcpServer(reconnect.id); }}
         title="Reconnect MCP server"
         confirmLabel="Reconnect"
         tone="primary"
@@ -161,7 +171,8 @@ function McpTab({ servers }: { servers: McpServer[] }) {
 }
 
 function RepoTab({ tools }: { tools: RepoTool[] }) {
-  const [open, setOpen] = React.useState(false);
+  const [editing, setEditing] = React.useState<RepoTool | null | undefined>(undefined); // undefined = closed, null = new
+  const [del, setDel] = React.useState<RepoTool | null>(null);
   const { can } = useAuth();
   const admin = can("access.manage");
   const [openAccess, setOpenAccess] = React.useState<string | null>(null);
@@ -170,20 +181,23 @@ function RepoTab({ tools }: { tools: RepoTool[] }) {
     <Card>
       <CardHeader>
         <div><CardTitle>Tool repository</CardTitle><CardDescription>Reusable tools that any agent version can bind.</CardDescription></div>
-        <GateButton permission="tool.manage" variant="outline" size="sm" onClick={() => setOpen(true)}><Plus className="size-3.5" /> New tool</GateButton>
+        <GateButton permission="tool.manage" variant="outline" size="sm" onClick={() => setEditing(null)}><Plus className="size-3.5" /> New tool</GateButton>
       </CardHeader>
       <CardContent className="pt-0">
         <Table>
-          <THead><TR><TH>Tool</TH><TH>Kind</TH><TH>Description</TH><TH>Access</TH><TH className="text-right">Used by</TH><TH></TH></TR></THead>
+          <THead><TR><TH>Tool</TH><TH>Kind</TH><TH>Risk</TH><TH>Description</TH><TH>Access</TH><TH className="text-right">Used by</TH><TH></TH></TR></THead>
           <tbody>
             {tools.map((t) => (
               <React.Fragment key={t.name}>
                 <TR>
                   <TD><span className="font-mono text-xs text-ink-2">{t.name}</span></TD>
                   <TD><Badge tone={t.kind === "HTTP" ? "accent" : t.kind === "Sub-agent" ? "violet" : "neutral"}>{t.kind}</Badge></TD>
+                  <TD>{t.riskTier ? <Badge tone={riskTone(t.riskTier)}>{t.riskTier}</Badge> : <span className="text-xs text-muted">—</span>}</TD>
                   <TD className="text-ink-2">
                     {t.description}
                     {t.httpConfig && <span className="mt-0.5 block font-mono text-xs text-muted">{t.httpConfig.method} {t.httpConfig.url}</span>}
+                    {t.kind === "Sub-agent" && t.subagentTarget && <span className="mt-0.5 block text-xs text-muted">→ {t.subagentTarget} · depth {t.maxDepth ?? 2} · fan-out {t.maxFanout ?? 3}</span>}
+                    {t.kind === "Built-in" && t.builtinId && <span className="mt-0.5 block font-mono text-xs text-muted">{t.builtinId}</span>}
                   </TD>
                   <TD className="text-xs text-muted">{policySummary(t.accessPolicy)}</TD>
                   <TD className="text-right tnum text-ink-2">{t.usedBy} {t.usedBy === 1 ? "agent" : "agents"}</TD>
@@ -194,13 +208,14 @@ function RepoTab({ tools }: { tools: RepoTool[] }) {
                           {openAccess === t.name ? "Hide access" : "Edit access"}
                         </Button>
                       )}
-                      <GateButton permission="tool.manage" variant="ghost" size="sm" onClick={() => toast("Edit tool (coming soon)", "neutral")}>Edit</GateButton>
+                      <GateButton permission="tool.manage" variant="ghost" size="sm" onClick={() => setEditing(t)}>Edit</GateButton>
+                      <GateButton permission="tool.manage" variant="ghost" size="sm" onClick={() => setDel(t)} aria-label="Delete tool"><Trash2 className="size-4" /></GateButton>
                     </div>
                   </TD>
                 </TR>
                 {admin && openAccess === t.name && (
                   <TR>
-                    <TD colSpan={6}>
+                    <TD colSpan={7}>
                       <AccessPolicyEditor kind="tool" id={t.name} policy={t.accessPolicy} readOnly={false} />
                     </TD>
                   </TR>
@@ -210,12 +225,33 @@ function RepoTab({ tools }: { tools: RepoTool[] }) {
           </tbody>
         </Table>
       </CardContent>
-      <NewToolDialog open={open} onClose={() => setOpen(false)} />
+      <ToolDialog key={editing === undefined ? "closed" : (editing?.name ?? "new")} open={editing !== undefined} editing={editing ?? null} onClose={() => setEditing(undefined)} />
+      <ConfirmDialog
+        open={!!del}
+        onClose={() => setDel(null)}
+        onConfirm={() => { if (del) deleteTool(del.name); }}
+        title="Delete tool"
+        confirmLabel="Delete"
+        tone="danger"
+        body={
+          <>
+            Remove <span className="font-mono text-ink">{del?.name}</span> from the repository?
+            {del && del.usedBy > 0 && (
+              <span className="mt-2 block text-critical">{del.usedBy} {del.usedBy === 1 ? "agent" : "agents"} still bind this tool — those bindings will stop resolving.</span>
+            )}
+          </>
+        }
+      />
     </Card>
   );
 }
 
 const BUILTIN_CATALOG = ["code-exec-python", "web-search"];
+const RISK_OPTIONS: { value: NonNullable<RepoTool["riskTier"]>; label: string }[] = [
+  { value: "read", label: "Read (no side effects)" },
+  { value: "write", label: "Write (may change state)" },
+  { value: "destructive", label: "Destructive (requires approval)" },
+];
 
 const AUTH_OPTIONS: { value: HttpToolConfig["auth"]; label: string }[] = [
   { value: "none", label: "None" },
@@ -224,83 +260,114 @@ const AUTH_OPTIONS: { value: HttpToolConfig["auth"]; label: string }[] = [
   { value: "basic", label: "Basic auth" },
 ];
 
-function NewToolDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
+// Keyed by the tool name (or "new") in RepoTab so it remounts with fresh initial state per open —
+// initializing from `editing` props directly, no setState-in-effect.
+function ToolDialog({ open, editing, onClose }: { open: boolean; editing: RepoTool | null; onClose: () => void }) {
   const agents = useAgents();
   const tools = useTools();
-  const [kind, setKind] = React.useState<RepoTool["kind"]>("HTTP");
-  const [name, setName] = React.useState("");
-  const [description, setDescription] = React.useState("");
-  const [method, setMethod] = React.useState<HttpToolConfig["method"]>("GET");
-  const [url, setUrl] = React.useState("");
-  const [auth, setAuth] = React.useState<HttpToolConfig["auth"]>("none");
+  const isEdit = !!editing;
+  const [kind, setKind] = React.useState<RepoTool["kind"]>(editing?.kind ?? "HTTP");
+  const [name, setName] = React.useState(editing?.name ?? "");
+  const [description, setDescription] = React.useState(editing?.description ?? "");
+  const [riskTier, setRiskTier] = React.useState<NonNullable<RepoTool["riskTier"]>>(editing?.riskTier ?? "read");
+  const [method, setMethod] = React.useState<HttpToolConfig["method"]>(editing?.httpConfig?.method ?? "GET");
+  const [url, setUrl] = React.useState(editing?.httpConfig?.url ?? "");
+  const [auth, setAuth] = React.useState<HttpToolConfig["auth"]>(editing?.httpConfig?.auth ?? "none");
   const [secret, setSecret] = React.useState("");
-  const [headers, setHeaders] = React.useState("");
-  const [argsSchema, setArgsSchema] = React.useState("");
-  const [agent, setAgent] = React.useState(agents[0]?.name ?? "");
-  const [catalog, setCatalog] = React.useState(BUILTIN_CATALOG[0]);
-
-  function reset() {
-    setKind("HTTP"); setName(""); setDescription("");
-    setMethod("GET"); setUrl(""); setAuth("none"); setSecret(""); setHeaders(""); setArgsSchema("");
-    setAgent(agents[0]?.name ?? ""); setCatalog(BUILTIN_CATALOG[0]);
-  }
-  function close() { reset(); onClose(); }
+  const [headers, setHeaders] = React.useState(editing?.httpConfig?.headers ?? "");
+  const [argsSchema, setArgsSchema] = React.useState(editing?.httpConfig?.argsSchema ?? "");
+  const [egress, setEgress] = React.useState(editing?.httpConfig?.egress?.join(", ") ?? "");
+  const [agent, setAgent] = React.useState(editing?.subagentTarget ?? agents[0]?.name ?? "");
+  const [catalog, setCatalog] = React.useState(editing?.builtinId ?? BUILTIN_CATALOG[0]);
+  const [maxDepth, setMaxDepth] = React.useState(String(editing?.maxDepth ?? 2));
+  const [maxFanout, setMaxFanout] = React.useState(String(editing?.maxFanout ?? 3));
 
   const trimmedName = name.trim();
-  const nameTaken = tools.some((t) => t.name === trimmedName);
+  const nameTaken = !isEdit && tools.some((t) => t.name === trimmedName);
+  // An edited HTTP tool keeps its existing vaulted secret if the auth method is unchanged and no new one typed.
+  const keepExistingSecret = !!editing?.httpConfig?.authRef && editing.httpConfig.auth === auth;
+  const needsSecret = kind === "HTTP" && auth !== "none" && !keepExistingSecret;
+  const argsSchemaError = (() => {
+    const v = argsSchema.trim();
+    if (!v) return "";
+    try { JSON.parse(v); return ""; } catch { return "Arguments schema must be valid JSON."; }
+  })();
+  const headersError = headers
+    .split("\n").map((l) => l.trim()).filter(Boolean)
+    .some((l) => !/^[^:]+:.+/.test(l)) ? "Each header line must be in \"Key: Value\" form." : "";
+
   const valid =
     trimmedName.length > 0 && !nameTaken && description.trim().length > 0 &&
     (kind !== "HTTP" || url.trim().length > 0) &&
-    (kind !== "HTTP" || auth === "none" || secret.trim().length > 0);
+    (!needsSecret || secret.trim().length > 0) &&
+    !argsSchemaError && !headersError;
 
   function submit() {
     if (!valid) return;
-    const base = { name: trimmedName, kind, description: description.trim(), usedBy: 0 };
+    const base = { name: trimmedName, kind, description: description.trim(), riskTier } as Partial<RepoTool>;
+    let patch: Partial<RepoTool>;
     if (kind === "HTTP") {
+      const authRef =
+        auth === "none" ? undefined
+          : secret.trim() ? { masked: maskSecret(secret), vaultPath: vaultRef("tool", genId("tool")) }
+          : editing?.httpConfig?.authRef; // preserve existing vaulted secret on edit
+      const egressList = egress.split(",").map((s) => s.trim()).filter(Boolean);
       const httpConfig: HttpToolConfig = {
-        method,
-        url: url.trim(),
-        auth,
-        ...(auth !== "none" && secret.trim()
-          ? { authRef: { masked: maskSecret(secret), vaultPath: vaultRef("tool", genId("tool")) } }
-          : {}),
+        method, url: url.trim(), auth,
+        ...(authRef ? { authRef } : {}),
         ...(headers.trim() ? { headers: headers.trim() } : {}),
         ...(argsSchema.trim() ? { argsSchema: argsSchema.trim() } : {}),
+        ...(egressList.length ? { egress: egressList } : {}),
       };
-      addTool({ ...base, httpConfig });
+      patch = { ...base, httpConfig, subagentTarget: undefined, builtinId: undefined };
+    } else if (kind === "Sub-agent") {
+      patch = {
+        ...base, subagentTarget: agent,
+        maxDepth: Math.max(1, parseInt(maxDepth, 10) || 2),
+        maxFanout: Math.max(1, parseInt(maxFanout, 10) || 3),
+        httpConfig: undefined, builtinId: undefined,
+      };
     } else {
-      addTool(base);
+      patch = { ...base, builtinId: catalog, httpConfig: undefined, subagentTarget: undefined };
     }
-    close();
+
+    if (isEdit && editing) updateTool(editing.name, patch);
+    else addTool({ name: trimmedName, kind, description: description.trim(), usedBy: 0, riskTier, ...patch });
+    onClose();
   }
 
   return (
     <Dialog
       open={open}
-      onClose={close}
-      title="New tool"
-      description="Add a reusable tool to the repository."
+      onClose={onClose}
+      title={isEdit ? "Edit tool" : "New tool"}
+      description={isEdit ? "Update this repository tool." : "Add a reusable tool to the repository."}
       footer={
         <>
-          <Button variant="ghost" onClick={close}>Cancel</Button>
-          <Button variant="primary" disabled={!valid} onClick={submit}><Plus className="size-4" /> Add tool</Button>
+          <Button variant="ghost" onClick={onClose}>Cancel</Button>
+          <Button variant="primary" disabled={!valid} onClick={submit}><Plus className="size-4" /> {isEdit ? "Save tool" : "Add tool"}</Button>
         </>
       }
     >
       <div className="space-y-4">
         <Field label="Kind">
-          <Select value={kind} onChange={(e) => setKind(e.target.value as RepoTool["kind"])}>
+          <Select value={kind} onChange={(e) => setKind(e.target.value as RepoTool["kind"])} disabled={isEdit}>
             <option value="HTTP">HTTP</option>
             <option value="Built-in">Built-in</option>
             <option value="Sub-agent">Sub-agent</option>
           </Select>
         </Field>
         <Field label="Name">
-          <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. http-enrich-ip" />
+          <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. http-enrich-ip" disabled={isEdit} />
         </Field>
         {nameTaken && <p className="-mt-2 text-xs text-critical">A tool named &quot;{trimmedName}&quot; already exists.</p>}
         <Field label="Description">
           <Input value={description} onChange={(e) => setDescription(e.target.value)} placeholder="What does this tool do?" />
+        </Field>
+        <Field label="Risk tier" hint="Drives the runtime approval gate; destructive tools require human approval.">
+          <Select value={riskTier} onChange={(e) => setRiskTier(e.target.value as NonNullable<RepoTool["riskTier"]>)}>
+            {RISK_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </Select>
         </Field>
 
         {kind === "HTTP" && (
@@ -328,27 +395,42 @@ function NewToolDialog({ open, onClose }: { open: boolean; onClose: () => void }
               </Field>
               {auth !== "none" && (
                 <div className="sm:col-span-2">
-                  <Field label="Credential" hint="Stored in the vault; only a masked reference is kept.">
-                    <Input type="password" value={secret} onChange={(e) => setSecret(e.target.value)} placeholder="Paste secret" />
+                  <Field label="Credential" hint={keepExistingSecret ? "Leave blank to keep the current vaulted secret." : "Stored in the vault; only a masked reference is kept."}>
+                    <Input type="password" value={secret} onChange={(e) => setSecret(e.target.value)} placeholder={keepExistingSecret ? "•••••••• (unchanged)" : "Paste secret"} />
                   </Field>
                 </div>
               )}
             </div>
+            <Field label="Egress allow-list" hint="Optional. Comma-separated domains this tool may reach (deny-by-default).">
+              <Input value={egress} onChange={(e) => setEgress(e.target.value)} placeholder="api.internal, example.com" />
+            </Field>
             <Field label="Headers" hint="Optional. One per line, e.g. X-Env: prod">
               <Textarea rows={2} value={headers} onChange={(e) => setHeaders(e.target.value)} placeholder="Accept: application/json" />
             </Field>
+            {headersError && <p className="-mt-2 text-xs text-critical">{headersError}</p>}
             <Field label="Arguments schema" hint="Optional JSON schema for the tool's input arguments.">
               <Textarea rows={4} value={argsSchema} onChange={(e) => setArgsSchema(e.target.value)} placeholder={'{ "type": "object", "properties": {} }'} />
             </Field>
+            {argsSchemaError && <p className="-mt-2 text-xs text-critical">{argsSchemaError}</p>}
           </div>
         )}
 
         {kind === "Sub-agent" && (
-          <Field label="Agent">
-            <Select value={agent} onChange={(e) => setAgent(e.target.value)}>
-              {agents.map((a) => <option key={a.id} value={a.name}>{a.name}</option>)}
-            </Select>
-          </Field>
+          <div className="space-y-4">
+            <Field label="Agent">
+              <Select value={agent} onChange={(e) => setAgent(e.target.value)}>
+                {agents.map((a) => <option key={a.id} value={a.name}>{a.name}</option>)}
+              </Select>
+            </Field>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Field label="Max depth" hint="Delegation depth cap.">
+                <Input type="number" min={1} value={maxDepth} onChange={(e) => setMaxDepth(e.target.value)} />
+              </Field>
+              <Field label="Max fan-out" hint="Concurrent children per turn.">
+                <Input type="number" min={1} value={maxFanout} onChange={(e) => setMaxFanout(e.target.value)} />
+              </Field>
+            </div>
+          </div>
         )}
 
         {kind === "Built-in" && (

@@ -142,7 +142,7 @@ well-understood CRUD/infra.
 | 9 | Publish + export + runtime endpoint | `POST /v1/agents/:id/invoke` (caller-token auth, pinned version, per-token rate limit P1 / spend+concurrency P2), secret-free cURL/TS/Python export from OpenAPI | Med-High |
 | 10 | Observability | Langfuse per-call logging (model, prompt version, latency, cost, success) → runs/spans feed the Runs page | Low-Med |
 | 11 | Secrets | Vault Transit envelope encryption (per-workspace DEK) for provider/tool/source creds; log redaction | Med |
-| 12 | MCP + sub-agents (P2) | Server registry, connect/discover, egress-restricted worker, tool-schema snapshot, LangGraph subgraph delegation | High |
+| 12 | MCP + sub-agents (P2) | Server registry, connect/discover, egress-restricted worker, tool-schema snapshot, LangGraph subgraph delegation. Deps: official **`mcp` SDK** (client) + **gVisor sandbox** (per-call isolation + egress proxy). RBAC = **builder+** (`mcp.manage`/`tool.manage`); governance = **open registration** + policy/egress/audit (no vetted catalog). | High |
 | 13 | Tests + CI | Two-layer: deterministic unit/integration + versioned-prompt eval set gated in CI | Med |
 
 **Repo shape (recommended):** keep the monorepo — `frontend/` (exists) + `services/api`,
@@ -362,8 +362,10 @@ single-tenant) is demoable in ~15-19 pw; multi-tenant + security hardening (M6-M
 4. **SSE through proxies** — buffering/timeouts; test the full proxy path early (M2).
 5. **OpenAPI drift** — generate the FE client in CI so FE/BE types never diverge.
 6. **Eval + runtime cost at scale** — per-tenant quotas, caching, batch pool autoscaling.
-7. **Tool/MCP abuse via prompt injection** (SSRF, exfiltration, destructive calls) — sandbox + egress
-   allow-lists + tool-arg validation + human-approval gate for high-risk tools + threat model.
+7. **Tool/MCP abuse via prompt injection** (SSRF, exfiltration, destructive calls) — per-call **gVisor
+   sandbox** (official `mcp` SDK client inside it) + egress allow-lists (deny-by-default proxy) + tool-arg
+   validation + human-approval gate for high-risk tools + threat model. Governance is **open registration
+   + policy/egress/audit** (no vetted catalog), with MCP/tool management at **builder+**.
 8. **Sensitive data in traces/provider retention** — redaction before logging, per-workspace retention,
    provider ZDR/inference-geo where required.
 9. **Telemetry volume** overwhelming Postgres — offload traces to Langfuse/ClickHouse, partition `runs`.

@@ -2,17 +2,18 @@
 
 import { useRef, useSyncExternalStore } from "react";
 import {
-  AGENTS, KNOWLEDGE_BASES, INGESTION_JOBS, MCP_SERVERS, TOOLS_REPO, EVAL_RUNS, RUNS,
+  AGENTS, KNOWLEDGE_BASES, INGESTION_JOBS, MCP_SERVERS, TOOLS_REPO, EVAL_RUNS, EVAL_SUITES, RUNS, TOOL_APPROVALS,
   API_TOKENS, PROVIDER_KEYS, MEMBERS, INVITES, CHANNELS_SEED, resolveConfig, getVersions,
-  WORKSPACE_SETTINGS, LIMITS, defaultWorkspaceSettings, defaultLimits,
+  WORKSPACE_SETTINGS, LIMITS, defaultWorkspaceSettings, defaultLimits, defaultEvalPolicy,
   type Agent, type AgentConfig, type KnowledgeBase, type DataSource, type IngestionJob, type McpServer,
-  type RepoTool, type EvalRun, type Run, type ApiToken, type ProviderKey, type Member, type Invite, type Channel,
-  type WorkspaceSettings, type Limits,
+  type RepoTool, type EvalRun, type EvalSuite, type EvalCaseDef, type Run, type ToolApproval, type ApiToken, type ProviderKey, type Member, type Invite, type Channel,
+  type WorkspaceSettings, type Limits, type EvalPolicy, type Verdict,
 } from "./data";
 import { type AccessPolicy, defaultPolicy } from "./access-policy";
 import type { Role } from "./permissions";
 import { DEFAULT_WORKSPACE_ID, MOCK_PROFILE } from "./iam";
 import { maskSecret } from "./secrets";
+import { MCP_REF_PREFIX } from "./tools";
 
 /* ----------------------------------------------------------- tenancy seed */
 const DEFAULT_WS = DEFAULT_WORKSPACE_ID;
@@ -56,6 +57,23 @@ function withBoundAgentCounts(agents: Agent[], kbs: KnowledgeBase[]): KnowledgeB
   });
 }
 
+// Recompute RepoTool.usedBy (agents referencing the tool by name) and McpServer.boundAgents (agents
+// with at least one `mcp:<serverId>/…` ref) after a bind/unbind, mirroring withBoundAgentCounts.
+function withBoundToolCounts(
+  agents: Agent[], tools: RepoTool[], mcpServers: McpServer[],
+): { tools: RepoTool[]; mcpServers: McpServer[] } {
+  const nextTools = tools.map((t) => {
+    const count = agents.filter((a) => a.tools.includes(t.name)).length;
+    return t.usedBy === count ? t : { ...t, usedBy: count };
+  });
+  const nextServers = mcpServers.map((s) => {
+    const prefix = `${MCP_REF_PREFIX}${s.id}/`;
+    const count = agents.filter((a) => a.tools.some((ref) => ref.startsWith(prefix))).length;
+    return s.boundAgents === count ? s : { ...s, boundAgents: count };
+  });
+  return { tools: nextTools, mcpServers: nextServers };
+}
+
 /* ----------------------------------------------------------------- state */
 export type Toast = { id: string; tone: "good" | "critical" | "neutral"; message: string };
 
@@ -69,6 +87,8 @@ type State = {
   mcpServers: McpServer[];
   tools: RepoTool[];
   evalRuns: EvalRun[];
+  evalSuites: EvalSuite[];
+  evalPolicy: Record<string, EvalPolicy>; // per-workspace; falls back to defaultEvalPolicy()
   runs: Run[];
   tokens: ApiToken[];
   providerKeys: ProviderKey[];
@@ -78,6 +98,7 @@ type State = {
   //   session roster from the IAM/join endpoints; this shim merges into the effective profile in auth.tsx.
   joinedWorkspaceIds: string[];
   channels: Channel[];
+  toolApprovals: ToolApproval[];
   workspaceSettings: Record<string, WorkspaceSettings>;
   limits: Record<string, Limits>;
   toasts: Toast[];
@@ -98,6 +119,8 @@ let state: State = {
   mcpServers: MCP_SERVERS.map(tagResource),
   tools: TOOLS_REPO.map(tagResource),
   evalRuns: EVAL_RUNS.map((e) => ({ ...e, workspaceId: e.workspaceId ?? tenantOfAgent(e.agentId, seedAgents) })),
+  evalSuites: EVAL_SUITES.map((s) => ({ ...s, workspaceId: s.workspaceId ?? tenantOfAgent(s.agentId, seedAgents) })),
+  evalPolicy: {},
   runs: RUNS.map((r) => ({ ...r, workspaceId: r.workspaceId ?? tenantOfAgent(r.agentId, seedAgents) })),
   tokens: API_TOKENS,
   providerKeys: PROVIDER_KEYS,
@@ -105,6 +128,7 @@ let state: State = {
   invites: INVITES,
   joinedWorkspaceIds: [],
   channels: CHANNELS_SEED.map(tagResource),
+  toolApprovals: TOOL_APPROVALS.map((a) => ({ ...a, workspaceId: a.workspaceId ?? tenantOfAgent(a.agentId, seedAgents) })),
   workspaceSettings: WORKSPACE_SETTINGS,
   limits: LIMITS,
   toasts: [],
@@ -186,6 +210,57 @@ export function updateLimits(wsId: string, patch: Partial<Limits>) {
   set({ limits: { ...state.limits, [wsId]: { ...cur, ...patch } } });
   toast("Limits saved");
 }
+// @backend PUT /v1/workspaces/:id/eval-policy - admin-governed verdict/publish thresholds (eval.govern).
+//   Gates the verdict (min cases / quality / efficiency) and the publish low-confidence override. [backend/05 §1,§5]
+export function setEvalPolicy(wsId: string, patch: Partial<EvalPolicy>) {
+  const cur = state.evalPolicy[wsId] ?? defaultEvalPolicy();
+  set({ evalPolicy: { ...state.evalPolicy, [wsId]: { ...cur, ...patch } } });
+  toast("Eval policy saved");
+}
+// @backend POST /v1/versions/:vid/baseline - re-freeze the trusted baseline to the active version; this is
+//   explicit + audited (writes an audit_logs row) so quality can't erode one silent step at a time
+//   (backend/05 §4, backend/08). Admin / eval.govern. Mock: records the action via a toast.
+export function reFreezeBaseline(agentId: string) {
+  const a = state.agents.find((x) => x.id === agentId);
+  if (!a) return;
+  toast(`Baseline re-frozen to ${a.activeVersion} for ${a.name} (audited).`);
+}
+
+/* ---------------------------------------------------- eval suite / case authoring (eval.author) */
+// @backend POST /v1/agents/:id/eval-suites - create a suite (01 §4.5, 08 eval-suites). Mock: append in-memory.
+export function addSuite(agentId: string, name: string, cases: EvalCaseDef[] = []): string {
+  const id = genId("suite");
+  const workspaceId = state.agents.find((a) => a.id === agentId)?.workspaceId ?? state.activeWorkspaceId;
+  const suite: EvalSuite = { id, agentId, name: name.trim() || "Untitled suite", cases, workspaceId, updatedAt: nowIso() };
+  set({ evalSuites: [...state.evalSuites, suite] });
+  toast(`Suite "${suite.name}" created`);
+  return id;
+}
+// @backend PATCH /v1/eval-suites/:sid - rename a suite.
+export function renameSuite(suiteId: string, name: string) {
+  set({ evalSuites: state.evalSuites.map((s) => (s.id === suiteId ? { ...s, name: name.trim() || s.name, updatedAt: nowIso() } : s)) });
+}
+// @backend DELETE /v1/eval-suites/:sid - delete a suite and its cases.
+export function deleteSuite(suiteId: string) {
+  set({ evalSuites: state.evalSuites.filter((s) => s.id !== suiteId) });
+  toast("Suite deleted");
+}
+// @backend POST|PUT /v1/eval-suites/:sid/cases[/:cid] - create or update a case. The case object carries its
+//   own freshly-cloned assertions[]/rubric[] from the editor, so this never aliases another case's arrays.
+export function upsertCase(suiteId: string, c: EvalCaseDef) {
+  set({
+    evalSuites: state.evalSuites.map((s) => {
+      if (s.id !== suiteId) return s;
+      const exists = s.cases.some((x) => x.id === c.id);
+      const cases = exists ? s.cases.map((x) => (x.id === c.id ? c : x)) : [...s.cases, c];
+      return { ...s, cases, updatedAt: nowIso() };
+    }),
+  });
+}
+// @backend DELETE /v1/eval-suites/:sid/cases/:cid - delete a case.
+export function deleteCase(suiteId: string, caseId: string) {
+  set({ evalSuites: state.evalSuites.map((s) => (s.id === suiteId ? { ...s, cases: s.cases.filter((c) => c.id !== caseId), updatedAt: nowIso() } : s)) });
+}
 // @backend PUT /v1/{agents|knowledge|tools|mcp|channels}/:id/access-policy - persist per-resource policy;
 //   server enforces it on read/manage and at invoke. [ref: frontend-auth-access-plan.md#part-b2]
 /** Admin-configurable per-resource access policy (Part B2). */
@@ -233,7 +308,13 @@ export function removeMember(email: string) {
 export function addAgent(a: Agent) {
   const stamped = tagResource({ ...a, workspaceId: a.workspaceId ?? state.activeWorkspaceId });
   const agents = [stamped, ...state.agents];
-  set({ agents, knowledgeBases: withBoundAgentCounts(agents, state.knowledgeBases) });
+  const toolCounts = withBoundToolCounts(agents, state.tools, state.mcpServers);
+  set({
+    agents,
+    knowledgeBases: withBoundAgentCounts(agents, state.knowledgeBases),
+    tools: toolCounts.tools,
+    mcpServers: toolCounts.mcpServers,
+  });
   toast(`Agent "${stamped.name}" created as a draft`);
 }
 // @backend PATCH /v1/agents/:id - generic field patch + bind knowledge/tools. Lifecycle transitions
@@ -241,10 +322,21 @@ export function addAgent(a: Agent) {
 //   below (publishAgent/unpublishAgent/archiveAgent/restoreAgent/rollbackVersion), which map to the same
 //   endpoint but centralize the passing-eval guard.
 export function updateAgent(id: string, patch: Partial<Agent>, notify = true) {
-  const agents = state.agents.map((a) => (a.id === id ? { ...a, ...patch, updatedAt: nowIso() } : a));
-  // Recompute KB bound-agent counts only when a binding actually changed (bind/detach).
-  if ("knowledgeBases" in patch) set({ agents, knowledgeBases: withBoundAgentCounts(agents, state.knowledgeBases) });
-  else set({ agents });
+  // A behavior-changing (trigger) field edit flags the agent for re-eval (publishable proxy, backend/05 §5),
+  // unless the caller set needsReEval explicitly (e.g. a rollback that clears it).
+  const TRIGGER_FIELDS: (keyof Agent)[] = ["provider", "model", "knowledgeBases", "tools"];
+  const touchedTrigger = TRIGGER_FIELDS.some((k) => k in patch);
+  const eff: Partial<Agent> = touchedTrigger && patch.needsReEval === undefined ? { ...patch, needsReEval: true } : patch;
+  const agents = state.agents.map((a) => (a.id === id ? { ...a, ...eff, updatedAt: nowIso() } : a));
+  // Recompute bound-agent counts only when a binding actually changed (bind/detach).
+  const extra: Partial<State> = {};
+  if ("knowledgeBases" in patch) extra.knowledgeBases = withBoundAgentCounts(agents, state.knowledgeBases);
+  if ("tools" in patch) {
+    const counts = withBoundToolCounts(agents, state.tools, state.mcpServers);
+    extra.tools = counts.tools;
+    extra.mcpServers = counts.mcpServers;
+  }
+  set({ agents, ...extra });
   if (notify) toast("Changes saved");
 }
 // @backend PATCH /v1/agents/:id - persist draft config (model params, prompt, memory, retrieval, spend).
@@ -263,7 +355,9 @@ export function updateAgentConfig(id: string, patch: Partial<AgentConfig>, notif
         guardrails: { ...cur.guardrails, ...patch.guardrails },
         spend: { ...cur.spend, ...patch.spend },
       };
-      return { ...a, config: next, updatedAt: nowIso() };
+      // Any config edit except a spend-only change is a behavior (drift) trigger → needs re-eval (backend/05 §5).
+      const behaviorChange = Object.keys(patch).some((k) => k !== "spend");
+      return { ...a, config: next, ...(behaviorChange ? { needsReEval: true } : {}), updatedAt: nowIso() };
     }),
   });
   if (notify) toast("Changes saved");
@@ -277,6 +371,22 @@ export function publishAgent(id: string): boolean {
   if (a.status === "eval_failing") {
     toast("Publish blocked: the latest eval is failing. Run a passing eval first.", "critical");
     return false;
+  }
+  // The publish eval-gate (backend/05 §5): a behavior-changing edit since the last passing eval blocks
+  // publish until a fresh passing eval clears needsReEval. Mirrors the server's 409 publish.eval_gate.
+  if (a.needsReEval) {
+    toast("Publish blocked: configuration changed since the last passing eval. Run a passing eval first.", "critical");
+    return false;
+  }
+  // Low-confidence gate (backend/05 §5 publish.low_confidence): the latest eval's suite is below the
+  // min-case floor, so the verdict isn't trustworthy — blocked unless an admin enabled the override.
+  const latest = state.evalRuns.find((e) => e.agentId === id); // evalRuns are newest-first
+  if (latest?.verdict === "low_confidence") {
+    const policy = state.evalPolicy[a.workspaceId ?? state.activeWorkspaceId] ?? defaultEvalPolicy();
+    if (!policy.allowLowConfidenceOverride) {
+      toast("Publish blocked: the latest eval is low-confidence (suite below the min-case floor). Expand the suite, or an admin can enable the low-confidence override.", "critical");
+      return false;
+    }
   }
   const endpoint = a.endpoint ?? a.id;
   set({ agents: state.agents.map((x) => (x.id === id ? { ...x, status: "published", endpoint, updatedAt: nowIso() } : x)) });
@@ -304,7 +414,9 @@ export function rollbackVersion(id: string, label: string) {
     toast(`Unknown version "${label}"`, "critical");
     return;
   }
-  updateAgent(id, { activeVersion: label }, false);
+  // Re-pointing to a prior (already-evaluated) version clears the re-eval gate (backend/05 §5 re-point is
+  // itself eval-gated to an already-passing version).
+  updateAgent(id, { activeVersion: label, needsReEval: false }, false);
   toast(`Rolled back to ${label}`);
 }
 // @backend DELETE /v1/agents/:id - delete agent and its versions (server cascade). The mock mirrors the
@@ -313,10 +425,13 @@ export function rollbackVersion(id: string, label: string) {
 export function deleteAgent(id: string) {
   const a = state.agents.find((x) => x.id === id);
   const agents = state.agents.filter((x) => x.id !== id);
+  const toolCounts = withBoundToolCounts(agents, state.tools, state.mcpServers);
   set({
     agents,
-    // The deleted agent's bindings are gone → decrement affected KB counts.
+    // The deleted agent's bindings are gone → decrement affected KB / tool / MCP counts.
     knowledgeBases: withBoundAgentCounts(agents, state.knowledgeBases),
+    tools: toolCounts.tools,
+    mcpServers: toolCounts.mcpServers,
     evalRuns: state.evalRuns.filter((e) => e.agentId !== id),
     runs: state.runs.filter((r) => r.agentId !== id),
     tokens: a ? state.tokens.filter((t) => t.agent !== a.name) : state.tokens,
@@ -342,8 +457,9 @@ export function duplicateAgent(id: string): string | null {
     config: resolveConfig(a),
   };
   const agents = [copy, ...state.agents];
-  // The copy inherits the original's KB bindings → increment affected KB counts.
-  set({ agents, knowledgeBases: withBoundAgentCounts(agents, state.knowledgeBases) });
+  // The copy inherits the original's KB + tool/MCP bindings → increment affected counts.
+  const toolCounts = withBoundToolCounts(agents, state.tools, state.mcpServers);
+  set({ agents, knowledgeBases: withBoundAgentCounts(agents, state.knowledgeBases), tools: toolCounts.tools, mcpServers: toolCounts.mcpServers });
   toast(`Duplicated as "${copy.name}"`);
   return newId;
 }
@@ -393,7 +509,12 @@ export function addDataSource(kbId: string, src: DataSource, docs = src.docs) {
     id: genId("job"), source: src.name, kb: kbs.find((k) => k.id === kbId)?.name ?? "",
     status: "running", docs, chunks: 0, startedAt: nowIso(), duration: "0m 00s",
   };
-  set({ knowledgeBases: kbs, ingestionJobs: [job, ...state.ingestionJobs] });
+  // A KB change is a drift trigger for every bound agent (backend/05 §5, DRIFT_TRIGGERS.kb_binding) → flag re-eval.
+  set({
+    knowledgeBases: kbs,
+    ingestionJobs: [job, ...state.ingestionJobs],
+    agents: state.agents.map((a) => (a.knowledgeBases.includes(kbId) ? { ...a, needsReEval: true } : a)),
+  });
   scheduleIngestionCompletion(job.id, kbId, src.name);
   toast(`Ingesting "${src.name}"`);
 }
@@ -406,9 +527,11 @@ export function reingest(kbId: string) {
     status: "running", docs: kb.docs, chunks: kb.chunks, startedAt: nowIso(), duration: "0m 00s",
   };
   // Set the KB to indexing up-front so the running→ready transition is visible.
+  // Re-ingest bumps kb_index_version → a drift trigger for every bound agent (backend/05 §5) → flag re-eval.
   set({
     knowledgeBases: state.knowledgeBases.map((k) => (k.id === kbId ? { ...k, status: "indexing" as const } : k)),
     ingestionJobs: [job, ...state.ingestionJobs],
+    agents: state.agents.map((a) => (a.knowledgeBases.includes(kbId) ? { ...a, needsReEval: true } : a)),
   });
   scheduleIngestionCompletion(job.id, kbId, null);
   toast(`Re-ingesting "${kb.name}"`);
@@ -426,26 +549,145 @@ export function addTool(t: RepoTool) {
   set({ tools: [stamped, ...state.tools] });
   toast(`Tool "${stamped.name}" added`);
 }
+// @backend PUT /v1/mcp-servers/:id - update server config (auth/egress/approval + tool allow-list).
+export function updateMcpServer(id: string, patch: Partial<McpServer>, notify = true) {
+  set({ mcpServers: state.mcpServers.map((s) => (s.id === id ? { ...s, ...patch } : s)) });
+  if (notify) toast("MCP server updated");
+}
+// @backend DELETE /v1/mcp-servers/:id - disconnect + forget a server (vaulted creds revoked server-side).
+//   Agent bindings referencing it become dangling refs (resolveToolRef renders them as removable).
+export function deleteMcpServer(id: string) {
+  const s = state.mcpServers.find((m) => m.id === id);
+  set({ mcpServers: state.mcpServers.filter((m) => m.id !== id) });
+  toast(`MCP server "${s?.name ?? id}" disconnected`, "neutral");
+}
+// @backend POST /v1/mcp-servers/:id/discover - re-run tools/list; refresh the cached catalog + health.
+export function reconnectMcpServer(id: string) {
+  set({
+    mcpServers: state.mcpServers.map((s) =>
+      s.id === id ? { ...s, status: "connected" as const, lastDiscovery: nowIso() } : s,
+    ),
+  });
+  toast("Reconnected and re-discovered tools");
+}
+// @backend PATCH /v1/mcp-servers/:id/tools/:tool - toggle a discovered tool in the exposed allow-list.
+export function setMcpToolEnabled(serverId: string, toolName: string, enabled: boolean) {
+  set({
+    mcpServers: state.mcpServers.map((s) =>
+      s.id === serverId
+        ? { ...s, tools: s.tools.map((t) => (t.name === toolName ? { ...t, enabled } : t)) }
+        : s,
+    ),
+  });
+}
+// @backend PUT /v1/tools/:id - update a repository tool (config/schema/risk tier). Identity is `name`.
+export function updateTool(name: string, patch: Partial<RepoTool>) {
+  set({ tools: state.tools.map((t) => (t.name === name ? { ...t, ...patch } : t)) });
+  toast("Tool updated");
+}
+// @backend DELETE /v1/tools/:id - remove a repository tool. Agent bindings by this name become dangling
+//   refs (resolveToolRef renders them as removable).
+export function deleteTool(name: string) {
+  set({ tools: state.tools.filter((t) => t.name !== name) });
+  toast(`Tool "${name}" removed`, "neutral");
+}
+// @backend POST /v1/approvals/:id/decide - approve/deny a paused high-risk tool call; the server resumes
+//   (Command(resume=…)) or terminates the run. Publisher+ (tool.approve). [backend/08, backend/03 §2]
+export function decideApproval(id: string, decision: "approve" | "deny", reason?: string) {
+  set({
+    toolApprovals: state.toolApprovals.map((a) =>
+      a.id === id
+        ? { ...a, status: (decision === "approve" ? "approved" : "denied") as ToolApproval["status"], decidedBy: MOCK_PROFILE.name, decidedAt: nowIso(), decisionReason: reason }
+        : a,
+    ),
+  });
+  toast(decision === "approve" ? "Tool call approved" : "Tool call denied", decision === "approve" ? "good" : "neutral");
+}
+// The verdict rule (backend/05 §1), shared by the Evaluations page and the agent Run-eval dialog so both
+// score identically: a suite below minCases is low_confidence; a hard-assertion failure forces fail; then
+// quality must clear the threshold AND the cost regression must stay within the efficiency budget.
+export function computeVerdict(
+  a: { quality: number; costDelta: number; cases: number; hardFail?: boolean },
+  opts: { minCases: number; qualityThreshold: number; efficiencyBudgetPct: number },
+): Verdict {
+  // `hardFail` mirrors the backend's deterministic-layer result (a green/red hard-assertion gate, 05 §2).
+  // The mock never EXECUTES the agent or its assertions (runs are simulated below), so no mock caller can
+  // compute it — it is left unset here and wired when the real runtime lands. The author's hard/soft choice
+  // is still persisted on the case and shipped in the contract; it just can't move a simulated score.
+  if (a.cases < opts.minCases) return "low_confidence";
+  if (a.hardFail) return "fail";
+  if (a.quality < opts.qualityThreshold) return "fail";
+  if (a.costDelta > opts.efficiencyBudgetPct) return "fail"; // efficiency axis: cost regression beyond budget
+  return "pass";
+}
+
+// Mock only: synthesize one eval run. Single source of truth for the simulated run body so the two run
+// surfaces (Evaluations page + agent-detail RunEvalDialog) can't drift apart. Replaced wholesale when the
+// real async eval job (backend/05 §7) lands — until then quality/deltas are random, case count IS the
+// selected suite's size, and `failingCases` echoes the suite so a FAIL has a drill-down.
+export function simulateEvalRun(opts: {
+  agent: Agent; version: string; baseline: string;
+  suite?: EvalSuite; qualityThreshold: number; policy: EvalPolicy;
+}): EvalRun {
+  const { agent, version, baseline, suite, qualityThreshold, policy } = opts;
+  const quality = Math.round((90 + (Math.random() * 12 - 6)) * 10) / 10;
+  const qualityDelta = Math.round((Math.random() * 8 - 4) * 10) / 10;
+  const costDelta = Math.round((Math.random() * 22 - 6) * 10) / 10; // -6..+16 so a cost regression can breach the budget
+  const latencyDelta = Math.round(Math.random() * 160 - 80);
+  // Case count IS the selected authored suite's size (so a thin suite honestly reads low-confidence);
+  // fall back to an ad-hoc sample when the agent has no authored suite.
+  const cases = suite ? suite.cases.length : 24 + Math.floor(Math.random() * 57);
+  const verdict = computeVerdict({ quality, costDelta, cases }, { minCases: policy.minCases, qualityThreshold, efficiencyBudgetPct: policy.efficiencyBudgetPct });
+  const reason =
+    verdict === "fail"
+      ? quality < qualityThreshold
+        ? `Quality ${quality} fell below the ${qualityThreshold}% publish bar against ${baseline}.`
+        : `Efficiency regressed: cost +${costDelta}% exceeds the ${policy.efficiencyBudgetPct}% budget.`
+      : verdict === "low_confidence"
+        ? `Only ${cases} cases in this run (min ${policy.minCases}); add more for a reliable verdict.`
+        : "All dimensions at or above baseline, within the efficiency budget.";
+  // A failed run echoes the selected suite's cases as drill-down examples, connecting authoring -> results.
+  const failingCases = verdict === "fail" && suite?.cases.length
+    ? suite.cases.slice(0, 2).map((c) => ({ input: c.input, issue: "Scored below the baseline on this case." }))
+    : undefined;
+  return {
+    id: genId("ev"), agentId: agent.id, agent: agent.name, version,
+    baseline, quality, qualityDelta, costDelta, latencyDelta, cases, verdict,
+    date: nowIso(), trigger: "Manual run", reason,
+    ...(failingCases ? { failingCases } : {}),
+  };
+}
 // @backend POST /v1/agents/:id/evals - queue an eval run (async job vs frozen baseline + judge). The
 //   lifecycle transition done below is a server concern that fires on job completion (see resolveEvalRun),
 //   not at queue time; the mock applies it here only because mock evals are born already-resolved.
 export function addEvalRun(e: EvalRun) {
   const stamped = { ...e, workspaceId: e.workspaceId ?? state.activeWorkspaceId };
-  // Propagate the verdict to lifecycle, but ONLY for pre-publish agents: a failing eval gates
-  // publishing (draft -> eval_failing); a passing eval clears that gate (eval_failing -> draft).
-  // Published/archived agents are left untouched — the live pinned version is immutable until an
-  // explicit eval-gated re-point, so a regression surfaces via `drift`, not by auto-unpublishing.
-  // Folded into one `set` with the eval insert so a single logical action is one store commit.
+  // Lifecycle STATUS transitions happen ONLY for pre-publish agents: a failing eval gates publishing
+  // (draft -> eval_failing); a passing eval clears that gate (eval_failing -> draft). A published/archived
+  // agent's STATUS is never changed here — the live pinned version is immutable until an explicit
+  // eval-gated re-point, so a regression surfaces via `drift`, not by auto-unpublishing.
+  // The denormalized read-models below (evalPass/drift/needsReEval) DO refresh for whichever agent the run
+  // targets, published included — that is exactly how a live agent's drift badge reflects a new eval.
   const agent = state.agents.find((a) => a.id === e.agentId);
   let nextStatus: Agent["status"] | null = null;
   if (agent) {
     if (e.verdict === "fail" && agent.status === "draft") nextStatus = "eval_failing";
     else if (e.verdict === "pass" && agent.status === "eval_failing") nextStatus = "draft";
   }
+  // Refresh the agent's denormalized eval read-models from this run (server does this on job completion):
+  // evalPass = run quality; drift pass->stable / fail->regressed / low_confidence->watch; a passing eval
+  // newer than the last trigger clears the re-eval gate. Folded into the same `set` as the eval insert.
+  const readModel: Partial<Agent> = {
+    evalPass: e.quality,
+    drift: e.verdict === "pass" ? "stable" : e.verdict === "fail" ? "regressed" : "watch",
+    ...(e.verdict === "pass" ? { needsReEval: false } : {}),
+  };
   set({
     evalRuns: [stamped, ...state.evalRuns],
-    agents: nextStatus
-      ? state.agents.map((a) => (a.id === e.agentId ? { ...a, status: nextStatus!, updatedAt: nowIso() } : a))
+    agents: agent
+      ? state.agents.map((a) =>
+          a.id === e.agentId ? { ...a, ...readModel, ...(nextStatus ? { status: nextStatus } : {}), updatedAt: nowIso() } : a,
+        )
       : state.agents,
   });
   toast(`Eval run queued for ${stamped.agent}`);
@@ -566,10 +808,14 @@ export const useMcpServers = () => useSelector((s) => inWs(s.mcpServers, s.activ
 export const useMcpServer = (id: string) => useSelector((s) => s.mcpServers.find((m) => m.id === id));
 // @backend GET /v1/tools?workspace=:id - list tool repository.
 export const useTools = () => useSelector((s) => inWs(s.tools, s.activeWorkspaceId));
+// @backend GET /v1/tools/:id - single repository tool (by name identity).
+export const useTool = (name: string) => useSelector((s) => s.tools.find((t) => t.name === name));
 // @backend GET /v1/evals?workspace=:id - list eval runs.
 export const useEvalRuns = () => useSelector((s) => inWs(s.evalRuns, s.activeWorkspaceId));
 // @backend GET /v1/runs?workspace=:id - list observability runs (caller/tenant attributed).
 export const useRuns = () => useSelector((s) => inWs(s.runs, s.activeWorkspaceId));
+// @backend GET /v1/approvals?workspace=:id - pending/decided high-risk tool-call approvals.
+export const useApprovals = () => useSelector((s) => inWs(s.toolApprovals, s.activeWorkspaceId));
 // @backend GET /v1/channels?workspace=:id - list connected messaging channels for active workspace.
 export const useChannels = () => useSelector((s) => inWs(s.channels, s.activeWorkspaceId));
 // @backend GET /v1/channels/:id - single channel (routing, bound agents, masked creds, status).
@@ -585,6 +831,8 @@ export const useChannelsForAgent = (agentId: string) =>
    tabs when the active workspace is switched while viewing an agent from another one. */
 export const useEvalRunsForAgent = (agentId: string) => useSelector((s) => s.evalRuns.filter((e) => e.agentId === agentId));
 export const useRunsForAgent = (agentId: string) => useSelector((s) => s.runs.filter((r) => r.agentId === agentId));
+// @backend GET /v1/agents/:id/eval-suites - authored eval suites + cases for this agent (eval.author to edit).
+export const useSuitesForAgent = (agentId: string) => useSelector((s) => s.evalSuites.filter((x) => x.agentId === agentId));
 // @backend GET /v1/agents/:id/tokens - list endpoint tokens (prefixes only, never the secret).
 export const useTokens = () => useSelector((s) => s.tokens);
 // @backend GET /v1/provider-keys?workspace=:id - list vaulted provider keys (masked).
@@ -600,9 +848,16 @@ export const useJoinedWorkspaceIds = () => useSelector((s) => s.joinedWorkspaceI
 // would loop. All workspaces are seeded, so these only guard an unseeded tenant.
 const FALLBACK_WS_SETTINGS = defaultWorkspaceSettings();
 const FALLBACK_LIMITS = defaultLimits();
+const FALLBACK_EVAL_POLICY = defaultEvalPolicy();
 // @backend GET /v1/workspaces/:id - active workspace config (name, default provider/model, archived).
 export const useWorkspaceSettings = () => useSelector((s) => s.workspaceSettings[s.activeWorkspaceId] ?? FALLBACK_WS_SETTINGS);
 // @backend GET /v1/workspaces/:id/limits - active workspace spend/concurrency/timeout ceilings.
 export const useLimits = () => useSelector((s) => s.limits[s.activeWorkspaceId] ?? FALLBACK_LIMITS);
+// @backend GET /v1/workspaces/:id/eval-policy - admin-governed verdict/publish thresholds (eval.govern).
+export const useEvalPolicy = () => useSelector((s) => s.evalPolicy[s.activeWorkspaceId] ?? FALLBACK_EVAL_POLICY);
+// Agent-scoped eval policy: resolve from the AGENT's workspace, not the active one, so the UI matches
+// publishAgent()'s gate (which reads evalPolicy[agent.workspaceId]) for a cross-workspace agent.
+export const useEvalPolicyFor = (workspaceId?: string) =>
+  useSelector((s) => s.evalPolicy[workspaceId ?? s.activeWorkspaceId] ?? FALLBACK_EVAL_POLICY);
 // @backend none - toasts are local UI state.
 export const useToasts = () => useSelector((s) => s.toasts);

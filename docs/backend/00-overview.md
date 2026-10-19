@@ -33,13 +33,15 @@ the eval/drift engine (05), guardrails (06), and cost/COGS (07).
 
 ## 2. Services and processes
 
-Three deployable units, one shared library. Keep the monorepo.
+Four deployable units, one shared library. Keep the monorepo. (The `sandbox` is a hardened execution
+variant used only on the P2 MCP/tool path; the first three are the always-on core.)
 
 | Process | Role | Stateless? | Scales on |
 |---|---|---|---|
 | `api` (FastAPI, uvicorn) | Builder REST API **+** published `/v1/.../invoke`. Owns HTTP, auth, tenancy, SSE. | Yes | request concurrency (HPA / replicas) |
-| `worker` (arq/RQ on Redis) | Async jobs: ingestion, eval runs, (P2) MCP discovery, re-sync. | Yes | queue depth |
+| `worker` (arq/RQ on Redis) | Async jobs: ingestion, eval runs, agent import (14), scheduled model-deprecation scan (16), (P2) dispatches MCP discovery / tool exec to the sandbox pool, re-sync. | Yes | queue depth |
 | `web` (Next.js standalone) | The existing console. | Yes | — |
+| `sandbox` (P2) | Network-isolated per-call MCP + tool execution under a hardened runtime (gVisor + egress allow-list proxy); reachable only via `api`/`worker` dispatch. See `11-deployment.md §1`. | Yes (ephemeral per call) | per-call jobs (queue depth / KEDA) |
 
 Shared stateful backing services (see `11-deployment.md`): Postgres+pgvector, Redis, Vault, Langfuse,
 MinIO.
@@ -62,6 +64,8 @@ agent-catalyst/
 │  │  ├─ auth/                      # OIDC session, principal, RBAC  (09)
 │  │  ├─ tenancy.py                 # workspace-scope guard + RLS session var  (09)
 │  │  ├─ routers/                   # one module per resource (agents, versions, kb, evals, …)  (08)
+│  │  │                             #   P0 adds: adoption.py (register/scan/import, 14),
+│  │  │                             #   org.py (elevated governance report, 15), notifications.py (16)
 │  │  ├─ schemas/                   # Pydantic request/response models  (08)
 │  │  ├─ models.py                  # SQLAlchemy ORM + Alembic target  (01)
 │  │  ├─ publish/                   # published-endpoint invoke, token auth, export  (08, 09)
@@ -69,7 +73,7 @@ agent-catalyst/
 │  │
 │  ├─ runtime/                      # THE SHARED LIBRARY — imported by api + workers
 │  │  ├─ invoke.py                  # runtime.invoke() + RunContext — the single entry point (§1)
-│  │  ├─ graph/                     # LangGraph graph, state, nodes, SSE bridge  (03)
+│  │  ├─ graph/                     # LangGraph graph, state, nodes, SSE bridge + sub-agent subgraphs  (03)
 │  │  ├─ providers/
 │  │  │  ├─ ir.py                   # NormalizedRequest / StreamEvent / Usage  (02)
 │  │  │  ├─ gateway.py              # LiteLLM wrapper, retry, fallback, circuit breaker  (02)
@@ -88,7 +92,7 @@ agent-catalyst/
 │  │  └─ judge.py                   # LLM-judge (rubric + pairwise), versioned, cached  (05)
 │  │
 │  ├─ ingestion/                    # extract → chunk → embed → pgvector  (04)
-│  └─ mcp/                          # (P2) egress-restricted MCP worker  (spec B7)
+│  └─ mcp/                          # (P2) MCP client (official `mcp` SDK) + sandbox executor entrypoint  (spec B7, 11 §1)
 │
 ├─ migrations/                      # Alembic
 ├─ deploy/                          # compose, Helm, Dockerfiles  (11)
@@ -114,6 +118,13 @@ class RunContext:
     idempotency_key: str | None
     budget: "BudgetGuard"           # per-run + per-tenant spend guard  (07)
     trace_id: str
+    # sub-agent delegation (P2) — a sub-agent run is a child invoke() spawned from a tool_binding
+    #   (kind=subagent, 01). These bound the recursion the spec B12 "depth/fan-out caps" require:
+    depth: int = 0                  # 0 = top-level run; a sub-agent invoke increments it
+    parent_run_id: str | None = None  # the spawning run (runs.parent_run_id, 01); None at top level
+    subagent_budget: "BudgetGuard | None" = None  # child spend/fan-out guard, derived from subagent_configs
+                                    #   (max_depth / max_fan_out / budget). invoke() refuses to spawn past
+                                    #   the cap → stop_reason="subagent_depth_exceeded" (03 §4, 10 counter).
     # feature switches the three callers set differently:
     allow_cache: bool = True        # eval sets False for non-cacheable judge paths  (07)
     stream: bool = True
@@ -228,6 +239,8 @@ These extend or push back on the locked spec. Each is justified in the reference
 | 3 | Eval cost via caching + Batch | The **LLM-judge is the primary COGS risk**, treated as a first-class budget with pre-filter gating + verdict cache + Batch | 05, 07 |
 | 4 | — | **Semantic response cache is opt-in and banned for tool-calling/security agents** (near-miss hits = wrong answer) | 07 |
 | 5 | — | `VersionSnapshot` is a real frozen type that `invoke()` reads **instead of** the live agent row, enforcing immutability in code | 01, this doc |
+| 6 | Single "MCP worker" (spec B7) | A **separate, network-isolated `sandbox` unit** for MCP + tool execution (per-call gVisor + egress allow-list proxy), dispatched by `api`/`worker` — not folded into the general worker | 11 §1, this doc §2 |
+| 7 | MCP/tool mgmt gated to **publisher/admin** (spec B12) | MCP/tool management reconciled **down to builder+** (`mcp.manage`/`tool.manage`); only **provider-key** mgmt stays admin-only | 09, spec B12 |
 
 ## 8. Naming conventions (so every doc agrees)
 

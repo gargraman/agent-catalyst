@@ -69,3 +69,5 @@ static, module-scope calls, so changing the real font is always an edit to `layo
 
 → Related: `09` (auth/tenancy — the planes branding sits above), `11` (deployment — where env/config is
 injected), `08` (API surface — if `GET /v1/branding` is ever added).
+
+→ Next: `14-adoption-enforcement.md` (the P0 subsystems — adoption/enforcement, governance, notifications).

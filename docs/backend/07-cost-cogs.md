@@ -42,9 +42,11 @@ flowchart TD
 
 ## 3. Admission: budget guard + spend reservation
 
-Every run passes a `BudgetGuard` (00 §4) before touching a provider. Per-workspace and per-endpoint
-budgets live in `spend_limits` (01, P2-enforced). To avoid races under concurrency, spend is **reserved**
-then **reconciled**.
+Every run passes a `BudgetGuard` (00 §4) before touching a provider. Budgets live in `spend_limits` (01).
+**Phasing (revised 2026-10-19):** the **per-workspace monthly spend cap is P1-enforced** — the pitch sells
+"caps," so v1 must actually refuse spend past the ceiling, not just display a number. The finer-grained
+controls stay **P2**: per-*endpoint* budgets, **concurrency** caps (Redis semaphores), and the
+tight-overshoot reservation races. The P1 cap tolerates bounded overshoot (below); P2 tightens it.
 
 ```python
 # services/runtime/cache/budget.py  (Redis-backed)
@@ -60,8 +62,14 @@ class BudgetGuard:
 ```
 
 - Pre-call estimate from `max_tokens` × profile pricing (02); reconciled to actual after the call.
-- **Bounded overshoot**: concurrent reservations can exceed the cap by at most (in-flight × est); a hard
-  cap backstop (`spend_limits.hard_cap`) refuses once real spend crosses the ceiling (spec E risk #5).
+- **Bounded overshoot (P1 cap)**: concurrent reservations can exceed the cap by at most (in-flight × est);
+  the hard-cap backstop (`spend_limits.hard_cap`) refuses once real spend crosses the ceiling → HTTP 402
+  (spec E risk #5). This single per-workspace monthly check is cheap (one Redis counter) and ships in P1;
+  eliminating the overshoot window under heavy concurrency (semaphore reservation) is the P2 tightening.
+- **Owner notification (16):** when `reconcile` crosses an **80% / 90% of monthly budget** threshold,
+  emit a `budget_threshold` owner notification (deduped per threshold per month) — so the owner hears it
+  *before* the 402 hard-cap, not after. This is an **owner** notice, separate from the ops `SpendAnomaly`
+  page in `10 §5`; it rides on the same reservation math.
 - Guardrail short-circuit (06 §4) means a blocked request costs **$0** — admission's cheapest outcome.
 
 ## 4. Caching — three layers, each with a different safety profile
@@ -215,5 +223,47 @@ Naive:          48,000 × (8K in × $4/M + 1K out × $20/M)              ≈ $2,
 The arithmetic is illustrative; the architecture is the point. **Prompt caching × tiering × context
 budget compound**, and the eval gate (05) is what lets you apply all three without flying blind — the
 product's whole value is that downgrading for cost becomes *safe* (§6, scope.md metric #2).
+
+## 12. The platform's OWN COGS (a cost-governance tool must cost itself)
+
+Everything above is the *agents'* inference spend (pass-through, attributed per workspace). This section is
+the bill for **running Agent Platform itself** — the part a cost-governance pitch cannot leave as "TBD."
+Two buckets:
+
+**A. Platform-induced inference COGS (the part that compounds).** Beyond agent runtime, the platform
+*itself* spends on models in two places:
+- **Eval/judge spend** (§5) — the primary risk. Formula: `judge_cost ≈ Σ_agents (eval_runs/mo × cases ×
+  judge_tokens × judge_price) × (1 − cache_hit) × (pairwise ? ~2 : 1) × batch_mult`. It **compounds with
+  governance pressure**: more agents × more model-affecting changes × re-eval on every change. At ~40
+  agents each re-evaluated on a handful of changes/month with a cheap pinned judge (`claude-haiku`,
+  batched, verdict-cached), this is **tens of $/mo**, not thousands — *but only because* pre-filter +
+  cache + batch (§5) hold. Without them it can rival runtime spend. This line is the one to watch on the
+  cost dashboard (10 §6).
+- **Embedding spend** — KB ingestion (04) + the dedup-scan signatures (14 §3); one-time per doc/version,
+  small.
+
+**B. Platform infra COGS (the 6 stateful services + compute).** Self-hosted OSS, so this is infra, not
+SaaS per-call — but it is real money and real ops. Order-of-magnitude for a single-deployment internal
+install (one org, ~40 agents), to be replaced with real quotes:
+
+| Component | Drives cost | Rough monthly (self-host) |
+|---|---|---|
+| Postgres + pgvector | rows + vector index RAM (HNSW resident) | the big one — size to index RAM (§4 ceiling, 01 §4.4) |
+| Langfuse (traces) | trace volume × retention | grows with run volume; cap via retention TTL (09 §11) |
+| Redis | cache + queue + budget counters | small |
+| Vault | secrets | small |
+| MinIO | uploaded docs | small, storage-bound |
+| `api` + `worker` compute | request + eval/ingest concurrency | scales with load (00 §2, 11 §7) |
+
+> **The honest number is a formula, not a total** (matches the CxO cheat-sheet rule). Platform COGS ≈
+> *(eval/judge + embedding inference)* + *(infra for 6 stateful services + compute)*. The inference half
+> is governed by §§4–8; the infra half is **fixed-ish and dominated by Postgres/pgvector RAM + Langfuse
+> retention**. Build-time dev/eval budget is the scoped **~$100/mo** (scope.md); steady-state infra is a
+> separate capex/opex line that **must be sized against real quotes before the full build** — it is an
+> input to the build-vs-buy case, not an afterthought.
+
+**Ops burden is part of the cost.** Six stateful services (Postgres, Redis, Vault, Langfuse, MinIO, +
+the worker fleet) need an owning team, backups, and the Vault-custody drill (11 §10). That staffing is a
+real COGS line the "lean, OSS, no per-call SaaS" framing must not hide.
 
 → Next: `08-api-surface.md`.

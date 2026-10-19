@@ -136,6 +136,23 @@ order by embedding <=> :qvec
 limit :k;
 ```
 
+> For a >2000-dim model the index is on the `halfvec` cast (01 §4.4), so the probe casts the same way:
+> `order by embedding::halfvec(3072) <=> :qvec::halfvec(3072)`. ≤2000-dim models use the plain `vector`
+> operator shown above.
+
+### Index choice & scale ceiling (HNSW vs IVFFlat)
+
+- **Default HNSW** (`m=16, ef_construction=64`): best recall/latency for the P1 scale (tens of KBs, up to
+  ~1–5M chunks per deployment). Tune recall at query time with `hnsw.ef_search` (raise for recall, lower
+  for latency); every query is namespace-pruned by `(workspace_id, kb_id)` (01 §4.4) so effective fan-out
+  is per-KB, not the whole table.
+- **Dimension ceiling:** pgvector's `vector` ANN index caps at **2000 dims** — >2000 must use the
+  `halfvec` cast (01 §4.4) or a ≤2000-dim model. Not optional; a plain `vector(3072)` HNSW index fails.
+- **When to switch to IVFFlat / a dedicated vector store:** HNSW build time + memory grow with the vector
+  count; past roughly **5–10M chunks per deployment** (or when index build/RAM becomes the bottleneck),
+  move to IVFFlat (cheaper build, needs `lists` tuning + periodic reindex) or a dedicated store. This is a
+  P2 scale decision — P1 stays on HNSW and records the ceiling rather than pretending it's unbounded.
+
 ### P1 defaults vs the FE seed (single source of truth)
 
 The `RetrievalConfig` above is the P1 contract; the mock's `DEFAULT_AGENT_CONFIG.retrieval` (`data.ts`)

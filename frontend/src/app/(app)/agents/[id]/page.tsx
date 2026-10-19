@@ -19,22 +19,25 @@ import { Dialog, ConfirmDialog } from "@/components/dialog";
 import {
   getAgent, getKb, getModel, getVersions, resolveConfig, parseNum,
   MODELS, driftTone, statusLabel, statusTone, verdictLabel, verdictTone,
-  type Agent, type EvalRun,
+  ASSERTION_KINDS, newRubric,
+  type Agent, type EvalRun, type EvalSuite, type EvalCaseDef, type Assertion, type AssertionKind, type RubricDimension,
   type ReasoningEffort, type OutputFormat, type TruncationStrategy, type InjectionStrategy, type Reranker, type GuardrailStage,
   type InputVariable, type InputVariableType,
 } from "@/lib/data";
 import {
   useAgent, useTokens, useTools, useKnowledgeBases, useMcpServers, useEvalRunsForAgent,
-  useChannelsForAgent, addEvalRun, addToken, revokeToken,
+  useChannelsForAgent, useSuitesForAgent, addEvalRun, simulateEvalRun, useEvalPolicyFor, addToken, revokeToken,
+  addSuite, renameSuite, deleteSuite, upsertCase, deleteCase,
   updateAgent, updateAgentConfig, deleteAgent, duplicateAgent, toast, genId, nowIso,
-  publishAgent, unpublishAgent, archiveAgent, restoreAgent, rollbackVersion,
+  publishAgent, unpublishAgent, archiveAgent, restoreAgent, rollbackVersion, reFreezeBaseline,
 } from "@/lib/store";
 import { useAuth, usePrincipal } from "@/lib/auth";
 import { ORG } from "@/lib/org";
 import { GateButton } from "@/components/gate";
 import { Term } from "@/components/term";
-import { EvalExplainer, EvalFailingBanner, EvalFailureSummary, PublishBlockedDialog } from "@/components/eval-explainer";
+import { EvalExplainer, EvalFailingBanner, NeedsReEvalBanner, EvalFailureSummary, publishGateDecision, PublishGateDialogs, type PublishGate } from "@/components/eval-explainer";
 import { canUse, canManage } from "@/lib/access-policy";
+import { resolveToolRef, mcpRef } from "@/lib/tools";
 import { AccessNote } from "@/components/access-note";
 import { AccessPolicyEditor } from "@/components/access-policy-editor";
 import type { Permission } from "@/lib/permissions";
@@ -88,9 +91,10 @@ export default function AgentDetailPage() {
   const { can } = useAuth();
   const principal = usePrincipal();
   const agent = useAgent(params.id);
+  const evals = useEvalRunsForAgent(params.id);
+  const policy = useEvalPolicyFor(agent?.workspaceId);
   const [runEvalOpen, setRunEvalOpen] = React.useState(false);
-  const [publishOpen, setPublishOpen] = React.useState(false);
-  const [publishBlockedOpen, setPublishBlockedOpen] = React.useState(false);
+  const [gate, setGate] = React.useState<PublishGate | null>(null);
   const [deleteOpen, setDeleteOpen] = React.useState(false);
 
   if (!agent) {
@@ -134,13 +138,7 @@ export default function AgentDetailPage() {
                   disabled={!manage}
                   title={manageTitle}
                   variant="primary"
-                  onClick={() => {
-                    if (agent.status === "eval_failing") {
-                      setPublishBlockedOpen(true);
-                    } else {
-                      setPublishOpen(true);
-                    }
-                  }}
+                  onClick={() => setGate(publishGateDecision(agent, evals[0]?.verdict, policy))}
                 >
                   <Rocket className="size-4" /> Publish {agent.activeVersion}
                 </GateButton>
@@ -158,6 +156,10 @@ export default function AgentDetailPage() {
 
       {agent.status === "eval_failing" && (
         <EvalFailingBanner agent={agent} onRunEval={() => setRunEvalOpen(true)} />
+      )}
+
+      {agent.status === "draft" && publishGateDecision(agent, evals[0]?.verdict, policy) === "needs_reeval" && (
+        <NeedsReEvalBanner agent={agent} onRunEval={() => setRunEvalOpen(true)} />
       )}
 
       {agent.status !== "archived" && (
@@ -191,20 +193,13 @@ export default function AgentDetailPage() {
       />
 
       <RunEvalDialog agent={agent} open={runEvalOpen} onClose={() => setRunEvalOpen(false)} />
-      <PublishBlockedDialog
+      <PublishGateDialogs
         agent={agent}
-        open={publishBlockedOpen}
-        onClose={() => setPublishBlockedOpen(false)}
-        onRunEval={() => { setPublishBlockedOpen(false); setRunEvalOpen(true); }}
-      />
-      <ConfirmDialog
-        open={publishOpen}
-        onClose={() => setPublishOpen(false)}
-        onConfirm={() => publishAgent(agent.id)}
-        title="Publish version"
-        confirmLabel="Publish"
-        tone="primary"
-        body={<>Publish {agent.activeVersion}? This pins the endpoint to this version.</>}
+        policy={policy}
+        gate={gate}
+        onClose={() => setGate(null)}
+        onRunEval={() => { setGate(null); setRunEvalOpen(true); }}
+        onConfirmPublish={() => publishAgent(agent.id)}
       />
       <ConfirmDialog
         open={deleteOpen}
@@ -254,10 +249,11 @@ function Configure({ agent, model }: { agent: ReturnType<typeof getAgent> & {}; 
   const manageTitle = manage ? undefined : "Restricted by this agent's access policy";
   const providers = [...new Set(MODELS.map((m) => m.provider))];
   const base = resolveConfig(agent);
+  const evals = useEvalRunsForAgent(agent.id);
+  const policy = useEvalPolicyFor(agent.workspaceId);
   const [provider, setProvider] = React.useState<string>(agent.provider);
   const [modelId, setModelId] = React.useState<string>(agent.model);
-  const [publishOpen, setPublishOpen] = React.useState(false);
-  const [publishBlockedOpen, setPublishBlockedOpen] = React.useState(false);
+  const [gate, setGate] = React.useState<PublishGate | null>(null);
   const [runEvalOpen, setRunEvalOpen] = React.useState(false);
   const [saveOpen, setSaveOpen] = React.useState(false);
   const [deleteOpen, setDeleteOpen] = React.useState(false);
@@ -427,13 +423,7 @@ function Configure({ agent, model }: { agent: ReturnType<typeof getAgent> & {}; 
           <Button
             variant="primary"
             className="mt-4 w-full"
-            onClick={() => {
-              if (agent.status === "eval_failing") {
-                setPublishBlockedOpen(true);
-              } else {
-                setPublishOpen(true);
-              }
-            }}
+            onClick={() => setGate(publishGateDecision(agent, evals[0]?.verdict, policy))}
           >
             <Rocket className="size-4" /> Publish {agent.activeVersion}
           </Button>
@@ -469,22 +459,15 @@ function Configure({ agent, model }: { agent: ReturnType<typeof getAgent> & {}; 
         </SectionCard>
       </aside>
 
-      <ConfirmDialog
-        open={publishOpen}
-        onClose={() => setPublishOpen(false)}
-        onConfirm={() => publishAgent(agent.id)}
-        title="Publish version"
-        confirmLabel="Publish"
-        tone="primary"
-        body={<>Publish {agent.activeVersion}? This pins the endpoint to this version.</>}
-      />
       <SaveVersionDialog agent={agent} open={saveOpen} onClose={() => setSaveOpen(false)} />
       <RunEvalDialog agent={agent} open={runEvalOpen} onClose={() => setRunEvalOpen(false)} />
-      <PublishBlockedDialog
+      <PublishGateDialogs
         agent={agent}
-        open={publishBlockedOpen}
-        onClose={() => setPublishBlockedOpen(false)}
-        onRunEval={() => { setPublishBlockedOpen(false); setRunEvalOpen(true); }}
+        policy={policy}
+        gate={gate}
+        onClose={() => setGate(null)}
+        onRunEval={() => { setGate(null); setRunEvalOpen(true); }}
+        onConfirmPublish={() => publishAgent(agent.id)}
       />
       <ConfirmDialog
         open={deleteOpen}
@@ -602,8 +585,21 @@ function ToolsTab({ agent }: { agent: ReturnType<typeof getAgent> & {} }) {
   const manage = canManage(agent.accessPolicy, principal);
   const canEdit = can("agent.edit") && manage;
   const manageTitle = manage ? undefined : "Restricted by this agent's access policy";
-  const mcpServers = useMcpServers().filter((s) => s.status === "connected" && canUse(s.accessPolicy, principal));
+  // Full lists for resolving bound refs (so a ref to a paused/other server still shows its name, and
+  // deleted ones render as dangling); the filtered list drives the "available to bind" section.
+  const allTools = useTools();
+  const allMcpServers = useMcpServers();
+  const mcpServers = allMcpServers.filter((s) => s.status === "connected" && canUse(s.accessPolicy, principal));
   const [toolsOpen, setToolsOpen] = React.useState(false);
+
+  const kindMeta = (r: ReturnType<typeof resolveToolRef>) => {
+    if (r.missing) return { icon: <TriangleAlert className="size-4 text-critical" />, label: "Removed — no longer available" };
+    if (r.kind === "MCP") return { icon: <Plug className="size-4 text-muted" />, label: `MCP · ${r.serverName}` };
+    if (r.kind === "Sub-agent") return { icon: <Blocks className="size-4 text-s7" />, label: "Sub-agent delegation" };
+    if (r.kind === "Built-in") return { icon: <Wrench className="size-4 text-muted" />, label: "Built-in tool" };
+    return { icon: <Wrench className="size-4 text-muted" />, label: "HTTP tool" };
+  };
+
   return (
     <div className="space-y-6">
       <SectionCard title="Bound tools" desc="Tools this agent can call. Schemas are snapshotted into the version for reproducibility." action={<GateButton permission="agent.edit" disabled={!manage} title={manageTitle} variant="outline" size="sm" onClick={() => setToolsOpen(true)}>Add tool</GateButton>}>
@@ -611,38 +607,42 @@ function ToolsTab({ agent }: { agent: ReturnType<typeof getAgent> & {} }) {
           <EmptyState icon={<Wrench className="size-6" />} title="No tools bound" hint="Attach HTTP tools, MCP tools or sub-agents to extend this agent." />
         ) : (
           <div className="divide-y divide-border">
-            {agent.tools.map((t) => (
-              <div key={t} className="flex items-center justify-between py-3">
-                <div className="flex items-center gap-3">
-                  {t.startsWith("subagent") ? <Blocks className="size-4 text-s7" /> : <Wrench className="size-4 text-muted" />}
-                  <div>
-                    <p className="font-mono text-sm text-ink">{t}</p>
-                    <p className="text-xs text-muted">{t.startsWith("subagent") ? "Sub-agent delegation" : "HTTP tool"}</p>
+            {agent.tools.map((ref) => {
+              const r = resolveToolRef(ref, { tools: allTools, mcpServers: allMcpServers });
+              const meta = kindMeta(r);
+              return (
+                <div key={ref} className="flex items-center justify-between py-3">
+                  <div className="flex items-center gap-3">
+                    {meta.icon}
+                    <div>
+                      <p className="font-mono text-sm text-ink">{r.label}</p>
+                      <p className="text-xs text-muted">{meta.label}{r.riskTier && r.riskTier !== "read" ? ` · ${r.riskTier}` : ""}</p>
+                    </div>
                   </div>
+                  {canEdit && <button onClick={() => { updateAgent(agent.id, { tools: agent.tools.filter((x) => x !== ref) }, false); toast("Tool removed", "neutral"); }} aria-label="Remove tool" className="text-muted transition-colors hover:text-critical"><X className="size-4" /></button>}
                 </div>
-                {canEdit && <button onClick={() => { updateAgent(agent.id, { tools: agent.tools.filter((x) => x !== t) }, false); toast("Tool removed", "neutral"); }} aria-label="Remove tool" className="text-muted transition-colors hover:text-critical"><X className="size-4" /></button>}
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </SectionCard>
-      <SectionCard title="Available MCP servers" desc="Connect external systems. Select which discovered tools to expose.">
+      <SectionCard title="Available MCP servers" desc="Connect external systems. Bind which discovered tools to expose.">
         <div className="grid gap-4 md:grid-cols-2">
           {mcpServers.length === 0 && <p className="text-xs text-muted">No connected MCP servers you can use in this workspace.</p>}
           {mcpServers.map((s) => (
             <div key={s.id} className="rounded-xl border border-border bg-elevated p-4">
               <div className="flex items-center justify-between">
-                <span className="flex items-center gap-2 font-medium text-ink"><Plug className="size-4 text-muted" />{s.name}</span>
+                <Link href={`/tools/mcp/${s.id}`} className="flex items-center gap-2 font-medium text-ink hover:underline"><Plug className="size-4 text-muted" />{s.name}</Link>
                 <Badge tone={s.transport === "http" ? "accent" : "neutral"}>{s.transport}</Badge>
               </div>
-              <p className="mt-2 text-xs text-muted">{s.toolCount} tools discovered, {s.auth}</p>
+              <p className="mt-2 text-xs text-muted">{s.tools.filter((t) => t.enabled).length} tools exposed · {s.toolCount} discovered</p>
               <GateButton permission="agent.edit" disabled={!manage} title={manageTitle} variant="outline" size="sm" className="mt-3" onClick={() => setToolsOpen(true)}>Bind tools</GateButton>
             </div>
           ))}
         </div>
       </SectionCard>
 
-      <ToolsDialog agent={agent} open={toolsOpen} onClose={() => setToolsOpen(false)} />
+      <ToolsDialog key={toolsOpen ? agent.id : "closed"} agent={agent} open={toolsOpen} onClose={() => setToolsOpen(false)} />
     </div>
   );
 }
@@ -802,7 +802,7 @@ function Evals({ agent }: { agent: ReturnType<typeof getAgent> & {} }) {
     <div className="space-y-6">
       <div className="grid gap-4 sm:grid-cols-3">
         <SectionCard title={<Term id="eval-pass">Eval pass rate</Term>}><p className="text-3xl font-semibold tnum text-ink">{pct(agent.evalPass)}</p></SectionCard>
-        <SectionCard title={<Term id="baseline">Baseline</Term>}><p className="text-sm text-ink-2">Frozen at <span className="font-medium text-ink">{agent.activeVersion === "v7" ? "v6" : "previous version"}</span></p><Button variant="outline" size="sm" className="mt-3" onClick={() => toast(`Baseline re-frozen at ${agent.activeVersion}`)}>Re-freeze baseline</Button></SectionCard>
+        <SectionCard title={<Term id="baseline">Baseline</Term>}><p className="text-sm text-ink-2">Frozen at <span className="font-medium text-ink">{agent.activeVersion === "v7" ? "v6" : "previous version"}</span></p><GateButton permission="eval.govern" variant="outline" size="sm" className="mt-3" onClick={() => reFreezeBaseline(agent.id)}>Re-freeze baseline</GateButton></SectionCard>
         <SectionCard title={<Term id="drift">Drift</Term>}><Badge tone={driftTone[agent.drift]}>{agent.drift}</Badge><p className="mt-2 text-xs text-muted">Model, prompt or knowledge changes trigger a re-eval.</p></SectionCard>
       </div>
       <SectionCard title="Eval runs" action={<GateButton permission="eval.run" variant="primary" size="sm" onClick={() => setRunEvalOpen(true)}><FlaskConical className="size-4" /> Run eval</GateButton>}>
@@ -841,7 +841,289 @@ function Evals({ agent }: { agent: ReturnType<typeof getAgent> & {} }) {
         )}
       </SectionCard>
 
+      <SuiteAuthoring agent={agent} />
+
       <RunEvalDialog agent={agent} open={runEvalOpen} onClose={() => setRunEvalOpen(false)} />
+    </div>
+  );
+}
+
+/* ---- Eval suite / case authoring (eval.author) ---- */
+function SuiteAuthoring({ agent }: { agent: ReturnType<typeof getAgent> & {} }) {
+  const suites = useSuitesForAgent(agent.id);
+  const policy = useEvalPolicyFor(agent.workspaceId);
+  const { can } = useAuth();
+  const canAuthor = can("eval.author");
+  const [suiteDialog, setSuiteDialog] = React.useState<{ id?: string; name: string } | null>(null);
+  const [caseEdit, setCaseEdit] = React.useState<{ suiteId: string; caseDef: EvalCaseDef | null } | null>(null);
+  const [delSuite, setDelSuite] = React.useState<EvalSuite | null>(null);
+  const [delCase, setDelCase] = React.useState<{ suiteId: string; c: EvalCaseDef } | null>(null);
+
+  return (
+    <SectionCard
+      title="Eval suites"
+      desc="Authored test cases the judge scores this agent against. A suite below the min-case floor yields a low-confidence verdict."
+      action={<GateButton permission="eval.author" variant="outline" size="sm" onClick={() => setSuiteDialog({ name: "" })}><Plus className="size-4" /> New suite</GateButton>}
+    >
+      {suites.length === 0 ? (
+        <EmptyState icon={<FlaskConical className="size-6" />} title="No eval suites yet" hint={canAuthor ? "Create a suite, then add cases with assertions and a rubric." : "No eval cases have been authored for this agent yet."} />
+      ) : (
+        <div className="space-y-4">
+          {suites.map((s) => (
+            <SuiteCard
+              key={s.id} suite={s} canAuthor={canAuthor} minCases={policy.minCases}
+              onRename={() => setSuiteDialog({ id: s.id, name: s.name })}
+              onDelete={() => setDelSuite(s)}
+              onAddCase={() => setCaseEdit({ suiteId: s.id, caseDef: null })}
+              onEditCase={(c) => setCaseEdit({ suiteId: s.id, caseDef: c })}
+              onDeleteCase={(c) => setDelCase({ suiteId: s.id, c })}
+            />
+          ))}
+        </div>
+      )}
+
+      {suiteDialog && <SuiteNameDialog agentId={agent.id} initial={suiteDialog} onClose={() => setSuiteDialog(null)} />}
+      {caseEdit && <CaseEditorDialog agent={agent} suiteId={caseEdit.suiteId} initial={caseEdit.caseDef} onClose={() => setCaseEdit(null)} />}
+      <ConfirmDialog
+        open={!!delSuite} onClose={() => setDelSuite(null)}
+        onConfirm={() => { if (delSuite) deleteSuite(delSuite.id); }}
+        title="Delete suite?" body={`"${delSuite?.name}" and its ${delSuite?.cases.length ?? 0} case(s) will be removed.`}
+        confirmLabel="Delete suite" tone="danger"
+      />
+      <ConfirmDialog
+        open={!!delCase} onClose={() => setDelCase(null)}
+        onConfirm={() => { if (delCase) deleteCase(delCase.suiteId, delCase.c.id); }}
+        title="Delete case?" body="This eval case will be removed from the suite." confirmLabel="Delete case" tone="danger"
+      />
+    </SectionCard>
+  );
+}
+
+function SuiteCard({
+  suite, canAuthor, minCases, onRename, onDelete, onAddCase, onEditCase, onDeleteCase,
+}: {
+  suite: EvalSuite; canAuthor: boolean; minCases: number;
+  onRename: () => void; onDelete: () => void; onAddCase: () => void;
+  onEditCase: (c: EvalCaseDef) => void; onDeleteCase: (c: EvalCaseDef) => void;
+}) {
+  const thin = suite.cases.length < minCases;
+  return (
+    <div className="rounded-lg border border-border bg-surface">
+      <div className="flex items-center justify-between gap-3 border-b border-border px-4 py-3">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <p className="truncate text-sm font-medium text-ink">{suite.name}</p>
+            <Badge tone={thin ? "warning" : "good"}>{suite.cases.length} {suite.cases.length === 1 ? "case" : "cases"}</Badge>
+            {thin && <span className="text-[11px] text-warning">below min {minCases}</span>}
+          </div>
+          <p className="mt-0.5 text-[11px] text-muted">Updated {relative(suite.updatedAt)}</p>
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          <GateButton permission="eval.author" variant="ghost" size="sm" onClick={onRename}>Rename</GateButton>
+          <GateButton permission="eval.author" variant="ghost" size="sm" onClick={onDelete}><Trash2 className="size-4" /></GateButton>
+          <GateButton permission="eval.author" variant="outline" size="sm" onClick={onAddCase}><Plus className="size-4" /> Add case</GateButton>
+        </div>
+      </div>
+      {suite.cases.length === 0 ? (
+        <p className="px-4 py-4 text-xs text-muted">No cases yet. {canAuthor ? "Add a case to start scoring this agent." : ""}</p>
+      ) : (
+        <ul className="divide-y divide-border/70">
+          {suite.cases.map((c) => (
+            <li key={c.id} className="flex items-start justify-between gap-3 px-4 py-2.5">
+              <div className="min-w-0">
+                <p className="truncate text-xs text-ink-2" title={c.input}>{c.input}</p>
+                <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                  {c.assertions.map((a, i) => (
+                    <Badge key={i} tone="neutral" className="font-normal">
+                      {a.hard ? "hard" : "soft"}: {a.kind}
+                    </Badge>
+                  ))}
+                  <span className="text-[11px] text-muted">{c.rubric.length} rubric dim{c.rubric.length === 1 ? "" : "s"}</span>
+                  {c.expected && <span className="text-[11px] text-muted">· has reference</span>}
+                </div>
+              </div>
+              <div className="flex shrink-0 items-center gap-1.5">
+                <GateButton permission="eval.author" variant="ghost" size="sm" onClick={() => onEditCase(c)}>Edit</GateButton>
+                <GateButton permission="eval.author" variant="ghost" size="sm" onClick={() => onDeleteCase(c)}><Trash2 className="size-4" /></GateButton>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function SuiteNameDialog({ agentId, initial, onClose }: { agentId: string; initial: { id?: string; name: string }; onClose: () => void }) {
+  const [name, setName] = React.useState(initial.name);
+  function submit() {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    if (initial.id) renameSuite(initial.id, trimmed);
+    else addSuite(agentId, trimmed);
+    onClose();
+  }
+  return (
+    <Dialog
+      open onClose={onClose}
+      title={initial.id ? "Rename suite" : "New eval suite"}
+      description={initial.id ? undefined : "A named set of cases for this agent (e.g. Golden set, Regression set)."}
+      footer={<><Button variant="ghost" onClick={onClose}>Cancel</Button><Button variant="primary" disabled={!name.trim()} onClick={submit}>{initial.id ? "Rename" : "Create suite"}</Button></>}
+    >
+      <Field label="Suite name"><Input value={name} autoFocus onChange={(e) => setName(e.target.value)} placeholder="Golden set" /></Field>
+    </Dialog>
+  );
+}
+
+function CaseEditorDialog({ agent, suiteId, initial, onClose }: { agent: Agent; suiteId: string; initial: EvalCaseDef | null; onClose: () => void }) {
+  const inputVars = resolveConfig(agent).inputVariables;
+  const [input, setInput] = React.useState(initial?.input ?? "");
+  const [vars, setVars] = React.useState<Record<string, string>>(() => {
+    const seed: Record<string, string> = {};
+    for (const v of inputVars) seed[v.name] = initial?.vars?.[v.name] ?? v.default ?? "";
+    return seed;
+  });
+  // Clone arrays so editing never aliases the stored case (seed cases share a rubric reference).
+  const [assertions, setAssertions] = React.useState<Assertion[]>(() => (initial ? initial.assertions.map((a) => ({ ...a })) : [{ kind: "no_refusal", hard: true }]));
+  const [rubric, setRubric] = React.useState<RubricDimension[]>(() => (initial ? initial.rubric.map((d) => ({ ...d })) : newRubric()));
+  const [expected, setExpected] = React.useState(initial?.expected ?? "");
+
+  // An assertion whose kind carries a detailHint (regex, required_fields, tool_called, exact) must supply
+  // that detail — the backend contract rejects it otherwise, so gate save the same way.
+  const assertionsValid = assertions.every((a) => {
+    const needsDetail = (ASSERTION_KINDS.find((x) => x.kind === a.kind)?.detailHint ?? "") !== "";
+    return !needsDetail || !!a.detail?.trim();
+  });
+  const valid = input.trim().length > 0 && assertionsValid && rubric.length > 0 && rubric.every((d) => d.name.trim() && d.weight > 0);
+
+  function submit() {
+    if (!valid) return;
+    // Only persist vars the agent actually declares, dropping blanks.
+    const keptVars: Record<string, string> = {};
+    for (const v of inputVars) if (vars[v.name]?.trim()) keptVars[v.name] = vars[v.name].trim();
+    const c: EvalCaseDef = {
+      id: initial?.id ?? genId("case"),
+      input: input.trim(),
+      ...(Object.keys(keptVars).length ? { vars: keptVars } : {}),
+      assertions: assertions.map((a) => ({ ...a, detail: a.detail?.trim() || undefined })),
+      rubric: rubric.map((d) => ({ name: d.name.trim(), weight: d.weight })),
+      ...(expected.trim() ? { expected: expected.trim() } : {}),
+    };
+    upsertCase(suiteId, c);
+    toast(initial ? "Case updated" : "Case added");
+    onClose();
+  }
+
+  return (
+    <Dialog
+      open onClose={onClose} size="lg"
+      title={initial ? "Edit eval case" : "Add eval case"}
+      description="A scenario the judge scores against the frozen baseline. Hard assertions fail the case outright."
+      footer={<><Button variant="ghost" onClick={onClose}>Cancel</Button><Button variant="primary" disabled={!valid} onClick={submit}>{initial ? "Save case" : "Add case"}</Button></>}
+    >
+      <div className="space-y-5">
+        <Field label="Input message" hint="The user message / scenario this case sends.">
+          <Textarea rows={3} value={input} onChange={(e) => setInput(e.target.value)} placeholder="Triage alert 48213: repeated failed logins from one host." />
+        </Field>
+
+        {inputVars.length > 0 && (
+          <div className="space-y-2">
+            <p className="text-xs font-medium text-ink-2">Input variables <span className="font-normal text-muted">(from this agent&apos;s I/O contract)</span></p>
+            <div className="grid gap-3 sm:grid-cols-2">
+              {inputVars.map((v) => (
+                <Field key={v.name} label={`${v.name}${v.required ? " *" : ""}`} hint={v.type}>
+                  {v.type === "boolean" ? (
+                    <Select value={vars[v.name] ?? ""} onChange={(e) => setVars((p) => ({ ...p, [v.name]: e.target.value }))}>
+                      <option value="">—</option><option value="true">true</option><option value="false">false</option>
+                    </Select>
+                  ) : (
+                    <Input
+                      value={vars[v.name] ?? ""} inputMode={v.type === "number" ? "numeric" : undefined}
+                      onChange={(e) => setVars((p) => ({ ...p, [v.name]: e.target.value }))} placeholder={v.default ?? ""}
+                    />
+                  )}
+                </Field>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <AssertionRows assertions={assertions} setAssertions={setAssertions} />
+        <RubricRows rubric={rubric} setRubric={setRubric} />
+
+        <Field label="Reference answer" hint="Optional. The pairwise judge compares to the frozen baseline, so a golden answer isn't required.">
+          <Textarea rows={2} value={expected} onChange={(e) => setExpected(e.target.value)} placeholder="(optional) expected answer sketch" />
+        </Field>
+      </div>
+    </Dialog>
+  );
+}
+
+function AssertionRows({ assertions, setAssertions }: { assertions: Assertion[]; setAssertions: React.Dispatch<React.SetStateAction<Assertion[]>> }) {
+  const update = (i: number, patch: Partial<Assertion>) => setAssertions((p) => p.map((a, j) => (j === i ? { ...a, ...patch } : a)));
+  const detailHintFor = (k: AssertionKind) => ASSERTION_KINDS.find((x) => x.kind === k)?.detailHint ?? "";
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between">
+        <p className="text-xs font-medium text-ink-2">Deterministic assertions</p>
+        <Button variant="ghost" size="sm" onClick={() => setAssertions((p) => [...p, { kind: "no_refusal", hard: false }])}><Plus className="size-4" /> Add assertion</Button>
+      </div>
+      {assertions.length === 0 ? (
+        <p className="text-[11px] text-muted">No assertions — this case is scored by the rubric alone.</p>
+      ) : (
+        <div className="space-y-2">
+          {assertions.map((a, i) => {
+            const hint = detailHintFor(a.kind);
+            return (
+              <div key={i} className="flex flex-wrap items-center gap-2 rounded-lg border border-border bg-elevated/40 px-2.5 py-2">
+                <Select className="w-auto" value={a.kind} onChange={(e) => update(i, { kind: e.target.value as AssertionKind })}>
+                  {ASSERTION_KINDS.map((x) => <option key={x.kind} value={x.kind}>{x.label}</option>)}
+                </Select>
+                {hint && <Input className={`min-w-40 flex-1 ${!a.detail?.trim() ? "border-warning/60" : ""}`} value={a.detail ?? ""} onChange={(e) => update(i, { detail: e.target.value })} placeholder={`${hint} (required)`} />}
+                <button
+                  type="button" onClick={() => update(i, { hard: !a.hard })}
+                  className={`rounded-md border px-2.5 py-1 text-xs font-medium transition-colors ${a.hard ? "border-transparent bg-accent-soft text-accent" : "border-border bg-elevated text-ink-2"}`}
+                  title={a.hard ? "Hard: failing this fails the case" : "Soft: informs the judge only"}
+                >
+                  {a.hard ? "Hard" : "Soft"}
+                </button>
+                <button type="button" onClick={() => setAssertions((p) => p.filter((_, j) => j !== i))} className="text-muted transition-colors hover:text-critical" aria-label="Remove assertion"><X className="size-4" /></button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RubricRows({ rubric, setRubric }: { rubric: RubricDimension[]; setRubric: React.Dispatch<React.SetStateAction<RubricDimension[]>> }) {
+  const update = (i: number, patch: Partial<RubricDimension>) => setRubric((p) => p.map((d, j) => (j === i ? { ...d, ...patch } : d)));
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between">
+        <div>
+          <p className="text-xs font-medium text-ink-2">Judge rubric</p>
+          <p className="text-[11px] text-muted">The judge scores each dimension 1–5; the weighted blend is the case quality.</p>
+        </div>
+        <Button variant="ghost" size="sm" onClick={() => setRubric((p) => [...p, { name: "", weight: 1 }])}><Plus className="size-4" /> Add dimension</Button>
+      </div>
+      {rubric.length === 0 ? (
+        <p className="text-[11px] text-warning">Add at least one rubric dimension.</p>
+      ) : (
+        <div className="space-y-2">
+          {rubric.map((d, i) => (
+            <div key={i} className="flex items-center gap-2 rounded-lg border border-border bg-elevated/40 px-2.5 py-2">
+              <Input className="flex-1" value={d.name} onChange={(e) => update(i, { name: e.target.value })} placeholder="Accuracy" />
+              <div className="flex items-center gap-1.5">
+                <span className="text-[11px] text-muted">weight</span>
+                <Input className="w-16 text-center" inputMode="numeric" value={String(d.weight)} onChange={(e) => update(i, { weight: Math.max(0, Number(e.target.value) || 0) })} />
+              </div>
+              <button type="button" onClick={() => setRubric((p) => p.filter((_, j) => j !== i))} className="text-muted transition-colors hover:text-critical" aria-label="Remove dimension"><X className="size-4" /></button>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -967,29 +1249,15 @@ function Publish({ agent }: { agent: ReturnType<typeof getAgent> & {} }) {
 /* ================================================================= Dialogs */
 function RunEvalDialog({ agent, open, onClose }: { agent: Agent; open: boolean; onClose: () => void }) {
   const versions = getVersions(agent.id);
+  const policy = useEvalPolicyFor(agent.workspaceId);
+  const suites = useSuitesForAgent(agent.id);
   const [baseline, setBaseline] = React.useState(versions[0]?.label ?? agent.activeVersion);
-  const [suite, setSuite] = React.useState("Golden set");
-  const [judge, setJudge] = React.useState("claude-opus-5-5");
+  const [suiteId, setSuiteId] = React.useState("");
+  const selectedSuite = suites.find((s) => s.id === suiteId) ?? suites[0];
+  const thinSuite = !!selectedSuite && selectedSuite.cases.length < policy.minCases;
 
   function submit() {
-    const quality = Math.round((90 + (Math.random() * 12 - 6)) * 10) / 10;
-    const qualityDelta = Math.round((Math.random() * 4 - 2) * 10) / 10;
-    const costDelta = Math.round((Math.random() * 6 - 3) * 10) / 10;
-    const latencyDelta = Math.round(Math.random() * 120 - 60);
-    // Range spans below the low-confidence threshold (10 cases) so that verdict is actually reachable.
-    const cases = Math.floor(6 + Math.random() * 60);
-    const verdict = cases < 10 ? "low_confidence" : quality >= 90 ? "pass" : "fail";
-    const reason =
-      verdict === "fail"
-        ? `Quality ${quality} fell below the 90% publish bar against ${baseline}.`
-        : verdict === "low_confidence"
-          ? `Only ${cases} cases in this run; add more for a reliable verdict.`
-          : "All dimensions at or above baseline.";
-    addEvalRun({
-      id: genId("ev"), agentId: agent.id, agent: agent.name, version: agent.activeVersion,
-      baseline, quality, qualityDelta, costDelta, latencyDelta, cases, verdict,
-      date: nowIso(), trigger: "Manual run", reason,
-    });
+    addEvalRun(simulateEvalRun({ agent, version: agent.activeVersion, baseline, suite: selectedSuite, qualityThreshold: policy.qualityThreshold, policy }));
     onClose();
   }
 
@@ -1012,15 +1280,22 @@ function RunEvalDialog({ agent, open, onClose }: { agent: Agent; open: boolean; 
             {versions.map((v) => <option key={v.label} value={v.label}>{v.label}</option>)}
           </Select>
         </Field>
-        <Field label="Eval suite">
-          <Select value={suite} onChange={(e) => setSuite(e.target.value)}>
-            <option>Golden set</option><option>Regression set</option><option>Smoke set</option>
-          </Select>
+        <Field label="Eval suite" hint={thinSuite ? `Below the ${policy.minCases}-case floor — this run will read as low-confidence.` : undefined}>
+          {suites.length === 0 ? (
+            <p className="rounded-md border border-border bg-elevated/40 px-3 py-2 text-xs text-muted">
+              No suites authored yet. Add one under <span className="text-ink-2">Eval suites</span> below; this run uses an ad-hoc sample.
+            </p>
+          ) : (
+            <Select value={selectedSuite?.id ?? ""} onChange={(e) => setSuiteId(e.target.value)}>
+              {suites.map((s) => <option key={s.id} value={s.id}>{s.name} ({s.cases.length} cases)</option>)}
+            </Select>
+          )}
         </Field>
-        <Field label="Judge model">
-          <Select value={judge} onChange={(e) => setJudge(e.target.value)}>
-            <option>claude-opus-5-5</option><option>claude-sonnet-5-5</option>
-          </Select>
+        <Field label="Judge model" hint="Fixed & versioned so the judge can't drift.">
+          <div className="flex h-9 items-center gap-2 rounded-md border border-border bg-elevated px-3 text-sm">
+            <span className="font-mono text-ink">claude-haiku-4-5</span>
+            <Badge tone="neutral">judge-v1</Badge>
+          </div>
         </Field>
       </div>
     </Dialog>
@@ -1060,10 +1335,13 @@ function SaveVersionDialog({ agent, open, onClose }: { agent: Agent; open: boole
 function ToolsDialog({ agent, open, onClose }: { agent: Agent; open: boolean; onClose: () => void }) {
   const principal = usePrincipal();
   const tools = useTools().filter((t) => canUse(t.accessPolicy, principal));
+  // Connected, usable servers; only their enabled (allow-listed) tools can be bound.
+  const mcpServers = useMcpServers().filter((s) => s.status === "connected" && canUse(s.accessPolicy, principal));
+  // Keyed by open-state in ToolsTab so it remounts fresh per open (initial = current bindings).
   const [selected, setSelected] = React.useState<string[]>(agent.tools);
 
-  function toggle(name: string) {
-    setSelected((s) => (s.includes(name) ? s.filter((x) => x !== name) : [...s, name]));
+  function toggle(ref: string) {
+    setSelected((s) => (s.includes(ref) ? s.filter((x) => x !== ref) : [...s, ref]));
   }
   function submit() {
     updateAgent(agent.id, { tools: selected }, false);
@@ -1071,12 +1349,16 @@ function ToolsDialog({ agent, open, onClose }: { agent: Agent; open: boolean; on
     onClose();
   }
 
+  const mcpWithEnabled = mcpServers
+    .map((s) => ({ server: s, enabled: s.tools.filter((t) => t.enabled) }))
+    .filter((x) => x.enabled.length > 0);
+
   return (
     <Dialog
       open={open}
       onClose={onClose}
       title="Bind tools"
-      description="Select which tools this agent can call. Schemas are snapshotted into the next version."
+      description="Select repository tools and MCP tools this agent can call. Schemas are snapshotted into the next version."
       footer={
         <>
           <Button variant="ghost" onClick={onClose}>Cancel</Button>
@@ -1084,23 +1366,47 @@ function ToolsDialog({ agent, open, onClose }: { agent: Agent; open: boolean; on
         </>
       }
     >
-      <div className="divide-y divide-border">
-        {tools.map((t) => (
-          <button
-            key={t.name}
-            type="button"
-            onClick={() => toggle(t.name)}
-            className="flex w-full items-center justify-between gap-3 py-3 text-left"
-          >
-            <div className="flex items-center gap-3">
-              {t.kind === "Sub-agent" ? <Blocks className="size-4 text-s7" /> : <Wrench className="size-4 text-muted" />}
-              <div>
-                <p className="font-mono text-sm text-ink">{t.name}</p>
-                <p className="text-xs text-muted">{t.description}</p>
-              </div>
+      <div className="space-y-4">
+        <div>
+          <p className="mb-1 text-xs font-medium uppercase tracking-wide text-muted">Repository</p>
+          <div className="divide-y divide-border">
+            {tools.length === 0 && <p className="py-3 text-xs text-muted">No repository tools you can use in this workspace.</p>}
+            {tools.map((t) => (
+              <button key={t.name} type="button" onClick={() => toggle(t.name)} className="flex w-full items-center justify-between gap-3 py-3 text-left">
+                <div className="flex items-center gap-3">
+                  {t.kind === "Sub-agent" ? <Blocks className="size-4 text-s7" /> : <Wrench className="size-4 text-muted" />}
+                  <div>
+                    <p className="font-mono text-sm text-ink">{t.name}</p>
+                    <p className="text-xs text-muted">{t.description}</p>
+                  </div>
+                </div>
+                <Toggle on={selected.includes(t.name)} />
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {mcpWithEnabled.map(({ server, enabled }) => (
+          <div key={server.id}>
+            <p className="mb-1 flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted"><Plug className="size-3.5" /> {server.name}</p>
+            <div className="divide-y divide-border">
+              {enabled.map((t) => {
+                const ref = mcpRef(server.id, t.name);
+                return (
+                  <button key={ref} type="button" onClick={() => toggle(ref)} className="flex w-full items-center justify-between gap-3 py-3 text-left">
+                    <div className="flex items-center gap-3">
+                      <Plug className="size-4 text-muted" />
+                      <div>
+                        <p className="font-mono text-sm text-ink">{t.name}</p>
+                        <p className="text-xs text-muted">{t.description}</p>
+                      </div>
+                    </div>
+                    <Toggle on={selected.includes(ref)} />
+                  </button>
+                );
+              })}
             </div>
-            <Toggle on={selected.includes(t.name)} />
-          </button>
+          </div>
         ))}
       </div>
     </Dialog>

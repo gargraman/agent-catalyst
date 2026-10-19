@@ -22,13 +22,19 @@ flowchart TB
   PROXY --> API[api<br/>FastAPI · builder + published invoke]
   subgraph App[App tier — stateless, scale-out]
     API
-    WRK[worker<br/>eval · ingest · mcp]
+    WRK[worker<br/>eval · ingest]
   end
   API --> PG[(Postgres<br/>+ pgvector)]
   API --> REDIS[(Redis<br/>queue · semaphores · cache)]
   API --> MINIO[(MinIO<br/>uploads · payloads)]
   WRK --> PG
   WRK --> REDIS
+  API -. dispatch per-call .-> SBX[sandbox pool<br/>MCP + tool exec<br/>egress-restricted]
+  WRK -. dispatch per-call .-> SBX
+  SBX -. only egress .-> EGRESS[egress allow-list proxy<br/>Squid · deny-by-default]
+  SBX -. decrypt cred .-> VAULT
+  EGRESS -. allow-list .-> PROV
+  EGRESS -. allow-list .-> INT[approved internal/external endpoints]
   API -. decrypt key .-> VAULT[(Vault<br/>per-workspace DEK)]
   WRK -. decrypt key .-> VAULT
   API --> LF[(Langfuse<br/>traces · cost)]
@@ -36,6 +42,11 @@ flowchart TB
   API --> PROV[LLM providers]
   WRK --> PROV
 ```
+
+The **sandbox pool** (`SBX`, P2 — §2, §12) runs MCP servers + tool execution under a hardened isolation
+runtime; it is reachable **only via `api`/`worker` dispatch** (never the proxy) and its **only network
+path out is the egress allow-list proxy** (`config.egress`, 01 §4.6 / 09 §10) — deny-by-default, so a
+compromised tool cannot exfiltrate or SSRF.
 
 Legend: **App tier** (`api`, `worker`, `web`) is stateless and scales horizontally. **Postgres is the
 stateful core.** Redis is queue + concurrency semaphores + cache (07). The `runtime` library (00 §3)
@@ -48,6 +59,7 @@ identical code (00 §1).
 | `api` | `agent-catalyst/api` | 2 | request concurrency (HPA) | yes |
 | `worker` (interactive) | `agent-catalyst/worker` | 1–2 | — (fast jobs) | yes |
 | `worker` (batch) | `agent-catalyst/worker` | 0→N | queue depth (KEDA) | yes |
+| `sandbox` (MCP + tool exec, P2) | `agent-catalyst/sandbox` | 0→N | per-call jobs (queue depth / KEDA) | yes · ephemeral per call · hardened isolation runtime (gVisor §12) |
 | Postgres+pgvector | `pgvector/pgvector:pg16` | 1 (+replica later) | vertical + read replicas | **no** |
 | Redis | `redis:7` | 1 | vertical | **no** |
 | Vault | `hashicorp/vault` | 1 (HA: 3 raft) | — | **no** |
@@ -123,6 +135,13 @@ USER web
 EXPOSE 3000
 CMD ["node", "server.js"]
 ```
+
+**`deploy/sandbox.Dockerfile`** (P2 — §1, §12) — the per-call MCP/tool-execution image. Same slim,
+non-root base; it carries **only** the **MCP client (official `mcp` SDK) + the tool executor** and nothing
+that needs broad reach. **No secrets are baked and none are loaded at boot** — vaulted provider/tool/
+connector creds are injected **per call, into memory only** (§5, 09), and the container is torn down after
+the call. It runs under the **hardened isolation runtime** (gVisor `runsc`) with **deny-by-default egress**
+(§1, §12), dispatched by `api`/`worker` and never exposed to the proxy.
 
 ## 3. Dev: one `docker-compose up`
 
@@ -447,6 +466,50 @@ Per-workspace retention + PII redaction before any log/trace write are security 
 
 Promotion flow: PR → CI (build + two-layer tests + eval gate) → merge to `dev` → **auto QA** → soak +
 eval report green → promote image tag to **prod via manual approval** with explicit confirmation.
+
+## 12. Dependency management, upgrade policy & LangGraph licensing
+
+The runtime sits on two fast-churning libraries — **LangGraph** (orchestration) and **LiteLLM**
+(transport) — whose breaking changes can silently alter behavior or cost. This is managed, not hoped:
+
+- **Exact pinning.** `poetry.lock` is committed and authoritative; prod images pin by **digest** (§2). No
+  floating ranges on LangGraph/LiteLLM/pgvector client — exact versions only.
+- **Deliberate upgrades, gated by eval.** A LangGraph/LiteLLM bump is its own PR, never bundled. Because
+  these libraries affect model behavior and cost accounting, the **two-layer eval suite is the upgrade
+  gate**: the bump must pass the provider-abstraction contract tests (same `NormalizedRequest` across
+  providers, cost matches hand-calc — 02, spec §D) **and** a PASS drift report vs baseline (05, §6
+  `eval_gate`) before merge. A green unit build is necessary but not sufficient for an LLM-lib upgrade.
+- **Breaking-change runbook.** On a major bump: read the changelog for IR-affecting changes (streaming
+  event shape, tool-call format, usage fields), update the adapter/profile layer (02) if needed, re-run
+  the contract + drift gates, and record any capability-profile deltas. If the lib changes cost-relevant
+  behavior, reconcile (02 §4.1) before promoting.
+- **License scan in CI.** A dependency license scan runs in CI (the internal dependency-check tooling);
+  a newly-pulled Denied/Review license blocks the build (ties to the §6 pipeline).
+- **MCP client + sandbox runtime are pinned the same way** (P2, §1/§2). The MCP/tool-exec path adds two
+  more load-bearing deps, **exact-pinned and re-verified on every bump** exactly like LangGraph/LiteLLM/
+  pgvector:
+  - **MCP client library** — the official **Model Context Protocol Python SDK** (`mcp` package,
+    `modelcontextprotocol/python-sdk`, **MIT**). Provides `ClientSession` + the stdio
+    (`mcp.client.stdio`) and Streamable-HTTP/SSE (`mcp.client.streamable_http`/`sse`) transports that
+    back `mcp_servers.transport ∈ {stdio, http}` (01). A protocol/transport change can silently alter
+    discovery/invoke — treat a bump like a gateway bump.
+  - **Sandbox runtime** — **gVisor (`runsc`)** container runtime (**Apache-2.0**) + deny-by-default
+    egress via **k8s NetworkPolicy (Cilium/Calico)** + a forward **allow-list proxy (Squid)** as the only
+    route out (§1). **Kata Containers / Firecracker microVM** is the documented stronger-isolation
+    escalation path if gVisor's syscall surface proves insufficient.
+  - Both are added to the **CI license scan** above: MCP SDK **MIT**, gVisor **Apache-2.0** — both
+    permissive, re-checked on bump.
+- These two pins are what make **`config.egress` (01 §4.6 / 09 §10) a real network boundary** rather than
+  an advisory field: the Squid allow-list proxy + NetworkPolicy enforce the per-server egress allow-list,
+  and the **same machinery backs the provider-egress precondition** for key-custody enforcement
+  (09 §9.1 / 14 §1).
+
+**Resolved — spec risk #7 (LangGraph Platform licensing).** **Decision (2026-10-19): use the OSS
+LangGraph *library* (MIT) behind our own FastAPI; do NOT adopt LangGraph *Platform*** (the managed
+deploy/mgmt product with its separately-tiered license). This keeps the stack portable, self-hostable,
+and free of a new per-seat/usage license on a compounding bill — consistent with the "no cloud-managed
+lock-in" principle (§intro) and the build-vs-buy story (`scope.md`). LiteLLM is MIT. Re-verify both
+licenses at each major bump via the CI license scan above.
 
 ---
 

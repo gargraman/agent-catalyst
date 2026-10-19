@@ -118,6 +118,10 @@ published agent — it becomes a drift trigger (05).
   "provider": "anthropic",
   "model": "claude-opus-5-5",
   "api_version": "2026-01",
+  "availability": "active",            // active | deprecated | retired — the model-deprecation detector (16 §3)
+  "sunset_at": null,                   //   diffs this against every published version's profile_snapshot.model
+                                       //   and notifies the owner. Only as current as the profile itself
+                                       //   (the profile-currency maintenance gap gates it).
   "pricing_usd_per_mtok": {            // matches frontend MODELS (data.ts)
     "input": 4.0, "output": 20.0,
     "cached_input": 0.4,              // 90% off — the cache-savings lever (07)
@@ -143,6 +147,8 @@ published agent — it becomes a drift trigger (05).
 class CapabilityProfile:
     provider: str; model: str; api_version: str | None
     pricing: dict; limits: dict; features: dict
+    availability: str = "active"               # active | deprecated | retired (16 §3)
+    sunset_at: str | None = None               # ISO date the provider retires the model; None = none announced
     def feature(self, k: str) -> bool: return bool(self.features.get(k))
 
 def resolve_profile(provider, model, api_version=None) -> CapabilityProfile: ...  # load + cache
@@ -172,6 +178,32 @@ This single function is the authority for `runs.cost_usd`, `spans.cost_usd`, eva
 COGS dashboards (07, 10). It is unit-tested against hand-calculated fixtures per profile
 (`spec.md §D`), and periodically **reconciled against provider billing** (drift in our pricing table is
 itself an alert, 10).
+
+### 4.2 Profile currency — the maintenance process (not just the files)
+
+Profiles are hand-authored JSON, so cost accuracy is only as good as how current they are kept. The
+"accurate cost + safe downgrade" promise depends on this process existing, not on the files alone:
+
+- **Owner + source of truth.** The profiles directory has a **named owning team** (the platform team) and
+  a `CODEOWNERS` entry; every profile carries `source_url` + `verified_at` pointing at the provider's
+  official pricing/model page. A change is a reviewed PR, never an ad-hoc edit.
+- **Add/change cadence.** Providers ship models and reprice on their own schedule, so currency is
+  **event-driven, not calendar-driven**: a watch on provider pricing/model-release pages (manual
+  subscription in P1; a scraper/API feed in P2) opens a profile PR. Target SLA: a new model or price in
+  use by any agent has a verified profile within **one business week**.
+- **CI staleness gate.** CI fails if (a) any profile referenced by a live `agent_versions.profile_snapshot`
+  has no file, (b) a `verified_at` is older than **90 days** (stale → warn), or (c) a model id appears in
+  usage logs with no profile. This stops silent cost drift from an un-updated table.
+- **Reconciliation loop.** A scheduled job compares our computed `runs.cost_usd` (summed per provider)
+  against the provider's actual invoice; a variance beyond tolerance opens a profile-review alert (10).
+  Reconciliation **detects** drift; this process is what **fixes** it.
+- **Deprecation feeds P0-3.** The `availability`/`sunset_at` fields (§4) are part of the same PR workflow;
+  marking a model `deprecated`/`retired` here is what the model-deprecation detector reads (16 §3). So
+  profile currency gates both cost accuracy *and* deprecation notifications.
+
+> Honest limit: this is a **manual-first** process. It reduces, not eliminates, the staleness risk —
+> the CI gate makes staleness loud rather than silent, but a provider price change still isn't reflected
+> until someone merges the PR. Automating the provider feed is P2.
 
 ## 5. Capability substitution (the leak, made visible)
 

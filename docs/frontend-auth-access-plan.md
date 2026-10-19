@@ -100,10 +100,11 @@ owner)** · **policy granularity = roles + Okta teams + `private` owner**. No ba
 
 ## Part A - Identity + permissions (mock now, IAM-ready)
 - `src/lib/permissions.ts` - roles `viewer|builder|publisher|admin`; permissions `view, playground.use,
-  agent.create, agent.edit, eval.run, knowledge.manage, tool.manage, mcp.manage, channel.manage,
-  agent.publish, agent.delete, key.manage, member.manage, access.manage, settings.manage`; role→permission
-  map (viewer → view+playground; builder → +create/edit/eval/knowledge/tool/mcp/channel; publisher → +publish;
-  admin → all, incl. `settings.manage` for workspace config/limits/archive).
+  agent.create, agent.edit, eval.run, eval.author, knowledge.manage, tool.manage, mcp.manage, channel.manage,
+  agent.publish, agent.delete, key.manage, member.manage, access.manage, eval.govern, settings.manage`;
+  role→permission map (viewer → view+playground; builder → +create/edit/eval.run/**eval.author**/knowledge/
+  tool/mcp/channel; publisher → +publish; admin → all, incl. `settings.manage` for workspace config/limits/
+  archive and **`eval.govern`** for the workspace eval policy, baseline re-freeze, and low-confidence override).
 - `src/lib/auth.tsx` - `AuthProvider` + `useAuth()` → `{ user, role, permissions, can(p) }`. Role comes
   from the active workspace; a **dev role switcher** overrides it for preview. Same surface real IAM OIDC
   will expose later.
@@ -153,9 +154,9 @@ owner)** · **policy granularity = roles + Okta teams + `private` owner**. No ba
 
 ## Journeys (per user & tenant)
 - **Viewer:** read-only everywhere; create/edit/publish/manage hidden or disabled; read-only banner.
-- **Builder:** build + manage knowledge/tools/MCP + eval + playground; Publish gated.
+- **Builder:** build + manage knowledge/tools/MCP + run evals + **author eval suites/cases** + playground; Publish gated.
 - **Publisher:** + publish/unpublish + endpoint tokens.
-- **Admin:** + keys, members (invite/remove in-app), delete, and **configures per-resource access policies**.
+- **Admin:** + keys, members (invite/remove in-app), delete, **per-resource access policies**, and **eval governance** (workspace eval policy, baseline re-freeze, low-confidence override).
 - **Restricted resource:** agent limited to team "SOC" is hidden/locked for a non-SOC builder and
   `policy_denied` for a caller token lacking SOC, even with the tool scopes.
 - **Cross-tenant user:** switching workspace re-derives role + visible resources.

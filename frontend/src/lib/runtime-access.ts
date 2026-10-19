@@ -1,7 +1,8 @@
-import type { Agent } from "./data";
+import type { Agent, McpServer } from "./data";
 import type { ChannelPlatform } from "./channels";
 import type { Role } from "./permissions";
 import { canUse, type Principal } from "./access-policy";
+import { parseMcpRef } from "./tools";
 import { DEFAULT_WORKSPACE_ID } from "./iam";
 
 export type RunCtx =
@@ -54,7 +55,7 @@ function decodeToken(token: string, agent: Agent): Omit<RunResolution, "grantedT
   return { subjectType, tenant, role, teams, scopes, expiry, status };
 }
 
-export function resolveRun(ctx: RunCtx, agent: Agent, session: Session): RunResolution {
+export function resolveRun(ctx: RunCtx, agent: Agent, session: Session, mcpServers: McpServer[] = []): RunResolution {
   const agentTenant = agent.workspaceId ?? DEFAULT_WORKSPACE_ID;
   const base = ctx.mode === "session"
     ? {
@@ -94,12 +95,33 @@ export function resolveRun(ctx: RunCtx, agent: Agent, session: Session): RunReso
   const grantedKbs: string[] = [];
   const deniedKbs: Denied[] = [];
 
+  // Display label for a bound tool ref: MCP refs (`mcp:<serverId>/<tool>`) show "tool · Server".
+  const toolLabel = (ref: string) => {
+    const m = parseMcpRef(ref);
+    if (!m) return ref;
+    const s = mcpServers.find((x) => x.id === m.serverId);
+    return s ? `${m.tool} · ${s.name}` : m.tool;
+  };
+  // An MCP ref is additionally denied when its owning server is restricted/removed for this caller.
+  // No-op when no server list is supplied (can't evaluate → don't spuriously deny).
+  const serverBlockedReason = (ref: string): string | null => {
+    const m = parseMcpRef(ref);
+    if (!m || mcpServers.length === 0) return null;
+    const s = mcpServers.find((x) => x.id === m.serverId);
+    if (!s) return "MCP server removed";
+    if (!canUse(s.accessPolicy, principal)) return "MCP server not accessible";
+    return null;
+  };
+
   if (!blocked) {
-    tools.forEach((name, i) => {
+    tools.forEach((ref, i) => {
+      const label = toolLabel(ref);
+      const serverReason = serverBlockedReason(ref);
+      if (serverReason) { deniedTools.push({ name: label, reason: serverReason }); return; }
       // session or "full" token grants all; partial token grants every other tool
       const inScope = full || i % 2 === 0;
-      if (inScope) grantedTools.push(name);
-      else deniedTools.push({ name, reason: "not in token scope" });
+      if (inScope) grantedTools.push(label);
+      else deniedTools.push({ name: label, reason: "not in token scope" });
     });
     kbs.forEach((id, i) => {
       const inScope = full || i % 2 === 0;
@@ -110,7 +132,7 @@ export function resolveRun(ctx: RunCtx, agent: Agent, session: Session): RunReso
     // Whole run is blocked: nothing executes, but surface what WOULD be used so the access
     // preview shows the agent's bound resources (struck through) instead of "No tools bound".
     const reason = statusLabel[status];
-    tools.forEach((name) => deniedTools.push({ name, reason }));
+    tools.forEach((ref) => deniedTools.push({ name: toolLabel(ref), reason }));
     kbs.forEach((id) => deniedKbs.push({ name: id, reason }));
   }
 

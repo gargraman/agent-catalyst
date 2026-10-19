@@ -32,6 +32,7 @@ const NAV: { group: string; items: NavItem[] }[] = [
   { group: "Observe", items: [
     { href: "/evaluations", label: "Evaluations", icon: Gauge },
     { href: "/runs", label: "Runs", icon: Activity },
+    { href: "/approvals", label: "Approvals", icon: ShieldCheck },
   ] },
 ];
 

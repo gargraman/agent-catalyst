@@ -13,15 +13,15 @@ import { Tabs } from "@/components/tabs";
 import { Dialog, ConfirmDialog } from "@/components/dialog";
 import { CopyButton } from "@/components/copy-button";
 import { GateButton } from "@/components/gate";
-import { Member, type WorkspaceSettings, type Limits } from "@/lib/data";
+import { Member, type WorkspaceSettings, type Limits, type EvalPolicy } from "@/lib/data";
 import {
   useMembers, useInvites, useProviderKeys, useTokens,
   useAgents, useKnowledgeBases, useMcpServers, useTools, useChannels,
-  useWorkspaceSettings, useLimits, useActiveWorkspaceId,
+  useWorkspaceSettings, useLimits, useEvalPolicy, useActiveWorkspaceId,
   addProviderKey, rotateProviderKey, revokeProviderKey,
   inviteMember, revokeInvite, removeMember,
   addToken, revokeToken,
-  updateWorkspaceSettings, archiveWorkspace, updateLimits,
+  updateWorkspaceSettings, archiveWorkspace, updateLimits, setEvalPolicy,
   genId, nowIso,
 } from "@/lib/store";
 import { ROLE_ORDER, ROLE_LABEL, ROLE_PERMISSIONS, type Permission } from "@/lib/permissions";
@@ -635,10 +635,84 @@ function Tokens() {
 
 function Limits() {
   const limits = useLimits();
+  const policy = useEvalPolicy();
   const { can } = useAuth();
   const wsId = useActiveWorkspaceId();
-  // Keyed by wsId so a tenant switch remounts the form (re-seeds state) without a setState-in-effect.
-  return <LimitsForm key={wsId} wsId={wsId} limits={limits} canEdit={can("settings.manage")} />;
+  // Keyed by wsId so a tenant switch remounts the forms (re-seeds state) without a setState-in-effect.
+  return (
+    <div className="space-y-6">
+      <LimitsForm key={wsId} wsId={wsId} limits={limits} canEdit={can("settings.manage")} />
+      <EvalPolicyCard key={`ep-${wsId}`} wsId={wsId} policy={policy} canEdit={can("eval.govern")} />
+    </div>
+  );
+}
+
+function EvalPolicyCard({ wsId, policy, canEdit }: { wsId: string; policy: EvalPolicy; canEdit: boolean }) {
+  const [minCases, setMinCases] = React.useState(String(policy.minCases));
+  const [quality, setQuality] = React.useState(String(policy.qualityThreshold));
+  const [budget, setBudget] = React.useState(String(policy.efficiencyBudgetPct));
+  const [override, setOverride] = React.useState(policy.allowLowConfidenceOverride);
+
+  const nMin = Number(minCases), nQ = Number(quality), nB = Number(budget);
+  const valid =
+    Number.isFinite(nMin) && nMin > 0 &&
+    Number.isFinite(nQ) && nQ > 0 && nQ <= 100 &&
+    Number.isFinite(nB) && nB >= 0;
+  const dirty =
+    nMin !== policy.minCases || nQ !== policy.qualityThreshold ||
+    nB !== policy.efficiencyBudgetPct || override !== policy.allowLowConfidenceOverride;
+
+  function save() {
+    if (!valid) return;
+    setEvalPolicy(wsId, { minCases: nMin, qualityThreshold: nQ, efficiencyBudgetPct: nB, allowLowConfidenceOverride: override });
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <div>
+          <CardTitle>Eval policy</CardTitle>
+          <CardDescription>Thresholds the drift verdict and publish gate use across this workspace. The judge is fixed &amp; versioned and is not configurable.</CardDescription>
+        </div>
+        <SlidersHorizontal className="size-4 text-muted" />
+      </CardHeader>
+      <CardContent className="space-y-5">
+        <div className="grid gap-5 sm:grid-cols-3">
+          <Field label="Min cases for a confident verdict" hint="Below this → low-confidence.">
+            <Input inputMode="numeric" value={minCases} onChange={(e) => setMinCases(e.target.value)} disabled={!canEdit} />
+          </Field>
+          <Field label="Quality threshold (%)" hint="Pass requires quality ≥ this.">
+            <Input inputMode="numeric" value={quality} onChange={(e) => setQuality(e.target.value)} disabled={!canEdit} />
+          </Field>
+          <Field label="Efficiency budget (cost % over baseline)" hint="Fail if cost regresses beyond this.">
+            <Input inputMode="numeric" value={budget} onChange={(e) => setBudget(e.target.value)} disabled={!canEdit} />
+          </Field>
+        </div>
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <p className="text-sm font-medium text-ink">Allow low-confidence publish override</p>
+            <p className="mt-0.5 text-xs text-muted">When off, a low-confidence eval blocks publish until the suite is expanded past the min-case floor.</p>
+          </div>
+          <button
+            type="button"
+            disabled={!canEdit}
+            onClick={() => setOverride((v) => !v)}
+            className={`rounded-md border px-2.5 py-1 text-xs font-medium transition-colors disabled:pointer-events-none disabled:opacity-60 ${override ? "border-transparent bg-accent-soft text-accent" : "border-border bg-elevated text-ink-2"}`}
+          >
+            {override ? "Allowed" : "Blocked"}
+          </button>
+        </div>
+        <div className="flex items-center justify-between gap-3">
+          <p className={`text-xs ${dirty && !valid ? "text-warning" : "text-muted"}`}>
+            {dirty && !valid
+              ? "Enter positive numbers (quality ≤ 100)."
+              : "Governs the drift verdict and the publish low-confidence gate."}
+          </p>
+          <GateButton permission="eval.govern" variant="primary" disabled={!dirty || !valid} onClick={save}>Save policy</GateButton>
+        </div>
+      </CardContent>
+    </Card>
+  );
 }
 
 function LimitsForm({ wsId, limits, canEdit }: { wsId: string; limits: Limits; canEdit: boolean }) {
@@ -713,12 +787,14 @@ const CAPABILITIES: { label: string; permission: Permission }[] = [
   { label: "View & playground", permission: "playground.use" },
   { label: "Create & edit agents", permission: "agent.edit" },
   { label: "Run evaluations", permission: "eval.run" },
+  { label: "Author eval cases & suites", permission: "eval.author" },
   { label: "Manage knowledge/tools/MCP", permission: "knowledge.manage" },
   { label: "Manage channels", permission: "channel.manage" },
   { label: "Publish agents", permission: "agent.publish" },
   { label: "Delete agents", permission: "agent.delete" },
   { label: "Manage keys & members", permission: "member.manage" },
   { label: "Configure access policies", permission: "access.manage" },
+  { label: "Govern eval policy & baselines", permission: "eval.govern" },
   { label: "Edit workspace settings & limits", permission: "settings.manage" },
 ];
 

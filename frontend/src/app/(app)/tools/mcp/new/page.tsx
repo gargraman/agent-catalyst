@@ -8,27 +8,25 @@ import {
 } from "@/components/ui";
 import { Stepper } from "@/components/stepper";
 import { addMcpServer, toast, genId, nowIso } from "@/lib/store";
+import { MCP_AUTH_METHODS, MCP_AUTHS, mcpAuthLabel, type McpAuth } from "@/lib/mcp";
+import { finalizeMcpCredentials, mcpCredentialsComplete } from "@/lib/mcp-credentials";
+import { riskTone } from "@/lib/tools";
+import type { McpTool } from "@/lib/data";
 
 const STEPS = ["Connection", "Auth", "Discover", "Select", "Review"];
 
-type Discovered = { name: string; description: string };
+type Discovered = { name: string; description: string; riskTier: McpTool["riskTier"] };
 const SAMPLE_TOOLS: Discovered[] = [
-  { name: "search_issues", description: "Search issues with a query" },
-  { name: "get_issue", description: "Fetch a single issue by key" },
-  { name: "create_issue", description: "Create a new issue" },
-  { name: "add_comment", description: "Comment on an issue" },
+  { name: "search_issues", description: "Search issues with a query", riskTier: "read" },
+  { name: "get_issue", description: "Fetch a single issue by key", riskTier: "read" },
+  { name: "create_issue", description: "Create a new issue", riskTier: "write" },
+  { name: "add_comment", description: "Comment on an issue", riskTier: "write" },
 ];
-
-const AUTH_LABELS: Record<string, string> = {
-  none: "None",
-  bearer: "Bearer token",
-  oauth: "OAuth 2.0",
-  headers: "Custom headers",
-};
 
 /* @backend integration points (this page):
  *  - @backend POST /v1/mcp-servers - connect server, triggers server-side tool discovery [via addMcpServer]
  *  - @backend GET /v1/mcp-servers/:id - discovered tool catalog after connect [via useMcpServer]
+ *  - @backend auth methods + credential field specs come from GET /v1/mcp-auth-methods [via MCP_AUTH_METHODS]
  * See src/lib/store.ts markers + docs/backend-integration-map.md for the authoritative contracts.
  */
 export default function NewMcpServerPage() {
@@ -41,9 +39,9 @@ export default function NewMcpServerPage() {
   const [endpoint, setEndpoint] = React.useState("");
   const [command, setCommand] = React.useState("");
 
-  // Auth
-  const [auth, setAuth] = React.useState("none");
-  const [credential, setCredential] = React.useState("");
+  // Auth — the raw secret(s) captured per credential field, masked into CredentialRefs on finish.
+  const [auth, setAuth] = React.useState<McpAuth>("none");
+  const [creds, setCreds] = React.useState<Record<string, string>>({});
 
   // Discover
   const [discovered, setDiscovered] = React.useState<Discovered[] | null>(null);
@@ -51,10 +49,17 @@ export default function NewMcpServerPage() {
   // Select
   const [enabled, setEnabled] = React.useState<Record<string, boolean>>({});
   const [egress, setEgress] = React.useState("");
-  const [approval, setApproval] = React.useState("auto");
+  const [approval, setApproval] = React.useState<"auto" | "ask">("auto");
 
   const selected = (discovered ?? []).filter((t) => enabled[t.name]);
   const selectedCount = selected.length;
+  const credFields = MCP_AUTH_METHODS[auth].credentialFields;
+  const authComplete = mcpCredentialsComplete(auth, creds);
+
+  function changeAuth(next: McpAuth) {
+    setAuth(next);
+    setCreds({}); // clear captured secrets when the method changes
+  }
 
   function discover() {
     setDiscovered(SAMPLE_TOOLS);
@@ -67,22 +72,27 @@ export default function NewMcpServerPage() {
 
   const canNext = (() => {
     if (step === 0) return connectionOk;
+    if (step === 1) return authComplete; // require the credential when auth !== none
     if (step === 2) return !!discovered && discovered.length > 0; // discovery done before Select
     return true;
   })();
 
   function finish() {
+    const egressList = egress.split(",").map((s) => s.trim()).filter(Boolean);
     addMcpServer({
       id: genId("mcp"),
       name: name.trim(),
       transport,
       endpoint: (transport === "http" ? endpoint : command).trim(),
       status: "connected",
-      auth: AUTH_LABELS[auth],
+      auth,
       toolCount: selectedCount,
       lastDiscovery: nowIso(),
       boundAgents: 0,
-      tools: selected.map((t) => ({ name: t.name, description: t.description, enabled: true })),
+      tools: selected.map((t) => ({ name: t.name, description: t.description, enabled: true, riskTier: t.riskTier })),
+      credentials: finalizeMcpCredentials(auth, creds),
+      egress: egressList,
+      approval,
     });
     router.push("/tools");
   }
@@ -126,20 +136,25 @@ export default function NewMcpServerPage() {
           {step === 1 && (
             <div className="space-y-4">
               <Field label="Authentication">
-                <Select value={auth} onChange={(e) => setAuth(e.target.value)}>
-                  <option value="none">None</option>
-                  <option value="bearer">Bearer token</option>
-                  <option value="oauth">OAuth 2.0</option>
-                  <option value="headers">Custom headers</option>
+                <Select value={auth} onChange={(e) => changeAuth(e.target.value as McpAuth)}>
+                  {MCP_AUTHS.map((a) => <option key={a} value={a}>{mcpAuthLabel(a)}</option>)}
                 </Select>
               </Field>
-              {auth !== "none" && (
-                <Field label="Credential" hint="Stored in the vault, never shown again.">
-                  <Input type="password" value={credential} onChange={(e) => setCredential(e.target.value)} placeholder="Paste secret" />
+              {credFields.map((f) => (
+                <Field key={f.key} label={f.label} hint={f.hint}>
+                  <Input
+                    type={f.type === "password" ? "password" : "text"}
+                    value={creds[f.key] ?? ""}
+                    onChange={(e) => setCreds((s) => ({ ...s, [f.key]: e.target.value }))}
+                    placeholder={f.placeholder}
+                  />
                 </Field>
+              ))}
+              {MCP_AUTH_METHODS[auth].credentialHint && (
+                <p className="text-xs text-muted">{MCP_AUTH_METHODS[auth].credentialHint}</p>
               )}
               <div>
-                <Button variant="outline" size="sm" onClick={() => toast("Connection ok")}>
+                <Button variant="outline" size="sm" disabled={!authComplete} onClick={() => toast("Connection ok")}>
                   <ShieldCheck className="size-3.5" /> Test connection
                 </Button>
               </div>
@@ -178,20 +193,23 @@ export default function NewMcpServerPage() {
                       <span className="font-mono text-xs text-ink-2">{t.name}</span>
                       <span className="block text-xs text-muted">{t.description}</span>
                     </span>
-                    <input
-                      type="checkbox"
-                      className="size-4 accent-accent"
-                      checked={!!enabled[t.name]}
-                      onChange={(e) => setEnabled((s) => ({ ...s, [t.name]: e.target.checked }))}
-                    />
+                    <span className="flex items-center gap-2">
+                      {t.riskTier && <Badge tone={riskTone(t.riskTier)}>{t.riskTier}</Badge>}
+                      <input
+                        type="checkbox"
+                        className="size-4 accent-accent"
+                        checked={!!enabled[t.name]}
+                        onChange={(e) => setEnabled((s) => ({ ...s, [t.name]: e.target.checked }))}
+                      />
+                    </span>
                   </label>
                 ))}
               </div>
-              <Field label="Egress allow-list" hint="Comma-separated domains this server may reach.">
+              <Field label="Egress allow-list" hint="Comma-separated domains this server may reach (deny-by-default).">
                 <Input value={egress} onChange={(e) => setEgress(e.target.value)} placeholder="mcp.internal, api.atlassian.com" />
               </Field>
               <Field label="Approval policy">
-                <Select value={approval} onChange={(e) => setApproval(e.target.value)}>
+                <Select value={approval} onChange={(e) => setApproval(e.target.value as "auto" | "ask")}>
                   <option value="auto">Auto (run without prompting)</option>
                   <option value="ask">Ask (require approval per call)</option>
                 </Select>
@@ -204,7 +222,8 @@ export default function NewMcpServerPage() {
               <Row k="Name" v={name || "Untitled server"} />
               <Row k="Transport" v={<Badge tone={transport === "http" ? "accent" : "violet"}>{transport}</Badge>} />
               <Row k={transport === "http" ? "Endpoint" : "Command"} v={<span className="font-mono text-xs">{(transport === "http" ? endpoint : command) || "-"}</span>} />
-              <Row k="Authentication" v={AUTH_LABELS[auth]} />
+              <Row k="Authentication" v={mcpAuthLabel(auth)} />
+              <Row k="Credentials" v={auth === "none" ? "none" : `${Object.keys(finalizeMcpCredentials(auth, creds)).length} vaulted`} />
               <Row k="Egress allow-list" v={egress.trim() || "none"} />
               <Row k="Approval policy" v={approval === "auto" ? "Auto" : "Ask"} />
               <Row k="Selected tools" v={<span className="inline-flex items-center gap-1.5"><StatusDot tone="good" />{selectedCount} of {(discovered ?? []).length}</span>} />

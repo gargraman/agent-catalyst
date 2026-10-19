@@ -51,6 +51,7 @@ configurable in the builder and snapshotted into an immutable AgentVersion.
 | 13 | Evaluation | eval suite(s) + frozen baseline | P1 |
 | 14 | Publication | pinned version · endpoint · scoped tokens · export | P1 |
 | 15 | Observability | tracing/logging/cost (automatic, not user-configured) | P1 |
+| 16 | Registration & provenance | owner (routable subject), `registered_at` gate, dedup-scan acknowledgement before a version is built/published | P1 (P0-1; `backend/14`) |
 
 > **Decided (2026-10-04):** minimal **RAG ships in P1**; **MCP is P2**. (file-upload RAG → pgvector →
 > retrieval-as-a-tool in the MVP; MCP's trust/sandbox surface waits for P2.)
@@ -60,8 +61,22 @@ configurable in the builder and snapshotted into an immutable AgentVersion.
 **1. Dashboard & management** — `[P1]` list agents (state, created, active version, owner); per-agent
 version timeline + deploy status. `[P2]` usage/cost/latency rollups.
 
+**1a. Adoption, enforcement & migration (P0-1)** — `[P1]` key-custody enforcement spine (platform holds
+the only provider credentials; BYO superseded; teeth require cloud-IAM + egress control); create-time
+**registration gate**; **similarity/dedup scanner** ("reuse first"); **import** of existing hand-wired
+agents. Design: `backend/14-adoption-enforcement.md`.
+
+**1b. Org-wide governance reporting (P0-2)** — `[P1]` a deployment-wide **platform-admin** plane reads an
+org estate / spend / compliance report over an elevated, audited cross-tenant path (metadata-only for
+`private` resources). Design: `backend/15-org-governance-reporting.md`.
+
+**1c. Owner notifications (P0-3)** — `[P1]` in-product owner-facing notifications for drift, budget
+thresholds, model deprecation, and eval failure — the "nobody noticed it got worse" fix; distinct from ops
+alerting. Design: `backend/16-notifications.md`.
+
 **2. Agent configuration** — `[P1]` identity; model-agnostic provider/model/params/system-prompt;
-input/output contract; context-management settings. `[P2]` spend + concurrency controls.
+input/output contract; context-management settings. `[P1]` per-workspace **monthly spend cap** (hard,
+enforced — revised 2026-10-19); `[P2]` concurrency controls + per-endpoint budgets.
 
 **3. Tools & skills** — `[P2]` tool repository; HTTP/custom tools; **MCP** connect + discovery + tool
 selection (B7); **sub-agent** delegation (LangGraph subgraphs).
@@ -274,6 +289,10 @@ inline — a lightweight alternative to full ingestion for live/system-of-record
 5. **Runtime:** MCP calls execute in an **egress-restricted MCP worker** (stdio servers in a
    locked-down container; per-server egress allow/deny lists); the LangGraph loop invokes them like
    any tool; results normalized into the IR; per-tool timeouts + error handling; invocations audited.
+   **Concrete stack:** the client is the official **Model Context Protocol Python SDK** (`mcp` package —
+   `ClientSession` + `mcp.client.stdio` / `mcp.client.streamable_http` transports matching
+   `transport ∈ {stdio, http}`), run **client-side in our runtime** inside a **hardened per-call sandbox**
+   (gVisor `runsc` + deny-by-default egress via a Squid allow-list proxy). See `backend/11 §1/§12`.
 
 **Model-agnostic note:** some providers offer server-side MCP connectors, but to stay provider-
 neutral we run MCP **client-side in our runtime**, uniform across all providers — we do not depend on
@@ -314,11 +333,16 @@ route has separate bearer-token auth.
 ### B12. Security
 Provider/tool/source creds: envelope encryption via **Vault Transit** (per-workspace DEK); plaintext
 only in memory at call time; log-redaction scrubs key-shaped strings; never in config/traces/exports.
-Builder UI: OIDC/SSO + CSRF; `[P2]` RBAC (`viewer|builder|publisher|admin`), publish + key/MCP mgmt
-gated to publisher/admin. Published endpoints: scoped bearer tokens hashed at rest, revocable,
-expiry + rate limit. `[P2]` MCP/sub-agent blast radius: egress-restricted worker, vaulted creds,
-depth/fan-out caps. Audit log: publish, re-point, baseline freeze, key/MCP/source create+rotate,
-token mint/revoke, overrides.
+Builder UI: OIDC/SSO + CSRF; `[P2]` RBAC (`viewer|builder|publisher|admin`): **publish** gated to
+publisher/admin, **provider-key mgmt gated to admin**, **MCP/tool mgmt gated to builder+**
+(`mcp.manage`/`tool.manage`). (Reconciled 2026-10-19 — this reverses the earlier "key/MCP mgmt →
+publisher/admin"; building an agent *is* binding its tools, so tool/MCP management belongs at builder+,
+while only the org-wide provider key stays admin-only. See `backend/09`, `scope.md`.) Published endpoints:
+scoped bearer tokens hashed at rest, revocable, expiry + rate limit. `[P2]` MCP/sub-agent blast radius:
+network-isolated per-call sandbox, vaulted creds, depth/fan-out caps, plus a **designed
+human-approval gate for destructive/high-risk tools** (`tool_risk_tier` + `requires_approval` →
+`runtime` pause/resume → `tool_approvals`; see `backend/09 §10`, `01`, `03`, `08`). Audit log: publish,
+re-point, baseline freeze, key/MCP/source create+rotate, **tool bind**, token mint/revoke, overrides.
 
 ---
 
@@ -329,10 +353,15 @@ Agent/Version CRUD + dashboard; model-agnostic config (≥2 providers, B2); I/O 
 memory; **minimal knowledge (file upload → pgvector → retrieval-as-tool)**; chat playground (SSE);
 eval/drift harness + publish gate; publish → endpoint + cURL/SDK export; run logging + cost
 (Langfuse); provider keys vaulted; single-team SSO + minimal roles.
+**+ P0 (promoted into P1):** adoption/enforcement (key custody + registration gate + dedup scanner +
+import, `backend/14`); org governance reporting (platform-admin plane, `backend/15`); owner
+notifications (`backend/16`). These close the three gaps that make the platform a *product* (enforceable,
+leadership-visible, owner-notifying) rather than a console.
 
 **Phase 2 — Extensibility + hardening.**
 Tool repository; **MCP** connect/discover/bind; sub-agent delegation; full data-source connectors +
-crawl + re-sync + reranking; long-term memory; full guardrail library; spend + concurrency limits;
+crawl + re-sync + reranking; long-term memory; full guardrail library; concurrency limits + per-endpoint/
+finer spend controls (the per-workspace monthly cap itself is P1);
 RBAC + audit hardening; usage/cost dashboards.
 
 **Deferred (not planned):** voice.
@@ -350,7 +379,9 @@ RBAC + audit hardening; usage/cost dashboards.
   p95 < 2s.
 - **Phase 2:** guardrail block/redact golden cases; over-budget → 402/429; parallel load → excess
   429; **MCP round-trip vs a mock server** (discover → select → bind → invoke; schema-change →
-  re-eval flag); sub-agent depth cap; connector ingestion + re-sync.
+  re-eval flag); sub-agent depth cap; connector ingestion + re-sync. The **MCP round-trip** maps to the
+  dedicated **`POST /mcp-servers/:id/test-invoke`** dry-run endpoint (08); the **sub-agent depth-cap**
+  test maps to **`subagent_configs.max_depth`** (01) enforced in `runtime` (`RunContext.depth`, 00 §4).
 
 ---
 
@@ -366,7 +397,9 @@ RBAC + audit hardening; usage/cost dashboards.
 5. **Spend/concurrency races** (P2) — Redis reservation + reconciliation, bounded overshoot, hard cap.
 6. **Cross-provider cost accuracy** — compute from profiles + normalized usage; reconcile vs provider
    billing; show "estimated" where uncertain.
-7. **LangGraph Platform licensing** — confirm free self-hosted tier or use OSS lib behind FastAPI.
+7. **LangGraph Platform licensing** — **RESOLVED (2026-10-19):** use the OSS LangGraph library (MIT)
+   behind our own FastAPI; LangGraph Platform not adopted. Dependency pinning + upgrade-via-eval-gate +
+   CI license scan policy in `backend/11 §12`.
 8. **Reference-video reconciliation** — align screens/features before locking UX.
 
 ---
@@ -375,6 +408,14 @@ RBAC + audit hardening; usage/cost dashboards.
 - **RAG + MCP phasing (decided 2026-10-04):** minimal file-upload RAG in **P1**; MCP in **P2**.
 - Stack: Python/FastAPI + LangGraph + LiteLLM + pgvector + Langfuse + Vault (portable containers).
 - Voice dropped. Reference video to be reconciled first on implementation.
+- **P0 gaps promoted into P1 (decided 2026-10-18; see `scope.md` decision log):**
+  - **Adoption/enforcement = key custody** (platform-exclusive provider creds; BYO superseded; teeth
+    require cloud-IAM + egress control, else "visibility + mandate") + registration gate + dedup scanner +
+    import. `backend/14`.
+  - **Org governance = a deployment-wide platform-admin plane** over an elevated, audited cross-tenant path
+    (metadata-only for `private`); no `org_memberships` (one deploy = one org). `backend/15`.
+  - **Owner notifications** at drift/budget/model-deprecation/eval-fail; model-deprecation needs a new
+    `availability` field on capability profiles. `backend/16`.
 
 ---
 
@@ -390,3 +431,8 @@ RBAC + audit hardening; usage/cost dashboards.
 - `services/api/publish/endpoint.py` — published invoke: auth, guardrails, cred injection, logging
   (B9/B10/B12).
 - `services/api/openapi + export/snippet.py` — OpenAPI source + secret-free export (B10/B11).
+- `services/api/routers/adoption.py` — registration gate + dedup scan + import (P0-1, `backend/14`).
+- `services/api/routers/org.py` + the `SECURITY DEFINER` reader — elevated org governance report (P0-2,
+  `backend/15`).
+- `services/api/routers/notifications.py` + `services/worker/deprecation_scan.py` — owner notifications +
+  model-deprecation detector (P0-3, `backend/16`).

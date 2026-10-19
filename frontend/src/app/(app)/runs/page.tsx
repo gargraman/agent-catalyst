@@ -27,6 +27,8 @@ const SOURCE = [
   { key: "Channel", label: "Channel" },
   { key: "Playground", label: "Playground" },
   { key: "Eval", label: "Eval" },
+  { key: "Tool test", label: "Tool test" },
+  { key: "Subagent", label: "Subagent" },
 ];
 
 const wsName = (id?: string) => (id ? WORKSPACES.find((w) => w.id === id)?.name ?? id : "-");

@@ -5,13 +5,19 @@
 > agents execute tools/MCP that reach internal systems, so this doc is not optional hardening — it is
 > the thing that keeps a prompt-injected agent from becoming an SSRF/exfiltration primitive.
 
-## 1. Three auth planes (do not conflate them)
+## 1. Four auth planes (do not conflate them)
 
 | Plane | Who | Credential | Authorization basis | Used by |
 |---|---|---|---|---|
 | **Console session** | a signed-in builder/PM (a human) | OIDC session (Trellix IAM) | **workspace `memberships`** (role_in) + RBAC + resource policy | all `/api/v1/*` builder routes |
 | **Caller token** | an external app/service calling a published agent | scoped bearer token | token's `{tenant, role, teams, scopes}` + resource policy | `POST /v1/agents/:id/invoke` only |
 | **Channel** (12) | an end user in Slack/Teams/GChat | federated → minted Agent Platform token | channel `okta_group` ∩ resource policy — **membership-independent** (no `memberships` row required) | `POST /channels/{platform}/events` |
+| **Platform-admin** (15) | a deployment-wide governance owner (leadership) | OIDC session **+** `platform_admins` roster (01 §4.9) | spans **all** workspaces; **read-only**; `org.report.read` permission (§4) | `GET /api/v1/org/*` only, via the elevated audited path (§7) |
+
+The platform-admin plane is the deliberate exception to per-workspace scoping: one deployment = one org
+(13 §4), so it is a single app-managed role (not `org_id`-scoped). It reads the whole estate through the
+`SECURITY DEFINER` path in §7 and writes an `org.report.read` audit row on every call (§12). It can
+**mutate nothing** and sees **metadata only** for `private`-tier resources (15 §2).
 
 The frontend already models this split (`lib/auth.tsx` session vs `lib/runtime-access.ts` token decode,
 which also has a channel arm). The server is now the source of truth; the FE token decode becomes
@@ -130,10 +136,13 @@ Manager** — it owns member management, access policy, keys, and workspace sett
 |---|:--:|:--:|:--:|:--:|
 | Read agents/runs/evals | ✓ | ✓ | ✓ | ✓ |
 | Create/edit agents, versions, KBs, run playground | | ✓ | ✓ | ✓ |
-| Run eval, freeze baseline | | ✓ | ✓ | ✓ |
+| Run eval (`eval.run`), **author suites/cases** (`eval.author`) | | ✓ | ✓ | ✓ |
+| **Govern eval policy, re-freeze baseline, low-confidence override** (`eval.govern`) | | | | ✓ |
 | **Publish / re-point / unpublish** | | | ✓ | ✓ |
 | **Mint/revoke caller tokens** | | | ✓ | ✓ |
-| **Provider keys, MCP servers, connectors** | | | | ✓ |
+| **Approve/deny high-risk tool calls** (`tool.approve`) | | | ✓ | ✓ |
+| **MCP servers, tools, connectors** (`mcp.manage` / `tool.manage`) | | ✓ | ✓ | ✓ |
+| **Provider keys** (`key.manage`) | | | | ✓ |
 | Set access policy, retention | | | | ✓ |
 | **Invite / remove members, change member role, set `access_mode`** | | | | ✓ |
 | **Edit workspace config + limits, archive workspace** | | | | ✓ |
@@ -144,6 +153,27 @@ Manager** — it owns member management, access policy, keys, and workspace sett
 > **publisher+**, since a publisher owns the endpoints they publish. **Self-joining an `access: "open"`
 > space is not a per-role action** — any authenticated org member may join (§3), landing at the default
 > join role (`viewer`).
+
+> **Eval governance split (05).** Authoring eval suites/cases (`eval.author`) is a **builder** capability —
+> builders own their agent's tests. But the *policy* that decides pass/fail (min cases, quality bar,
+> efficiency budget, low-confidence override) and **re-freezing the trusted baseline** (`eval.govern`) are
+> **admin-only**: they change what "passing" means for the whole workspace and must not erode one quiet step
+> at a time. Re-freeze and an enabled low-confidence override are audited (`audit_logs`).
+
+> **Tool/MCP management is a builder capability; only provider keys stay admin.** Registering MCP servers,
+> defining HTTP/builtin tools (incl. test-invoke dry-runs, 08), and wiring connectors are `mcp.manage` /
+> `tool.manage`, held by **builder+** — a builder owns the tools their agent uses. Only **provider keys**
+> remain admin-gated (`key.manage`): they are the custody spine (§9.1), so they do **not** move down with
+> MCP/tools/connectors as the old combined row implied. Setting a tool's **risk tier** (read/write/
+> destructive) stays admin. **Approving/denying a high-risk (write/destructive) tool call** at the runtime
+> gate (03 §2) is `tool.approve`, held by **publisher+** — the same bar as publishing, since both decide what
+> actually runs in production.
+
+**Above the per-workspace roles: the platform-admin plane (15).** `platform_admin` is **not** a fifth
+workspace role — it is a deployment-wide plane (§1) whose only permission is **`org.report.read`**: read the
+whole-estate governance report (15 §3) through the elevated path (§7). It grants **no** mutation anywhere and
+**no** content access to `private`-tier resources (metadata only). Membership is the `platform_admins` roster
+(01 §4.9), app-managed and audited — orthogonal to every workspace `memberships` row.
 
 ```python
 # services/api/auth/rbac.py
@@ -237,17 +267,36 @@ Covered in `01-data-model.md §6` (policies, `SET LOCAL app.workspace_id`, non-o
   (PgBouncer in `transaction` mode, or SQLAlchemy per-request txn).
 - pgvector queries still filter `kb_id` + `workspace_id` explicitly — RLS gates the row, the predicate
   prunes the HNSW namespace for latency (01 §4.4).
-- Elevated cross-workspace reads (org dashboards) use a separate, explicitly-audited path; never the
-  default session role.
+- **Elevated cross-workspace reads (the org governance report, 15) — now specified, not just named.**
+  They never use the default session role. The path is a Postgres **`SECURITY DEFINER`** function owned by
+  the migration role (which may cross tenants) and `EXECUTE`-granted only to a dedicated `platform_report`
+  reader role; the normal app role still has no `BYPASSRLS`. The API calls it **only** from the
+  platform-admin plane (§1, `org.report.read`), and **every call writes an org-level audit row**
+  (`audit_logs.workspace_id = NULL`, §12, 01 §4.8). It returns **metadata only** for `private`-tier
+  resources (15 §2). This is the single sanctioned exception to §8 — see there.
 
 ## 8. Tenant-isolation test suite (non-negotiable)
 
 A dedicated suite asserts tenant A can never read or act on tenant B, run in CI (gate):
 - read: every list/detail endpoint as A returns zero B rows (RLS + guard).
 - write: A cannot PATCH/DELETE a B resource id (404, not 403 — don't confirm existence).
-- vector: a retrieval in A never returns B chunks even with a colliding query.
-- secrets: A's decrypt path cannot resolve B's provider key (per-workspace DEK, §9).
+- vector: a retrieval in A never returns B chunks even with a colliding query — including the new
+  `agent_signatures` dedup index (14 §3): a scan in A never matches B signatures.
+- secrets (two parts, since §9.1 splits custody): (a) no workspace session can resolve the platform-held
+  **provider-pool** key (replaces the old per-workspace provider-key test, now that provider keys are a
+  platform pool); **and (b)** tenant A's decrypt path cannot resolve tenant B's **per-workspace tool /
+  connector / channel** secret (those keep per-workspace DEKs, §9.1) — this cross-tenant case must stay in
+  the suite, not be dropped in the rescope.
 - invoke: a B caller-token cannot invoke an A endpoint.
+- **notifications:** a recipient in A never sees B's notifications (workspace RLS + app-level
+  `recipient_subject` filter, 16 §1).
+- **tool dry-runs & sub-agents:** a `tool_test`/`mcp_test` dry-run (08) and a sub-agent **child** run (03 §8)
+  stay within the caller's tenant — the child `runtime.invoke` inherits the parent `workspace_id` (never
+  crosses), and the approvals inbox + `POST /approvals/:id/decide` are workspace-filtered so A can neither see
+  nor decide B's `tool_approvals`.
+- **the one sanctioned exception:** only the platform-admin elevated path (§7, 15) may cross workspaces,
+  and the suite asserts (a) no *other* role/plane can call the `SECURITY DEFINER` reader, and (b) every
+  successful cross-tenant read emitted an `org.report.read` audit row. Anything else crossing = a failure.
 
 ## 9. Secrets — Vault Transit envelope encryption
 
@@ -298,6 +347,25 @@ finally:
 - Secrets never enter: agent config blobs, version snapshots, traces, exported cURL/SDK (08), error
   messages.
 
+### 9.1 Key custody as the enforcement spine (14)
+
+The P0-1 enforcement lever (14 §1) narrows provider-credential handling:
+
+- **Provider keys become a platform-custodied pool, not per-workspace BYO.** The per-workspace BYO option
+  from `backend-integration-plan.md` Part 4 is **superseded for enforcement**: if a team holds a usable
+  provider key it can bypass the platform, so the platform must hold the *only* usable key. The envelope
+  scheme above is unchanged; the DEK for the provider pool is platform-scoped rather than per-workspace.
+  **Tool / connector / MCP creds stay per-workspace DEK** — only the *provider* key moves to the pool.
+- **Cost + tenancy survive the change:** per-tenant cost attribution still works (computed from our own
+  profiles per Run tagged `workspace_id`, 02/07, not from a per-tenant key); the pool key is never exposed
+  to any workspace, so cross-tenant secrecy holds (the §8 secrets test is rescoped accordingly).
+- **The honest prerequisite:** custody alone is porous — a team could call a provider with a personal or
+  other-account key. Real enforcement requires **cloud-model-IAM centralization + network egress control**
+  to provider endpoints (cloud SCP / VPC egress allow-list, reusing the per-tool egress machinery in §10).
+  **Without it, the spine degrades to "visibility + mandate"** (the registration gate + scanner + org
+  compliance report still apply, but nothing *blocks* a direct call). This is a political/infra lift; 14 §1
+  states it as a precondition rather than overstating enforcement.
+
 ## 10. Threat model → controls (Trellix-grade)
 
 The dangerous surface is **tool/MCP execution driven by model output**, weaponizable via prompt
@@ -307,8 +375,8 @@ injection. Controls:
 |---|---|---|---|
 | SSRF via HTTP tool | injected prompt makes agent call internal URL | per-tool **egress allow-list** (domains/CIDRs); deny-by-default | P1 (http tools), P2 (MCP) |
 | Data exfiltration | agent sends context to attacker endpoint | egress allow-list + output validation + no secrets in prompt | P1/P2 |
-| Destructive tool call | injected "delete all" to a write tool | **human-approval gate** for high-risk tools; tool-arg validation | P2 |
-| Untrusted MCP server | malicious server returns poisoned tools/results | network-isolated **sandbox worker**, schema snapshot (01), result validation | P2 |
+| Destructive tool call | injected "delete all" to a write tool | **approval gate** (03 §2): `tool_risk_tier` (01) classifies read/write/destructive; a `requires_approval` binding pauses at the `tool_approval_gate` node and writes `tool_approvals(status='pending')` (01), resumed only by a publisher+ decision (`tool.approve`, §4); `tool.approval.{request,approve,deny}` audited (§12) + tool-arg validation | P2 |
+| Untrusted MCP server | malicious server returns poisoned tools/results | **gVisor-sandboxed** exec unit behind an **egress proxy** (11 §1,§12) running the official `mcp` Python SDK client; schema snapshot (01) + result validation | P2 |
 | Secret leakage in output | model echoes an injected/known secret | output guardrail redaction (06) + log redaction (§9) | P1 |
 | Token theft/replay | leaked caller token | hashed-at-rest, expiry, revoke, rate limit, scopes (§6) | P1 |
 | Cross-tenant access | bug in scoping | guard + RLS + isolation suite (§3,7,8) | P1 |
@@ -318,9 +386,11 @@ injection. Controls:
 > -plan.md` CI/CD) are signed off. P2 MCP/sub-agents additionally require the egress sandbox + depth/
 > fan-out caps live before enablement.
 
-Tool execution isolation (P2): each tool/MCP call runs in an egress-restricted container with a
-per-server allow/deny list, vaulted creds injected at connect, per-tool timeouts, and depth/fan-out
-caps on sub-agents (spec B7, B12).
+Tool execution isolation (P2): each tool/MCP call runs in the egress-restricted **sandbox unit** (11 §1 —
+the single definition of the exec substrate), with egress governed by the structured `config.egress` schema
+(`{mode:'deny_by_default', allow:{domains,cidrs,ports}}`, 01 §4.6) rather than an ad-hoc per-server list,
+vaulted creds injected at connect, per-tool timeouts, and depth/fan-out caps on sub-agents (spec B7, B12;
+03 §8).
 
 ## 11. Data retention & PII
 
@@ -337,6 +407,14 @@ caps on sub-agents (spec B7, B12).
 Every sensitive action writes an `audit_logs` row (01): `publish`, `repoint`, `unpublish`,
 `baseline.freeze`, `provider_key.{create,rotate,revoke}`, `token.{mint,revoke}`, `mcp.{register,
 discover}`, `source.{create,rotate}`, `access_policy.set`, `eval.override` (small-set/low-confidence
-publish override, 05). Fields: actor, action, target, meta, ts. Append-only; surfaced per workspace.
+publish override, 05), the P0 actions `agent.{register,import}` + `dedup.override` (14), and the P2 tool
+actions `tool.bind` (incl. risk-tier set), `tool.approval.{request,approve,deny}` (03 §2), and
+`tool.test_invoke` / `mcp.test_invoke` (08). Fields:
+actor, action, target, meta, ts. Append-only; surfaced per workspace.
+
+**Org-level audit (15).** The platform-admin plane's reads write `org.report.read` (and, for the rare
+private-content read, `org.report.content_read`) with **`workspace_id = NULL`** — these are not
+workspace-surfaced; they are the audit trail for the elevated cross-tenant path (§7) and are readable only
+through it. This is the one audit class that is org-scoped rather than per-workspace.
 
 → Next: `10-observability-monitoring.md`.

@@ -18,7 +18,7 @@ import { DEFAULT_WORKSPACE_ID } from "@/lib/iam";
 import { canManage } from "@/lib/access-policy";
 import { CHANNEL_DEFS } from "@/lib/channels";
 import { resolveRun, statusLabel, type RunCtx, type Session } from "@/lib/runtime-access";
-import { addRun, deleteChannel, genId, nowIso, toast, updateChannel, useAgents, useChannel } from "@/lib/store";
+import { addRun, deleteChannel, genId, nowIso, toast, updateChannel, useAgents, useChannel, useMcpServers } from "@/lib/store";
 import type { Channel } from "@/lib/data";
 import { dateShort, relative } from "@/lib/format";
 
@@ -40,6 +40,7 @@ export default function ChannelDetailPage() {
   const id = String(params.id);
   const channel = useChannel(id);
   const agents = useAgents();
+  const mcpServers = useMcpServers();
   const { user } = useAuth();
   const principal = usePrincipal();
   const { workspace } = useWorkspace();
@@ -67,7 +68,7 @@ export default function ChannelDetailPage() {
     user: user.name, tenant, role: principal.role, teams: principal.teams,
   };
   const session: Session = { tenant, role: principal.role, teams: principal.teams };
-  const resolution = target ? resolveRun(ctx, target, session) : null;
+  const resolution = target ? resolveRun(ctx, target, session, mcpServers) : null;
 
   function sendTest() {
     if (!target || !channel) return;

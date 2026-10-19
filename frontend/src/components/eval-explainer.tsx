@@ -13,12 +13,12 @@ import * as React from "react";
 import { FlaskConical, RotateCcw, ShieldCheck, Sparkles, TriangleAlert } from "lucide-react";
 import { Button, Progress } from "@/components/ui";
 import { GateButton } from "@/components/gate";
-import { Dialog } from "@/components/dialog";
+import { Dialog, ConfirmDialog } from "@/components/dialog";
 import { Term } from "@/components/term";
-import { addEvalRun, updateAgent, useEvalRunsForAgent, genId, nowIso, toast } from "@/lib/store";
+import { addEvalRun, addSuite, computeVerdict, updateAgent, useEvalPolicyFor, useEvalRunsForAgent, genId, nowIso, toast } from "@/lib/store";
 import { usePrincipal } from "@/lib/auth";
 import { canManage } from "@/lib/access-policy";
-import type { Agent, EvalDimension, EvalRun } from "@/lib/data";
+import { newRubric, type Agent, type EvalCaseDef, type EvalDimension, type EvalPolicy, type EvalRun, type Verdict } from "@/lib/data";
 
 /* ------------------------------------------------------------------ helpers */
 
@@ -38,6 +38,7 @@ export function rollbackToBaseline(agent: Agent, baseline: string, evals: EvalRu
       activeVersion: baseline,
       status: "published",
       drift: "none",
+      needsReEval: false, // serving a known-passing version clears the re-eval gate (backend/05 §5)
       ...(baselineQuality !== undefined ? { evalPass: baselineQuality } : {}),
     },
     false,
@@ -50,10 +51,47 @@ const fmtDelta = (n: number, unit: "pts" | "%" | "ms") =>
 
 /* -------------------------------------------------------------- starter set */
 
-/** Mock: generate a small passing starter eval, record it, and unblock publishing.
-    For DRAFT agents only (no eval yet). */
-export function generateStarterEval(agent: Agent) {
+/** A dozen sensible starter scenarios. Seeded above the min-case floor so the first eval is confident. */
+const STARTER_INPUTS = [
+  "A high-severity alert fires for repeated failed logins from a single host.",
+  "A user forwards a phishing email where one recipient clicked the link.",
+  "Summarize the blast radius of a compromised service account.",
+  "Triage an EDR detection flagged as possible credential dumping.",
+  "Draft the containment steps for a malware detection on an endpoint.",
+  "Explain whether a flagged outbound connection is beaconing or benign.",
+  "Prioritize three concurrent alerts of differing severity.",
+  "Produce a timeline from a set of correlated authentication events.",
+  "Recommend next steps when a detection has low evidence confidence.",
+  "Identify the required fields missing from an incomplete incident report.",
+  "Respond to a request that falls outside the agent's safety policy.",
+  "Cite the relevant runbook for a ransomware containment decision.",
+];
+
+/** Mock: generate a real, editable starter suite of 12 cases, run it, and (if it clears the workspace
+    policy) unblock publishing. For DRAFT agents only (no eval yet). The suite persists so the builder can
+    edit/expand it. The verdict is computed against the workspace EvalPolicy — NOT hardcoded "pass" — so a
+    stricter policy (higher minCases / qualityThreshold) correctly leaves the agent gated. */
+export function generateStarterEval(agent: Agent, policy: EvalPolicy) {
+  const cases: EvalCaseDef[] = STARTER_INPUTS.map((input) => ({
+    id: genId("case"),
+    input,
+    assertions: [{ kind: "no_refusal", hard: true }],
+    rubric: newRubric(),
+  }));
+  addSuite(agent.id, "Starter set", cases);
   const quality = 92.5;
+  const verdict = computeVerdict(
+    { quality, costDelta: 0, cases: cases.length },
+    { minCases: policy.minCases, qualityThreshold: policy.qualityThreshold, efficiencyBudgetPct: policy.efficiencyBudgetPct },
+  );
+  const reason =
+    verdict === "pass"
+      ? `Starter suite of ${cases.length} sensible cases. Establishes your first baseline.`
+      : verdict === "low_confidence"
+        ? `Starter suite has ${cases.length} cases; this workspace needs ${policy.minCases} for a confident verdict. Add more, then re-run.`
+        : `Starter quality ${quality} is below this workspace's ${policy.qualityThreshold}% bar. Refine the agent or the cases, then re-run.`;
+  // addEvalRun refreshes evalPass/drift and clears needsReEval only on a PASS — so a non-passing starter
+  // stays gated (no redundant updateAgent that would wrongly force drift="none").
   addEvalRun({
     id: genId("ev"),
     agentId: agent.id,
@@ -64,17 +102,24 @@ export function generateStarterEval(agent: Agent) {
     qualityDelta: 0,
     costDelta: 0,
     latencyDelta: 0,
-    cases: 12,
-    verdict: "pass",
+    cases: cases.length,
+    verdict,
     date: nowIso(),
     trigger: "Starter set",
-    reason: "Starter suite of 12 sensible cases. Establishes your first baseline.",
+    reason,
   });
-  updateAgent(agent.id, { evalPass: quality, drift: "none" }, false);
-  toast("Starter eval set generated and passed. You can publish now.");
+  toast(
+    verdict === "pass"
+      ? "Starter eval set generated and passed. You can publish now."
+      : verdict === "low_confidence"
+        ? `Starter set created (${cases.length} cases). Add more to clear the ${policy.minCases}-case floor before publishing.`
+        : "Starter set created, but it doesn't clear this workspace's quality bar yet.",
+    verdict === "pass" ? "good" : "neutral",
+  );
 }
 
 export function EvalExplainer({ agent, onDone }: { agent: Agent; onDone?: () => void }) {
+  const policy = useEvalPolicyFor(agent.workspaceId);
   return (
     <div className="space-y-4">
       <div className="flex gap-2.5 rounded-lg border border-border bg-elevated/60 px-3 py-2.5 text-xs leading-relaxed text-ink-2">
@@ -100,7 +145,7 @@ export function EvalExplainer({ agent, onDone }: { agent: Agent; onDone?: () => 
             permission="eval.run"
             variant="primary"
             size="sm"
-            onClick={() => { generateStarterEval(agent); onDone?.(); }}
+            onClick={() => { generateStarterEval(agent, policy); onDone?.(); }}
           >
             <FlaskConical className="size-4" /> Generate starter eval set
           </GateButton>
@@ -253,6 +298,30 @@ export function EvalFailingBanner({ agent, onRunEval }: { agent: Agent; onRunEva
   );
 }
 
+/** Shown when a behavior-changing edit (model/prompt/guardrail/retrieval/tool/KB) has invalidated the
+    last passing eval — publish is gated until a fresh eval passes (backend/05 §5 publish.eval_gate). */
+export function NeedsReEvalBanner({ agent, onRunEval }: { agent: Agent; onRunEval?: () => void }) {
+  return (
+    <div className="flex flex-wrap items-start gap-3 rounded-xl border border-warning/40 bg-warning/10 px-4 py-3">
+      <TriangleAlert className="mt-0.5 size-4 shrink-0 text-warning" aria-hidden />
+      <div className="min-w-0 flex-1 space-y-0.5">
+        <p className="text-sm font-medium text-ink">Configuration changed since the last passing eval.</p>
+        <p className="text-xs leading-relaxed text-ink-2">
+          A model, prompt, guardrail, retrieval, tool, or knowledge change invalidated the eval for {agent.activeVersion}.
+          Run a fresh eval before publishing.
+        </p>
+      </div>
+      {onRunEval && (
+        <div className="flex shrink-0 items-center gap-2">
+          <GateButton permission="eval.run" variant="primary" size="sm" onClick={onRunEval}>
+            <FlaskConical className="size-4" /> Run eval
+          </GateButton>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function PublishBlockedDialog({
   agent,
   open,
@@ -274,5 +343,70 @@ export function PublishBlockedDialog({
     >
       <EvalFailureSummary agent={agent} onRunEval={onRunEval} />
     </Dialog>
+  );
+}
+
+/* ------------------------------------------------- publish gate (shared) */
+
+export type PublishGate = "eval_failing" | "low_confidence" | "needs_reeval" | "ok";
+
+/** Which publish-gate dialog to show. The UI ordering surfaces low_confidence BEFORE needs_reeval — a
+ *  thin eval was actually run, so "add cases" is more actionable than "config changed". This is guidance
+ *  ONLY; publishAgent() (store.ts) keeps needsReEval as the hard block (low-conf override can't bypass a
+ *  real re-eval). [backend/05 §5] */
+export function publishGateDecision(
+  agent: Agent,
+  latestVerdict: Verdict | undefined,
+  policy: EvalPolicy,
+): PublishGate {
+  if (agent.status === "eval_failing") return "eval_failing";
+  if (latestVerdict === "low_confidence" && !policy.allowLowConfidenceOverride) return "low_confidence";
+  if (agent.needsReEval) return "needs_reeval";
+  return "ok";
+}
+
+/** The four publish-gate dialogs, driven by a single `gate` value (null = none open). Shared by the
+ *  header Publish button and the Configure tab so they can't drift. */
+export function PublishGateDialogs({
+  agent, policy, gate, onClose, onRunEval, onConfirmPublish,
+}: {
+  agent: Agent;
+  policy: EvalPolicy;
+  gate: PublishGate | null;
+  onClose: () => void;
+  onRunEval: () => void;
+  onConfirmPublish: () => void;
+}) {
+  return (
+    <>
+      <PublishBlockedDialog agent={agent} open={gate === "eval_failing"} onClose={onClose} onRunEval={onRunEval} />
+      <ConfirmDialog
+        open={gate === "low_confidence"}
+        onClose={onClose}
+        onConfirm={onRunEval}
+        title="Expand the eval suite before publishing"
+        confirmLabel="Run eval"
+        tone="primary"
+        body={<>The latest eval is low-confidence — the suite is below the {policy.minCases}-case floor. Add cases and re-run; publish unlocks when a confident eval passes. An admin can enable the low-confidence override in workspace settings.</>}
+      />
+      <ConfirmDialog
+        open={gate === "needs_reeval"}
+        onClose={onClose}
+        onConfirm={onRunEval}
+        title="Run an eval before publishing"
+        confirmLabel="Run eval"
+        tone="primary"
+        body={<>Configuration changed since {agent.activeVersion} last passed an eval. Run a fresh eval; publish unlocks when it passes.</>}
+      />
+      <ConfirmDialog
+        open={gate === "ok"}
+        onClose={onClose}
+        onConfirm={onConfirmPublish}
+        title="Publish version"
+        confirmLabel="Publish"
+        tone="primary"
+        body={<>Publish {agent.activeVersion}? This pins the endpoint to this version.</>}
+      />
+    </>
   );
 }

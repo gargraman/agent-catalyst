@@ -15,6 +15,7 @@
 import type { AccessPolicy } from "./access-policy";
 import type { Connector } from "./connectors";
 import type { ChannelPlatform } from "./channels";
+import type { McpAuth } from "./mcp";
 import { ORG } from "./org";
 import { DEFAULT_WORKSPACE_ID } from "./iam";
 
@@ -94,6 +95,10 @@ export type Agent = {
   endpoint?: string;
   workspaceId?: string;
   accessPolicy?: AccessPolicy;
+  // @backend agent_versions.publishable proxy (FE versioning is cosmetic): a behavior-changing (trigger)
+  //   edit — model/provider/params/prompt/guardrails/retrieval/tools/kb — sets this true; a passing eval
+  //   newer than that edit clears it. Gates publish alongside status==="eval_failing". [ref: backend/05 §5]
+  needsReEval?: boolean;
   // Mutable draft config (model params, prompt, memory, retrieval, guardrails, spend).
   // Mirrors the fields the backend freezes into an immutable version snapshot on publish
   // (agent_versions.model_config / system_prompt / memory_config / context_config /
@@ -560,11 +565,22 @@ export const INGESTION_JOBS: IngestionJob[] = [
 ];
 
 /* ---------------------------------------------------------------- Tools/MCP */
-export type McpTool = { name: string; description: string; enabled: boolean };
+// @backend mcp_tools row (discovered-tool catalog cache). `enabled` is the allow-list flag; `riskTier`
+// is set when an operator enables a tool and drives the runtime approval gate. [ref: backend/01 §4.6,
+// backend/09 §10]
+export type McpTool = { name: string; description: string; enabled: boolean; riskTier?: "read" | "write" | "destructive" };
+// @backend mcp_servers row. `auth` is an enum (see mcp.ts MCP_AUTH_METHODS); the raw credential(s) are
+// vaulted and only `credentials` (masked refs, keyed by credentialField key) are persisted/returned,
+// like Channel.credentials. `egress` is the per-server deny-by-default allow-list (maps to
+// mcp_servers.config.egress.allow.domains) and `approval` is a coarse server-level default for the
+// per-tool risk-tier approval gate. [ref: backend/01 §4.6, backend/09 §10, spec B7]
 export type McpServer = {
   id: string; name: string; transport: "stdio" | "http"; endpoint: string;
-  status: "connected" | "error" | "disconnected"; auth: string; toolCount: number;
+  status: "connected" | "error" | "disconnected"; auth: McpAuth; toolCount: number;
   lastDiscovery: string; boundAgents: number; tools: McpTool[];
+  credentials?: Record<string, CredentialRef>; // keyed by credentialField key; masked only
+  egress?: string[]; // allowed domains (deny-by-default)
+  approval?: "auto" | "ask"; // server-level default approval policy
   workspaceId?: string;
   accessPolicy?: AccessPolicy;
 };
@@ -572,61 +588,74 @@ export type McpServer = {
 export const MCP_SERVERS: McpServer[] = [
   {
     id: "jira-mcp", name: "Jira", transport: "http", endpoint: "https://mcp.internal/jira",
-    status: "connected", auth: "OAuth 2.0", toolCount: 6, lastDiscovery: "2026-10-04T04:10:00Z", boundAgents: 2,
+    status: "connected", auth: "oauth", toolCount: 6, lastDiscovery: "2026-10-04T04:10:00Z", boundAgents: 2,
     tools: [
-      { name: "search_issues", description: "Search Jira issues with JQL", enabled: true },
-      { name: "get_issue", description: "Fetch a single issue by key", enabled: true },
-      { name: "create_issue", description: "Create a new issue", enabled: false },
-      { name: "add_comment", description: "Comment on an issue", enabled: false },
+      { name: "search_issues", description: "Search Jira issues with JQL", enabled: true, riskTier: "read" },
+      { name: "get_issue", description: "Fetch a single issue by key", enabled: true, riskTier: "read" },
+      { name: "create_issue", description: "Create a new issue", enabled: false, riskTier: "write" },
+      { name: "add_comment", description: "Comment on an issue", enabled: false, riskTier: "write" },
     ],
+    credentials: { accessToken: { masked: "ya29.A0••••••••a1B2", vaultPath: "vault://mcp/jira-mcp" } },
+    egress: ["mcp.internal", "api.atlassian.com"], approval: "auto",
   },
   {
     id: "vt-mcp", name: "VirusTotal", transport: "http", endpoint: "https://mcp.internal/virustotal",
-    status: "connected", auth: "Bearer token", toolCount: 4, lastDiscovery: "2026-10-04T04:10:00Z", boundAgents: 1,
+    status: "connected", auth: "bearer", toolCount: 4, lastDiscovery: "2026-10-04T04:10:00Z", boundAgents: 1,
     tools: [
-      { name: "lookup_hash", description: "Reputation for a file hash", enabled: true },
-      { name: "lookup_ip", description: "Reputation for an IP address", enabled: true },
-      { name: "lookup_domain", description: "Reputation for a domain", enabled: true },
+      { name: "lookup_hash", description: "Reputation for a file hash", enabled: true, riskTier: "read" },
+      { name: "lookup_ip", description: "Reputation for an IP address", enabled: true, riskTier: "read" },
+      { name: "lookup_domain", description: "Reputation for a domain", enabled: true, riskTier: "read" },
     ],
+    credentials: { token: { masked: "vt_pat••••••••9f3c", vaultPath: "vault://mcp/vt-mcp" } },
+    egress: ["mcp.internal", "www.virustotal.com"], approval: "auto",
   },
   {
     id: "splunk-mcp", name: "Splunk", transport: "stdio", endpoint: "splunk-mcp --readonly",
-    status: "connected", auth: "Service account", toolCount: 3, lastDiscovery: "2026-10-03T20:00:00Z", boundAgents: 1,
+    status: "connected", auth: "none", toolCount: 3, lastDiscovery: "2026-10-03T20:00:00Z", boundAgents: 1,
     tools: [
-      { name: "run_search", description: "Run a read-only SPL search", enabled: true },
-      { name: "list_indexes", description: "List available indexes", enabled: true },
+      { name: "run_search", description: "Run a read-only SPL search", enabled: true, riskTier: "read" },
+      { name: "list_indexes", description: "List available indexes", enabled: true, riskTier: "read" },
     ],
+    egress: ["mcp.internal"], approval: "ask",
   },
   {
     id: "gdrive-mcp", name: "Google Drive", transport: "http", endpoint: "https://mcp.internal/gdrive",
-    status: "error", auth: "OAuth 2.0", toolCount: 0, lastDiscovery: "2026-10-04T04:10:00Z", boundAgents: 0,
+    status: "error", auth: "oauth", toolCount: 0, lastDiscovery: "2026-10-04T04:10:00Z", boundAgents: 0,
     tools: [],
+    credentials: { accessToken: { masked: "ya29.A0••••••••7e4d", vaultPath: "vault://mcp/gdrive-mcp" } },
+    egress: ["mcp.internal", "www.googleapis.com"], approval: "auto",
   },
 
   /* ---- Trellix People Ops workspace ---- */
   {
     id: "workday-mcp", name: "Workday", transport: "http", endpoint: "https://mcp.internal/workday",
-    status: "connected", auth: "OAuth 2.0", toolCount: 3, lastDiscovery: "2026-10-04T04:15:00Z", boundAgents: 2,
+    status: "connected", auth: "oauth", toolCount: 3, lastDiscovery: "2026-10-04T04:15:00Z", boundAgents: 2,
     tools: [
-      { name: "get_worker", description: "Fetch an employee record by id", enabled: true },
-      { name: "list_time_off", description: "List time-off balances and requests", enabled: true },
-      { name: "submit_time_off", description: "Submit a time-off request", enabled: false },
+      { name: "get_worker", description: "Fetch an employee record by id", enabled: true, riskTier: "read" },
+      { name: "list_time_off", description: "List time-off balances and requests", enabled: true, riskTier: "read" },
+      { name: "submit_time_off", description: "Submit a time-off request", enabled: false, riskTier: "destructive" },
     ],
+    credentials: { accessToken: { masked: "ya29.A0••••••••c5a9", vaultPath: "vault://mcp/workday-mcp" } },
+    egress: ["mcp.internal", "wd2-impl-services1.workday.com"], approval: "ask",
     workspaceId: "trellix-people",
   },
   {
     id: "greenhouse-mcp", name: "Greenhouse", transport: "http", endpoint: "https://mcp.internal/greenhouse",
-    status: "connected", auth: "Bearer token", toolCount: 2, lastDiscovery: "2026-10-04T04:15:00Z", boundAgents: 1,
+    status: "connected", auth: "bearer", toolCount: 2, lastDiscovery: "2026-10-04T04:15:00Z", boundAgents: 1,
     tools: [
-      { name: "search_candidates", description: "Search candidates and applications", enabled: true },
-      { name: "get_application", description: "Fetch a single application by id", enabled: true },
+      { name: "search_candidates", description: "Search candidates and applications", enabled: true, riskTier: "read" },
+      { name: "get_application", description: "Fetch a single application by id", enabled: true, riskTier: "read" },
     ],
+    credentials: { token: { masked: "gh_pat••••••••b2e1", vaultPath: "vault://mcp/greenhouse-mcp" } },
+    egress: ["mcp.internal", "harvest.greenhouse.io"], approval: "auto",
     workspaceId: "trellix-people",
   },
   {
     id: "slack-hr-mcp", name: "Slack (People)", transport: "http", endpoint: "https://mcp.internal/slack-people",
-    status: "error", auth: "OAuth 2.0", toolCount: 0, lastDiscovery: "2026-10-04T04:15:00Z", boundAgents: 0,
+    status: "error", auth: "oauth", toolCount: 0, lastDiscovery: "2026-10-04T04:15:00Z", boundAgents: 0,
     tools: [],
+    credentials: { accessToken: { masked: "xoxb-1••••••••d7f0", vaultPath: "vault://mcp/slack-hr-mcp" } },
+    egress: ["mcp.internal", "slack.com"], approval: "auto",
     workspaceId: "trellix-people",
   },
 ];
@@ -639,16 +668,28 @@ export type HttpToolConfig = {
   auth: "none" | "bearer" | "api_key_header" | "basic";
   authRef?: CredentialRef; // present when auth !== "none"
   headers?: string; // raw "Key: Value" per line
-  argsSchema?: string; // JSON text, stored as-is (not parsed here)
+  argsSchema?: string; // JSON text; validated as JSON in the tool dialog before save
+  egress?: string[]; // allowed domains (deny-by-default); maps to tools.config.egress.allow.domains
 };
-export type RepoTool = { name: string; kind: "HTTP" | "Built-in" | "Sub-agent"; description: string; usedBy: number; workspaceId?: string; accessPolicy?: AccessPolicy; httpConfig?: HttpToolConfig };
+// @backend tools row. `riskTier` drives the runtime approval gate; `subagentTarget`/`builtinId` carry
+// the kind-specific binding (the delegated agent name / the built-in catalog id) so Sub-agent and
+// Built-in tools round-trip. [ref: backend/01 §4.6, backend/09 §10]
+export type RepoTool = {
+  name: string; kind: "HTTP" | "Built-in" | "Sub-agent"; description: string; usedBy: number;
+  workspaceId?: string; accessPolicy?: AccessPolicy; httpConfig?: HttpToolConfig;
+  riskTier?: "read" | "write" | "destructive";
+  subagentTarget?: string; // kind "Sub-agent": the delegated agent's name
+  maxDepth?: number; // kind "Sub-agent": delegation depth cap (backend subagent_configs.max_depth)
+  maxFanout?: number; // kind "Sub-agent": concurrent children per turn (subagent_configs.max_fanout)
+  builtinId?: string; // kind "Built-in": the built-in catalog id
+};
 export const TOOLS_REPO: RepoTool[] = [
   { name: "http-enrich-ip", kind: "HTTP", description: "Enrich an IP with geo, ASN and reputation", usedBy: 2 },
   { name: "http-cve-lookup", kind: "HTTP", description: "Look up CVE details by identifier", usedBy: 1 },
   { name: "http-search-docs", kind: "HTTP", description: "Full-text search over the docs index", usedBy: 1 },
   { name: "http-dryrun-query", kind: "HTTP", description: "Validate a query against the data lake without running it", usedBy: 1 },
-  { name: "subagent-log-query", kind: "Sub-agent", description: "Delegate to the Log Query Builder agent", usedBy: 2 },
-  { name: "code-exec-python", kind: "Built-in", description: "Sandboxed Python for calculations and parsing", usedBy: 3 },
+  { name: "subagent-log-query", kind: "Sub-agent", description: "Delegate to the Log Query Builder agent", usedBy: 2, subagentTarget: "docs-assistant", maxDepth: 2, maxFanout: 3, riskTier: "read" },
+  { name: "code-exec-python", kind: "Built-in", description: "Sandboxed Python for calculations and parsing", usedBy: 3, builtinId: "code-exec-python", riskTier: "read" },
   /* ---- Trellix People Ops workspace ---- */
   { name: "http-hris-lookup", kind: "HTTP", description: "Look up an employee record in the HRIS (Workday)", usedBy: 1, workspaceId: "trellix-people" },
   { name: "http-pto-balance", kind: "HTTP", description: "Fetch an employee's PTO and leave balance", usedBy: 1, workspaceId: "trellix-people" },
@@ -713,10 +754,74 @@ export const EVAL_RUNS: EvalRun[] = [
   { id: "ev-4982", agentId: "policy-assistant", agent: "HR Policy Assistant", version: "v1", baseline: "none", quality: 86.0, qualityDelta: 0, costDelta: 0, latencyDelta: 0, cases: 9, verdict: "low_confidence", date: "2026-10-02T09:26:00Z", trigger: "First baseline", reason: "First baseline with only 9 cases and no prior version to compare against. Expand the suite to trust the score." },
 ];
 
+/* ---- Eval authoring (suites + cases) ---- */
+// @backend eval_suites / eval_cases (01 §4.5). A suite is a named set of cases per agent; a case is an
+//   authorable test: input (a message + typed io_contract var values), deterministic `assertions`, a judge
+//   `rubric`, and an optional reference answer. `expected` is optional because the pairwise judge compares
+//   the candidate to the frozen baseline, not to a hand-written golden. [ref: backend/05 §1-2; 08 eval-suites/cases]
+export type AssertionKind =
+  | "schema_valid" | "required_fields" | "regex" | "exact" | "tool_called" | "no_refusal" | "has_citation";
+// UI metadata for the assertion editor: label + what `detail` means for each kind (empty = no detail field).
+export const ASSERTION_KINDS: { kind: AssertionKind; label: string; detailHint: string }[] = [
+  { kind: "no_refusal", label: "No refusal", detailHint: "" },
+  { kind: "has_citation", label: "Has citation", detailHint: "e.g. cite a runbook" },
+  { kind: "schema_valid", label: "Output is schema-valid", detailHint: "" },
+  { kind: "required_fields", label: "Required fields present", detailHint: "comma-separated field names" },
+  { kind: "tool_called", label: "Tool was called", detailHint: "tool name" },
+  { kind: "regex", label: "Matches regex", detailHint: "regular expression" },
+  { kind: "exact", label: "Exact match", detailHint: "expected string" },
+];
+export type Assertion = {
+  kind: AssertionKind;
+  detail?: string;   // regex/field list/tool name/expected string, depending on kind
+  hard: boolean;     // a hard assertion forces case FAIL regardless of the judge (05 §2)
+};
+export type RubricDimension = { name: string; weight: number }; // judge scores 1-5 per dim; weighted blend -> quality
+export type EvalCaseDef = {
+  id: string;
+  input: string;                  // the user message / scenario
+  vars?: Record<string, string>;  // values for the agent's declared io_contract input variables
+  assertions: Assertion[];
+  rubric: RubricDimension[];
+  expected?: string;              // optional reference answer for the pairwise judge
+};
+export type EvalSuite = {
+  id: string;
+  agentId: string;
+  name: string;
+  cases: EvalCaseDef[];
+  workspaceId?: string;
+  updatedAt: string;
+};
+
+export const DEFAULT_RUBRIC: RubricDimension[] = [
+  { name: "Accuracy", weight: 2 }, { name: "Completeness", weight: 1 },
+  { name: "Faithfulness", weight: 1 }, { name: "Safety", weight: 1 },
+];
+/** Fresh deep clone of the default rubric — seed cases share the DEFAULT_RUBRIC reference, so editors
+ *  must clone before mutating or every case's rubric moves together. */
+export const newRubric = (): RubricDimension[] => DEFAULT_RUBRIC.map((d) => ({ ...d }));
+export const EVAL_SUITES: EvalSuite[] = [
+  {
+    id: "suite-triage-golden", agentId: "triage-copilot", name: "Golden set", updatedAt: "2026-10-03T16:00:00Z",
+    cases: [
+      { id: "c-tri-1", input: "Triage alert 48213: repeated failed logins from one host.", assertions: [{ kind: "no_refusal", hard: true }, { kind: "has_citation", hard: false, detail: "cite a runbook" }], rubric: DEFAULT_RUBRIC },
+      { id: "c-tri-2", input: "Summarize severity for a phishing report with one clicked link.", assertions: [{ kind: "no_refusal", hard: true }], rubric: DEFAULT_RUBRIC, expected: "Sev3 with user-containment steps." },
+    ],
+  },
+  {
+    id: "suite-incident-regression", agentId: "incident-report-writer", name: "Regression set", updatedAt: "2026-10-04T08:00:00Z",
+    cases: [
+      { id: "c-inc-1", input: "5-day ransomware incident with 3 lateral-movement pivots", assertions: [{ kind: "required_fields", hard: true, detail: "timeline, evidence_links" }, { kind: "no_refusal", hard: true }], rubric: DEFAULT_RUBRIC },
+      { id: "c-inc-2", input: "Multi-host compromise across 2 subnets", assertions: [{ kind: "required_fields", hard: true, detail: "affected_hosts, blast_radius" }], rubric: DEFAULT_RUBRIC },
+    ],
+  },
+];
+
 /* -------------------------------------------------------------------- Runs */
 export type Run = {
   id: string; agentId: string; agent: string; version: string;
-  source: "Playground" | "API" | "Eval" | "Channel"; status: "success" | "error" | "blocked";
+  source: "Playground" | "API" | "Eval" | "Channel" | "Tool test" | "Subagent"; status: "success" | "error" | "blocked";
   latencyMs: number; tokens: number; cost: number; time: string; guardrail: string;
   workspaceId?: string;
   caller?: string;
@@ -724,6 +829,8 @@ export type Run = {
 };
 const AGENT_BY = (id: string) => AGENTS.find((a) => a.id === id)!.name;
 export const RUNS: Run[] = [
+  { id: "run-7f3a2a", agentId: "triage-copilot", agent: AGENT_BY("triage-copilot"), version: "v7", source: "Tool test", status: "success", latencyMs: 640, tokens: 310, cost: 0.0004, time: "2026-10-04T09:16:00Z", guardrail: "n/a (tool dry-run)", caller: "you" },
+  { id: "run-7f3a27", agentId: "triage-copilot", agent: AGENT_BY("triage-copilot"), version: "v7", source: "Subagent", status: "success", latencyMs: 1320, tokens: 2100, cost: 0.006, time: "2026-10-04T09:15:20Z", guardrail: "passed", caller: "parent: triage-copilot" },
   { id: "run-7f3a21", agentId: "docs-assistant", agent: AGENT_BY("docs-assistant"), version: "v11", source: "API", status: "success", latencyMs: 910, tokens: 3420, cost: 0.0021, time: "2026-10-04T09:14:00Z", guardrail: "passed" },
   { id: "run-7f3a1e", agentId: "triage-copilot", agent: AGENT_BY("triage-copilot"), version: "v7", source: "API", status: "success", latencyMs: 1780, tokens: 9120, cost: 0.034, time: "2026-10-04T09:13:30Z", guardrail: "passed" },
   { id: "run-7f3a15", agentId: "triage-copilot", agent: AGENT_BY("triage-copilot"), version: "v7", source: "API", status: "blocked", latencyMs: 210, tokens: 420, cost: 0.001, time: "2026-10-04T09:12:10Z", guardrail: "PII blocked on input" },
@@ -745,6 +852,29 @@ export const RUNS: Run[] = [
   /* ---- Channel-sourced runs (federated Okta user via a messaging app) ---- */
   { id: "run-7f3b40", agentId: "triage-copilot", agent: AGENT_BY("triage-copilot"), version: "v7", source: "Channel", status: "success", latencyMs: 1960, tokens: 8800, cost: 0.031, time: "2026-10-04T09:16:00Z", guardrail: "passed", caller: "slack · @priya.nair", subjectType: "user" },
   { id: "run-8a1240", agentId: "benefits-qa", agent: AGENT_BY("benefits-qa"), version: "v5", source: "Channel", status: "success", latencyMs: 740, tokens: 2700, cost: 0.0015, time: "2026-10-04T09:15:20Z", guardrail: "passed", caller: "gchat · @diego.fuentes", subjectType: "user" },
+];
+
+/* ------------------------------------------------------------- Tool approvals */
+// @backend tool_approvals row (projection). A high-risk/destructive tool call pauses its run at the
+// runtime approval gate; publishers+ approve/deny. toolLabel is denormalized for display (the runtime
+// resolves the binding → tool). [ref: backend/01 §4.6 tool_approvals, backend/03 §2 tool_approval_gate]
+export type ToolApproval = {
+  id: string; agentId: string; agent: string; runId: string;
+  toolRef: string; toolLabel: string;
+  riskTier: "write" | "destructive";
+  argsPreview: string;
+  status: "pending" | "approved" | "denied" | "expired";
+  requestedAt: string; requestedBy?: string;
+  decidedBy?: string; decidedAt?: string; decisionReason?: string;
+  workspaceId?: string;
+};
+export const TOOL_APPROVALS: ToolApproval[] = [
+  { id: "appr-5c01", agentId: "triage-copilot", agent: AGENT_BY("triage-copilot"), runId: "run-7f3a27", toolRef: "mcp:jira-mcp/create_issue", toolLabel: "create_issue · Jira", riskTier: "write", argsPreview: `{ "project": "SOC", "summary": "Contain host win-… " }`, status: "pending", requestedAt: "2026-10-04T09:15:40Z", requestedBy: "svc: platform-gateway" },
+  { id: "appr-5bf4", agentId: "incident-report-writer", agent: AGENT_BY("incident-report-writer"), runId: "run-7f3a05", toolRef: "http-dryrun-query", toolLabel: "http-dryrun-query", riskTier: "write", argsPreview: `{ "query": "index=main sourcetype=auth …" }`, status: "pending", requestedAt: "2026-10-04T09:10:10Z", requestedBy: "you" },
+  { id: "appr-5be0", agentId: "triage-copilot", agent: AGENT_BY("triage-copilot"), runId: "run-7f39a1", toolRef: "mcp:jira-mcp/add_comment", toolLabel: "add_comment · Jira", riskTier: "write", argsPreview: `{ "issue": "SOC-4821", "body": "Auto-triage: …" }`, status: "approved", requestedAt: "2026-10-04T08:30:00Z", requestedBy: "svc: platform-gateway", decidedBy: "Raman Garg", decidedAt: "2026-10-04T08:32:00Z" },
+
+  /* ---- Trellix People Ops workspace ---- */
+  { id: "appr-5a90", agentId: "pto-helper", agent: AGENT_BY("pto-helper"), runId: "run-8a12a0", toolRef: "mcp:workday-mcp/submit_time_off", toolLabel: "submit_time_off · Workday", riskTier: "destructive", argsPreview: `{ "worker": "E-20481", "days": 3, "type": "PTO" }`, status: "pending", requestedAt: "2026-10-04T09:12:00Z", requestedBy: "slack · @amara.osei", workspaceId: "trellix-people" },
 ];
 
 /* ------------------------------------------------------ Tokens & keys */
@@ -774,6 +904,12 @@ export type Limits = { monthlySpendUsd: number; maxConcurrent: number; requestTi
 
 export const defaultWorkspaceSettings = (): WorkspaceSettings => ({ defaultProvider: "Anthropic", defaultModel: "claude-opus-5-5" });
 export const defaultLimits = (): Limits => ({ monthlySpendUsd: 2000, maxConcurrent: 25, requestTimeoutS: 30 });
+
+// @backend workspace-level eval policy (admin-governed via eval.govern). Gates the verdict + publish:
+//   minCases below → low_confidence; quality must clear qualityThreshold; efficiency must stay within
+//   efficiencyBudgetPct; a low_confidence run blocks publish unless allowLowConfidenceOverride. [ref: backend/05 §1,§5]
+export type EvalPolicy = { minCases: number; qualityThreshold: number; efficiencyBudgetPct: number; allowLowConfidenceOverride: boolean };
+export const defaultEvalPolicy = (): EvalPolicy => ({ minCases: 10, qualityThreshold: 90, efficiencyBudgetPct: 10, allowLowConfidenceOverride: false });
 
 export const WORKSPACE_SETTINGS: Record<string, WorkspaceSettings> = {
   "trellix-xdr": { defaultProvider: "Anthropic", defaultModel: "claude-opus-5-5" },

@@ -6,11 +6,14 @@ export type Permission =
   | "agent.create"
   | "agent.edit"
   | "eval.run"
+  | "eval.author"
+  | "eval.govern"
   | "knowledge.manage"
   | "tool.manage"
   | "mcp.manage"
   | "channel.manage"
   | "agent.publish"
+  | "tool.approve"
   | "agent.delete"
   | "key.manage"
   | "member.manage"
@@ -18,11 +21,13 @@ export type Permission =
   | "settings.manage";
 
 const BUILDER: Permission[] = [
-  "view", "playground.use", "agent.create", "agent.edit", "eval.run",
+  "view", "playground.use", "agent.create", "agent.edit", "eval.run", "eval.author",
   "knowledge.manage", "tool.manage", "mcp.manage", "channel.manage",
 ];
-const PUBLISHER: Permission[] = [...BUILDER, "agent.publish"];
-const ADMIN: Permission[] = [...PUBLISHER, "agent.delete", "key.manage", "member.manage", "access.manage", "settings.manage"];
+// `tool.approve` — decide pending high-risk/destructive tool-call approvals (runtime gate). Publisher+
+// per backend/09 §4. The approval inbox UI is a follow-up; the permission lands now for FE/BE alignment.
+const PUBLISHER: Permission[] = [...BUILDER, "agent.publish", "tool.approve"];
+const ADMIN: Permission[] = [...PUBLISHER, "agent.delete", "key.manage", "member.manage", "access.manage", "settings.manage", "eval.govern"];
 
 export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
   viewer: ["view", "playground.use"],

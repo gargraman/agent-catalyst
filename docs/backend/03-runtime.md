@@ -22,7 +22,11 @@ flowchart LR
   ROUTE -->|always_on| RET[retrieve + stuff]
   ROUTE -->|tool / none| MODEL
   RET --> MODEL[model_call<br/>stream via gateway]
-  MODEL -->|tool calls?| TOOLS[execute_tools<br/>incl. retriever-as-tool]
+  MODEL -->|tool calls?| GATE{tool_approval_gate}
+  GATE -->|allowed| TOOLS[execute_tools<br/>incl. retriever-as-tool]
+  GATE -->|requires_approval| PAUSE((interrupt<br/>await decide))
+  GATE -->|denied / expired| OG
+  PAUSE -->|resume: approve| TOOLS
   TOOLS --> MODEL
   MODEL -->|final| OG[output_guardrails<br/>streaming redact]
   OG --> DONE((emit stop + usage))
@@ -47,6 +51,12 @@ class GraphState(TypedDict):
     guardrail_outcome: str | None         # e.g. "PII blocked on input" (06 → runs.guardrail)
     stop_reason: str | None
 ```
+
+> **RunContext additions (sub-agents + approvals).** `RunContext` (defined in 00 §4, referenced as `ctx`
+> above) gains `depth: int = 0`, `parent_run_id: str | None = None`, and a `subagent_budget` (remaining
+> depth/fan-out allowance) so a child `runtime.invoke` can enforce the caps in §8, plus `approval_expiry_s`
+> for the gate in §4. `ctx.child()` returns a context with `depth+1`, this run's id as `parent_run_id`, and
+> the decremented budget. The matching struct edit lives in 00 §4.
 
 ## 4. Nodes (what each does)
 
@@ -75,6 +85,25 @@ async def model_call(state):                # the streaming provider call (02)
         accumulate(state, ev)               # text, tool-call assembly, usage, substitutions
     return reduce_model_turn(state)         # sets stop_reason or pending tool_calls
 
+async def tool_approval_gate(state):        # high-risk tool gate (09 §10; risk_tier frozen in the snapshot, 05)
+    for call in state["pending_tool_calls"]:
+        binding = resolve_binding(state["snapshot"], call)    # frozen tool_bindings (01)
+        if not binding.requires_approval:                     # read-tier / not gated → straight through
+            continue
+        approval = await create_approval(                     # tool_approvals(status='pending') (01)
+            ctx=state["ctx"], version_id=state["snapshot"].version_id,
+            tool_binding_id=binding.id, tool_call_id=call.id,
+            args_redacted=redact(call.args),                  # secrets scrubbed (09 §9)
+            risk_tier=binding.risk_tier,
+            expires_at=now() + state["ctx"].approval_expiry_s)   # separate from ctx.deadline_s — see note
+        emit(sse("approval_required", approval_id=approval.id, tool=binding.name,
+                 args_partial=approval.args_redacted, risk_tier=binding.risk_tier))
+        # PAUSE on LangGraph's native interrupt() + the Postgres checkpointer (§6); the run row suspends.
+        decision = interrupt({"approval_id": approval.id})    # resumed by Command(resume=decision) on decide
+        if decision in ("deny", "expired"):
+            return {"stop_reason": "approval_denied"}         # tool NOT executed → routes to output_guardrails
+    return {}                                                 # all required approvals granted → execute_tools
+
 async def execute_tools(state):             # tool loop body
     if state["tool_calls_made"] >= MAX_TOOL_CALLS:        # COST guard (default 8; from runtime policy)
         return {"stop_reason": "tool_limit"}
@@ -89,6 +118,13 @@ async def output_guardrails(state):         # streaming sliding-buffer redaction
     ...                                     # see 06 §streaming — redact precedes flush
 ```
 
+> **A pending approval suspends `ctx.deadline_s`.** The latency deadline (§5) measures *runtime work*, so
+> it does not tick while the graph is parked at `interrupt()` waiting on a human — otherwise every gated
+> run would "time out" in 30s. A separate `approval_expiry_s` (RunContext, §3) bounds the wait: on expiry
+> the `tool_approvals` row flips to `status='expired'` and the resumed branch takes the denied path
+> (`stop_reason="approval_denied"`). Checkpointer durability (§6) means a run can wait across process
+> restarts, not just in-memory.
+
 ### Edges
 
 ```python
@@ -99,6 +135,7 @@ def build_graph():
     g.add_node("build_messages", build_messages)
     g.add_node("retrieve_always_on", retrieve_always_on)
     g.add_node("model_call", model_call)
+    g.add_node("tool_approval_gate", tool_approval_gate)
     g.add_node("execute_tools", execute_tools)
     g.add_node("output_guardrails", output_guardrails)
 
@@ -110,7 +147,9 @@ def build_graph():
         {"always_on": "retrieve_always_on", "model": "model_call"})
     g.add_edge("retrieve_always_on", "model_call")
     g.add_conditional_edges("model_call", _after_model,
-        {"tools": "execute_tools", "final": "output_guardrails"})
+        {"tools": "tool_approval_gate", "final": "output_guardrails"})   # gate precedes execution
+    g.add_conditional_edges("tool_approval_gate", _after_gate,
+        {"execute": "execute_tools", "denied": "output_guardrails"})     # denied/expired skips the tool
     g.add_edge("execute_tools", "model_call")           # the agentic loop
     g.add_edge("output_guardrails", END)
     return g.compile(checkpointer=checkpointer())       # §6
@@ -170,8 +209,16 @@ attr. This interacts with COGS: tighter windows = fewer input tokens = lower cos
   (`ctx.tool_time_left()`, §4). The per-tool timeout alone is not enough: 8 serial tools × a 10s
   per-tool timeout is 80s of wall-clock, which would blow a 30s run on its own. The total budget is
   what keeps the agentic loop inside `ctx.deadline_s` (00 §4, 10 §5).
-- **mcp tools / sub-agents** (P2): run in the egress-restricted sandbox worker (09 §10, spec B7); sub-
-  agents are LangGraph subgraphs with depth/fan-out caps.
+- **mcp tools** (P2): execute in the egress-restricted **sandbox** unit (11 §1) — **not** the general
+  worker — with a per-server allow/deny list; the schema snapshot (01) + result validation bound a poisoned
+  server (09 §10). http/mcp tool execution shares this sandbox substrate.
+- **sub-agents** (P2): a sub-agent tool call is a **recursive** `runtime.invoke(run_source="subagent",
+  parent_run_id=<this run>, ctx=ctx.child())` (00 §1) — `ctx.child()` carries `depth+1` and the decremented
+  `subagent_budget` (§3). It is **rejected** when `depth > subagent_config.max_depth` (default 2) →
+  `stop_reason="subagent_depth_exceeded"`, or when concurrent children launched in one turn exceed
+  `subagent_config.max_fanout` (default 3) → `stop_reason="subagent_fanout_exceeded"` (01
+  `subagent_configs`). The child invoke runs on the same egress-restricted sandbox unit (11 §1) and
+  **inherits the parent `workspace_id`**, so a sub-agent can never cross tenant (09 §8).
 
 Every tool call is a `span` (01, 10) with args (redacted), result size, latency, cost (for model-backed
 sub-agents).

@@ -160,6 +160,11 @@ QUEUE    = Gauge("ac_queue_depth", "jobs queued", ["kind"])                   # 
 EVALPASS = Gauge("ac_eval_pass_ratio", "rolling eval pass ratio", ["workspace"])
 PROV_ERR = Counter("ac_provider_errors_total", "provider errs", ["provider","code"])  # §8
 DEADLINE = Counter("ac_deadline_exceeded_total", "runs cut by the wall-clock deadline", ["source"])  # 00 §4 / 03 §4
+# --- P2 MCP / tool / sub-agent pause & failure modes (01, 03, 09 §10, 11 §1) ---
+APPR_PEND= Counter("ac_tool_approval_pending_total", "runs paused awaiting tool approval", ["workspace"])  # tool_approval_gate (03)
+APPR_EXP = Counter("ac_tool_approval_expired_total", "tool approvals that expired undecided", ["workspace"])  # §5 alert
+SUBDEPTH = Counter("ac_subagent_depth_exceeded_total", "sub-agent spawns refused past the depth/fan-out cap", ["workspace"])  # 00 §4
+SBX_FAIL = Counter("ac_sandbox_exec_failures_total", "sandbox MCP/tool-exec failures", ["workspace","reason"])  # §5 alert
 ```
 
 | Metric | What it answers | Source |
@@ -173,6 +178,9 @@ DEADLINE = Counter("ac_deadline_exceeded_total", "runs cut by the wall-clock dea
 | `ac_eval_pass_ratio` | are agents staying healthy | eval runs (05) |
 | `ac_provider_errors_total` | provider resilience (§8) | gateway (02) |
 | `ac_deadline_exceeded_total` rate | runs cut by the 30s wall-clock deadline (00 §4) | finalize (03 §4) |
+| `ac_tool_approval_pending_total` / `_expired_total` | runs paused for a destructive-tool approval; approvals that expired undecided (§5 alert) | `tool_approval_gate` (03), `tool_approvals` (01) |
+| `ac_subagent_depth_exceeded_total` | sub-agent spawns refused past the depth/fan-out cap | `runtime` (00 §4, `subagent_configs` 01) |
+| `ac_sandbox_exec_failures_total` | MCP/tool executions that failed in the sandbox (§5 alert) | sandbox pool (11 §1) |
 
 **Health/readiness probes** (used by k8s + the reverse proxy, 11):
 - `GET /healthz` — liveness: process up.
@@ -194,6 +202,8 @@ SLI; page only on fast burn.
 | Spend anomaly | within budget + no spikes | `rate(ac_cost_usd_total)` per workspace vs 7d baseline | > 3× baseline 15m, or ≥ 90% monthly budget → page (07) |
 | Queue latency | eval/ingest start < 60s | job `queued→running` delay | p95 > 5m → warn (autoscale, 11) |
 | Provider errors | < 2% | `rate(ac_provider_errors_total) / rate(ac_runs_total)` | > 5% 5m → warn; circuit-breaker open → page (§8) |
+| Tool-approval expiry (P2) | approvals decided before expiry | `rate(ac_tool_approval_expired_total[1h])` | spike vs baseline (or sustained > 0) 15m → warn (a destructive action is silently stalling) |
+| Sandbox exec health (P2) | MCP/tool exec succeeds in the sandbox | `rate(ac_sandbox_exec_failures_total) / rate(ac_runs_total)` | > 5% 10m → warn; sharp spike → page (sandbox/egress misconfig or abuse) |
 
 ```yaml
 # deploy/alertmanager/rules.yml (skeleton)
@@ -293,6 +303,16 @@ The gateway (02) handles retries/fallback/circuit-breaking; this doc makes its b
   and alerted on if they spike (a quietly-degrading provider is a drift source).
 - **Circuit-breaker state** exported as a gauge per `(provider, model)`; breaker-open pages (§5) and is
   shown on the ops dashboard so an operator sees "Anthropic breaker open, traffic on fallback."
+- **Model-deprecation detector (16 §3).** A scheduled worker job (`job_kind = 'model_deprecation_scan'`,
+  01 §3) diffs each capability profile's new `availability`/`sunset_at` field (02 §4) against the pinned
+  `profile_snapshot.model` of every **published** version. A `deprecated`/`retired` match emits a
+  `model_deprecated` **owner notification** (16) — it is the hook for the P1-6 forced-migration work, not
+  the migration itself. It only fires if profiles are kept current (the profile-currency maintenance gap).
+
+> **Ops alert ≠ owner notification.** Everything in §5 (Alertmanager) pages/ warns **platform operators**
+> about system health. The signals in 16 (`drift`, `budget_threshold`, `model_deprecated`, `eval_failed`)
+> go to an **agent's owner**, in-product. They can share a source — e.g. spend feeds both the ops
+> `SpendAnomaly` page and the owner `budget_threshold` notice — but the audiences and surfaces are distinct.
 
 ## 9. Async job status delivery
 

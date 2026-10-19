@@ -14,6 +14,7 @@
 |---|---|---|---|
 | Builder API | `/api/v1/*` | **console session** (OIDC cookie, CSRF) + workspace scope | the Next.js console |
 | Published runtime | `/v1/agents/:id/invoke`, `/v1/...` | **caller bearer token** (hashed, scoped) | external apps / cURL |
+| Org governance | `/api/v1/org/*` | **console session + `platform_admins` roster** (09 §1, deployment-wide, read-only) | the console's org/admin view (15) |
 
 Both are served by the `api` process (00 §2); different routers, different FastAPI dependencies
 (`deps.session_principal` vs `deps.caller_token`). The FE map writes paths as `/v1/...`; in the builder
@@ -37,10 +38,17 @@ of this builder/runtime catalog; it mints its own identity (teams = the end user
 | not a member / RBAC / access-policy deny | 403 | `access.denied` |
 | missing row (post-tenant-scope) | 404 | `not_found` |
 | publish without passing eval | **409** | `publish.eval_gate` |
-| low-confidence suite blocks publish | 409 | `publish.low_confidence` |
+| low-confidence suite blocks publish | 409 | `publish.low_confidence` (unless the workspace `eval.govern` override is on — 05 §5) |
+| required assertion `detail` missing | 422 | `eval.assertion_detail_required` (05 §2a) |
+| build/publish an unregistered agent | **409** | `registration.gate` (14 §2) |
+| high-risk tool call denied/expired at the approval gate | **409** | `tool.approval.denied` (03 §2) |
 | over monthly budget (hard cap) | **402** | `budget.exceeded` |
 | rate limit (per-token, **P1**) / concurrency + spend quota (P2) | **429** | `rate.limited` |
 | provider/all-fallbacks failed | 502 | `provider.unavailable` |
+
+> A **dry-run** (`…/test-invoke`, §2) on a tool the caller hasn't bound or isn't permitted to use reuses
+> **`403 access.denied`** — no new code. A **sub-agent depth/fan-out breach is a run `stop_reason`**
+> (`subagent_depth_exceeded` / `subagent_fanout_exceeded`, 03 §8) surfaced on the run, **not** an HTTP error.
 
 **Pagination:** cursor-based — `?limit=50&cursor=<opaque>`; responses carry `{items, next_cursor}`.
 Dashboards use dedicated metrics endpoints (§7), not paginated lists.
@@ -59,8 +67,9 @@ a workspace you don't belong to is a 403, never a leak, so it cannot be forged. 
 
 ## 2. Endpoint catalog
 
-Faithful to `backend-integration-map.md`. `Auth`: **S**=session, **T**=caller token. `Async`: returns a
-job/stream (00 §5, 10). `Backs`: the `frontend/src/lib/data.ts` symbol (via `store.ts`).
+Faithful to `backend-integration-map.md`. `Auth`: **S**=session, **T**=caller token, **P**=platform-admin
+(session + `platform_admins`, 09 §1). `Async`: returns a job/stream (00 §5, 10). `Backs`: the
+`frontend/src/lib/data.ts` symbol (via `store.ts`); P0 routes with no FE backer yet are marked *(net FE)*.
 
 ### Agents & versions
 | Method · Path | Auth | Async | Backs |
@@ -71,6 +80,9 @@ job/stream (00 §5, 10). `Backs`: the `frontend/src/lib/data.ts` symbol (via `st
 | `PATCH /api/v1/agents/:id` | S | — | `updateAgent` (config, lifecycle, bind kb/tools, rollback activeVersion) |
 | `DELETE /api/v1/agents/:id` | S | — | `deleteAgent` |
 | `POST /api/v1/agents/:id/duplicate` | S | — | `duplicateAgent` |
+| `POST /api/v1/agents/:id/register` | S | — | *(net FE)* registration gate: set `registered_at` + owner; audited `agent.register` (14 §2) |
+| `POST /api/v1/agents/scan` | S | — | *(net FE)* similarity/dedup scan over a draft config → candidate matches (14 §3) |
+| `POST /api/v1/agents/import` | S | ✓ | *(net FE)* bulk import a hand-wired agent → draft + first version (14 §4) |
 | `GET /api/v1/agents/:id/versions` | S | — | `getVersions` / `VERSIONS` |
 | `POST /api/v1/agents/:id/versions` | S | — | "Save as new version" (clone+change; §4.2) |
 | `POST /api/v1/versions/:vid/clone` | S | — | clone to new draft |
@@ -93,10 +105,14 @@ job/stream (00 §5, 10). `Backs`: the `frontend/src/lib/data.ts` symbol (via `st
 | Method · Path | Auth | Async | Backs |
 |---|---|---|---|
 | `GET /api/v1/evals` · `GET /api/v1/agents/:id/evals` | S | — | `useEvalRuns` / `getEvalsForAgent` |
-| `POST /api/v1/agents/:id/evals` | S | **yes** | `addEvalRun` (queue vs frozen baseline + judge; 05) |
+| `POST /api/v1/agents/:id/evals` | S(`eval.run`) | **yes** | `addEvalRun` (queue vs frozen baseline + judge; 05); body names the `suite_id` to score |
 | `GET /api/v1/jobs/:id` | S | **yes** | `resolveEvalRun` completion patch |
-| `POST /api/v1/agents/:id/eval-suites` · `/cases` | S | — | suite/case CRUD |
-| `POST /api/v1/versions/:vid/baseline` | S | — | "Re-freeze baseline" (audited; 05) |
+| `GET /api/v1/agents/:id/eval-suites` | S | — | `useSuitesForAgent` — suites + cases for the agent |
+| `POST /api/v1/agents/:id/eval-suites` | S(`eval.author`) | — | `addSuite` — create a suite (01 §4.5) |
+| `PATCH \| DELETE /api/v1/eval-suites/:sid` | S(`eval.author`) | — | `renameSuite` / `deleteSuite` |
+| `POST /api/v1/eval-suites/:sid/cases` · `PUT \| DELETE …/cases/:cid` | S(`eval.author`) | — | `upsertCase` / `deleteCase`; body = `EvalCaseDef` (input+vars, assertions `[{kind,detail?,hard}]`, rubric `[{name,weight}]`, optional `expected`). **422** on a missing required assertion `detail` (05 §2a) |
+| `GET /api/v1/workspaces/:id/eval-policy` · `PUT …` | S · S(`eval.govern`) | — | `useEvalPolicy` / `setEvalPolicy` — per-workspace `EvalPolicy` (minCases, qualityThreshold, efficiencyBudgetPct, allowLowConfidenceOverride); drives the verdict + publish gate (05 §1) |
+| `POST /api/v1/versions/:vid/baseline` | S(`eval.govern`) | — | `reFreezeBaseline` — re-freeze the trusted baseline to this version (audited; 05 §4) |
 
 ### Publish, tokens, export
 | Method · Path | Auth | Async | Backs |
@@ -118,7 +134,7 @@ job/stream (00 §5, 10). `Backs`: the `frontend/src/lib/data.ts` symbol (via `st
 | `GET /api/v1/workspaces/:id` | S | — | `useWorkspaceSettings` (name/slug read-only; default provider/model) |
 | `PATCH /api/v1/workspaces/:id` | S(admin) | — | `updateWorkspaceSettings` (default provider/model, `access_mode`; slug immutable) |
 | `POST /api/v1/workspaces/:id/archive` | S(admin) | — | `archiveWorkspace` (sets `archived_at`, unpublishes endpoints) |
-| `GET /api/v1/workspaces/:id/limits` · `PUT …` | S(admin) | — | `useLimits` / `updateLimits` — per-workspace spend + concurrency + timeout. **Stored P1, enforced P2** (07) |
+| `GET /api/v1/workspaces/:id/limits` · `PUT …` | S(admin) | — | `useLimits` / `updateLimits` — per-workspace spend + concurrency + timeout. **Monthly spend cap enforced P1; concurrency P2** (07 §3) |
 | `GET /api/v1/provider-keys?workspace=:id` | S | — | `useProviderKeys` (masked) |
 | `POST /api/v1/provider-keys` | S(admin) | — | `addProviderKey` (vaulted; 09) |
 | `POST /api/v1/provider-keys/:id/rotate` · `…/revoke` | S(admin) | — | `rotateProviderKey` / `revokeProviderKey` (audited; 09 §12) |
@@ -132,14 +148,39 @@ job/stream (00 §5, 10). `Backs`: the `frontend/src/lib/data.ts` symbol (via `st
 | `GET /api/v1/search?q=` | S | — | topbar + list search |
 | `GET /v1/branding` | public | — | `lib/org.ts:ORG` → `OrgBrand` (name/product/idp/domains + token values). **Optional — multi-org deployments only.** The default one-deploy-per-org model bakes branding at build/deploy time (env / `org.config.json`), so there is **no per-request branding call** (13 §2). Unauthenticated, cacheable, not tenant-scoped; sits *above* the workspace planes. |
 
+### Notifications (16)
+| Method · Path | Auth | Async | Backs |
+|---|---|---|---|
+| `GET /api/v1/notifications?workspace=:id` | S | — | *(net FE)* owner inbox + `unread_count`; filtered to the caller's `recipient_subject` (16 §1,§4) |
+| `POST /api/v1/notifications/:id/read` | S | — | *(net FE)* mark one read (`read_at`) |
+| `POST /api/v1/notifications/read-all` | S | — | *(net FE)* mark all read |
+
+### Org governance (elevated — platform-admin, 15)
+| Method · Path | Auth | Async | Backs |
+|---|---|---|---|
+| `GET /api/v1/org/agents` | P | — | *(net FE)* whole-estate rows {agent, workspace, owner, status, eval verdict, drift, spend_30d, policy tier, compliance_flags}; metadata-only for `private` |
+| `GET /api/v1/org/spend` | P | — | *(net FE)* spend rollup by workspace / agent / model |
+| `GET /api/v1/org/compliance` | P | — | *(net FE)* non-compliant list (unregistered / un-evaluated / over-budget / no-owner) — consumes `agents.registered_at`/`owner_subject` (14) |
+
+All three route through the elevated `SECURITY DEFINER` path and write `org.report.read` (09 §7,§12).
+
 ### Tools & MCP (P2 — routes reserved)
 | Method · Path | Auth | Async | Backs |
 |---|---|---|---|
-| `GET/POST /api/v1/tools` | S | — | `useTools` / `addTool` (HTTP tool carries `httpConfig{method,url,auth,authRef,headers,argsSchema}`; secret → vault, only `authRef` persisted) |
-| `GET /api/v1/mcp-servers` · `GET /:id` | S | — | `useMcpServers` / `useMcpServer` |
-| `POST /api/v1/mcp-servers` | S | yes* | `addMcpServer` (connect + discover) |
-| `POST /api/v1/mcp-servers/:id/discover` | S | yes | re-run `tools/list` |
-| `POST /api/v1/versions/:vid/tools` | S | — | bind tools/MCP tools to version |
+| `GET/POST /api/v1/tools` | S(`tool.manage`) | — | `useTools` / `addTool` (HTTP tool carries `httpConfig{method,url,auth,authRef,headers,argsSchema}`; secret → vault, only `authRef` persisted) |
+| `GET /api/v1/mcp-servers` · `GET /:id` | S(`mcp.manage`) | — | `useMcpServers` / `useMcpServer` |
+| `POST /api/v1/mcp-servers` | S(`mcp.manage`) | yes* | `addMcpServer` (connect + discover) |
+| `POST /api/v1/mcp-servers/:id/discover` | S(`mcp.manage`) | yes | re-run `tools/list` |
+| `POST /api/v1/versions/:vid/tools` | S(`mcp.manage`) | — | bind tools/MCP tools to version |
+| `POST /api/v1/tools/:id/test-invoke` | S(`tool.manage`) | stream | *(net FE)* dry-run a single HTTP/builtin tool in the sandbox (09 §10, 11 §1); body `{args}`; run `source='tool_test'`; audited `tool.test_invoke` (09 §12) |
+| `POST /api/v1/mcp-servers/:id/test-invoke` | S(`mcp.manage`) | yes | *(net FE)* spec §D round-trip test — body `{tool, args}`; audited `mcp.test_invoke` (09 §12) |
+| `POST /api/v1/tools/:id/risk-tier` | S(admin) | — | set `risk_tier` ∈ read\|write\|destructive (01 `tool_risk_tier`); audited `tool.bind` (09 §12) |
+
+### Approvals (high-risk tool gate — 03 §2, 09 §10)
+| Method · Path | Auth | Async | Backs |
+|---|---|---|---|
+| `GET /api/v1/approvals?workspace=:id` | S | — | *(net FE)* pending-approvals inbox — `tool_approvals` where `status='pending'`, workspace-scoped (01, 09 §8) |
+| `POST /api/v1/approvals/:id/decide` | S(`require_role('publisher')`) | — | *(net FE)* body `{decision:'approve'\|'deny', reason?}`; resumes the paused run via `Command(resume=decision)` (03 §2); writes `tool.approval.{approve,deny}` (09 §12) |
 
 ### Published runtime (caller token)
 | Method · Path | Auth | Async | Backs |
@@ -353,7 +394,7 @@ class EvalRunOut(BaseModel):
 class RunOut(BaseModel):                  # mirrors TS Run
     id: str; agent_id: str = Field(alias="agentId"); agent: str
     version: str
-    source: str                          # Playground|API|Eval
+    source: str                          # run_source (01): Playground|API|Eval|tool_test|subagent
     status: str                          # success|error|blocked
     latency_ms: int = Field(alias="latencyMs")
     tokens: int
@@ -392,6 +433,71 @@ class LimitsOut(BaseModel):              # mirrors TS Limits; composed from spen
     request_timeout_s: int = Field(alias="requestTimeoutS")
     class Config: populate_by_name = True
 class LimitsPut(LimitsOut):             # PUT /workspaces/:id/limits (admin). Stored P1; ENFORCED P2 (07)
+    pass
+```
+
+```python
+# services/api/schemas/tools.py — tools, risk tiers, approvals, sub-agents, dry-run (P2; names from 01)
+from typing import Literal
+
+RiskTier = Literal["read", "write", "destructive"]        # 01 tool_risk_tier
+
+class EgressPolicy(BaseModel):           # mirrors config.egress (01 §4.6); deny-by-default egress schema
+    mode: str = "deny_by_default"
+    allow: dict = Field(default_factory=lambda: {"domains": [], "cidrs": [], "ports": []})
+
+class ToolOut(BaseModel):                # mirrors TS Tool; HTTP/builtin tool
+    id: str; name: str; kind: str                         # http | builtin | mcp
+    risk_tier: RiskTier = Field("read", alias="riskTier")            # 01 tool_bindings.risk_tier
+    requires_approval: bool = Field(False, alias="requiresApproval") # 01 tool_bindings.requires_approval
+    class Config: populate_by_name = True
+
+class McpToolOut(BaseModel):             # a tool discovered from an MCP server (tools/list)
+    server_id: str = Field(alias="serverId"); name: str
+    risk_tier: RiskTier = Field("read", alias="riskTier")
+    class Config: populate_by_name = True
+
+class SubagentConfigIn(BaseModel):       # 01 subagent_configs — a tool that delegates to another agent
+    target_agent: str = Field(alias="targetAgent")
+    target_version: str | None = Field(default=None, alias="targetVersion")   # omit → active version
+    max_depth: int = Field(2, alias="maxDepth")
+    max_fanout: int = Field(3, alias="maxFanout")
+    input_mapping: dict = Field(default_factory=dict, alias="inputMapping")
+    class Config: populate_by_name = True
+
+class SubagentConfigOut(SubagentConfigIn):
+    id: str
+
+class ApprovalOut(BaseModel):            # mirrors TS Approval; 01 tool_approvals (inbox + run detail)
+    id: str; run_id: str = Field(alias="runId")
+    version_id: str = Field(alias="versionId")
+    tool: str                            # bound tool name (tool_binding_id → name)
+    risk_tier: RiskTier = Field(alias="riskTier")
+    args_redacted: dict = Field(alias="argsRedacted")     # secrets scrubbed (09 §9)
+    status: str                          # approval_status: pending|approved|denied|expired (01)
+    requested_at: datetime = Field(alias="requestedAt")
+    expires_at: datetime | None = Field(default=None, alias="expiresAt")
+    decided_by: str | None = Field(default=None, alias="decidedBy")
+    decided_at: datetime | None = Field(default=None, alias="decidedAt")
+    decision_reason: str | None = Field(default=None, alias="decisionReason")
+    class Config: populate_by_name = True
+
+class ApprovalDecision(BaseModel):       # POST /approvals/:id/decide
+    decision: Literal["approve", "deny"]
+    reason: str | None = None
+
+class ToolTestInvokeIn(BaseModel):       # POST /tools/:id/test-invoke — sandbox dry-run
+    args: dict = {}
+class ToolTestInvokeOut(BaseModel):      # streamed/terminal dry-run result
+    run_id: str = Field(alias="runId")   # a run with source='tool_test' (01 run_source)
+    result: dict | None = None
+    error: dict | None = None            # {code, message} on sandbox/egress/validation failure
+    class Config: populate_by_name = True
+
+class McpTestInvokeIn(BaseModel):        # POST /mcp-servers/:id/test-invoke (spec §D round-trip)
+    tool: str
+    args: dict = {}
+class McpTestInvokeOut(ToolTestInvokeOut):
     pass
 ```
 
@@ -445,6 +551,8 @@ data: {"run_id":"run-7f3a21","status":"success","guardrail":"passed"}
 | `retrieval` | chunks, kb | retriever (04) |
 | `citation` | source, docId, chunkId, score | retriever (04) |
 | `guardrail` | stage, phase, action (pass\|redact\|block) | guardrail runner (06) |
+| `approval_required` | approval_id, tool, args_partial, risk_tier | tool approval gate (03 §2) |
+| `subagent_start` / `subagent_end` | child_run_id, depth | sub-agent tool call (03 §8) |
 | `usage` | tokens + `cost_usd` + `cache_hit` | gateway cost calc (02, 07) |
 | `error` | code, message | typed error (fail-open/closed per 06) |
 | `done` | run_id, status, guardrail | runtime exit |
@@ -455,6 +563,13 @@ intermediaries from closing idle streams; on client disconnect, cancel the runti
 provider call + any spend reservation, 07). A **blocked** input guardrail emits `guardrail{action:block}`
 then `done{status:blocked}` with no model call — matching FE `Run.status="blocked"` /
 `guardrail:"PII blocked on input"`.
+
+A high-risk tool call that hits the **approval gate** (03 §2) emits `approval_required{approval_id, tool,
+args_partial, risk_tier}` and the SSE stream parks until `POST /approvals/:id/decide` lands, then resumes
+in place. A **non-interactive** (non-SSE) caller instead gets a terminal response carrying
+`stop_reason="awaiting_approval"` + `{approval_id}`; it decides out-of-band and re-reads the run. A
+denied/expired gate ends the run with `done{status:blocked}` + `stop_reason="approval_denied"` and the tool
+is never executed. A sub-agent tool call brackets its child run with `subagent_start`/`subagent_end`.
 
 ## 5. OpenAPI as source of truth → export
 

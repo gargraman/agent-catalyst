@@ -54,6 +54,21 @@ Legend: **Auth** = console session (signed-in user, RBAC) vs caller token (runti
 | `agents/[id]` Versions tab | POST version / PATCH baseline | session | yes | - | Rollback is wired (`rollbackVersion`); "Save as new version" + "Re-freeze baseline" are mock toasts today. |
 | `agents/[id]` Model + `agents/new` | GET /v1/models | session | - | - | Provider/model list (`MODELS` seed). |
 
+## Adoption, governance & notifications (P0 — net-new FE)
+
+These close the three P0 gaps (`backend/14`,`15`,`16`). No FE symbol exists yet — each needs a new store
+hook + an inline `@backend` marker when the FE surface is built (follow-up, not part of the docs pass).
+
+| Source (`file:symbol`) | Method / Path | Auth | Tenant | Async | Notes |
+|---|---|---|---|---|---|
+| *(net FE)* registration gate | POST /v1/agents/:id/register | session | yes | - | Sets `registered_at` + owner; audited `agent.register`. Build/publish unregistered → 409 `registration.gate` (14 §2). |
+| *(net FE)* dedup scanner | POST /v1/agents/scan | session | yes | - | Similarity scan over a draft config → candidate matches; reuse or audited `dedup.override` (14 §3). |
+| *(net FE)* import | POST /v1/agents/import | session | yes | yes | Bulk import a hand-wired agent → draft + first version; validates profile coverage (14 §4). |
+| *(net FE)* org estate report | GET /v1/org/agents | **platform-admin** | **cross-tenant (elevated)** | - | Whole-estate rows; metadata-only for `private`; elevated audited path (15 §2). |
+| *(net FE)* org spend / compliance | GET /v1/org/spend · /v1/org/compliance | **platform-admin** | **cross-tenant (elevated)** | - | Spend rollup; non-compliant list (unregistered/un-evaluated/over-budget/no-owner) (15 §3). |
+| *(net FE)* owner inbox | GET /v1/notifications?workspace=:id | session | yes | - | Owner notifications + unread count; filtered to `recipient_subject` (16). Reuses Toast/Activity FE primitives. |
+| *(net FE)* mark read | POST /v1/notifications/:id/read · /read-all | session | yes | - | Mark one/all read (16 §4). |
+
 ## Knowledge
 
 | Source (`file:symbol`) | Method / Path | Auth | Tenant | Async | Notes |
@@ -72,9 +87,28 @@ Legend: **Auth** = console session (signed-in user, RBAC) vs caller token (runti
 |---|---|---|---|---|---|
 | `lib/store.ts:useTools` | GET /v1/tools?workspace=:id | session | yes | - | Tool repository. |
 | `lib/store.ts:addTool` | POST /v1/tools | session | yes | - | Register HTTP/built-in/sub-agent tool + schema. HTTP carries `httpConfig{method,url,auth,authRef,headers,argsSchema}`; secret → vault, only `authRef` persisted. |
+| `lib/store.ts:updateTool` · `deleteTool` | PUT/DELETE /v1/tools/:id | session (builder+) | yes | - | Edit/remove a repo tool. RBAC = **builder+** (`tool.manage`, reconciled 09 / spec B12). Audited `tool.*`. |
 | `lib/store.ts:useMcpServers` | GET /v1/mcp-servers?workspace=:id | session | yes | - | Servers + discovered tools. |
 | `lib/store.ts:useMcpServer` | GET /v1/mcp-servers/:id | session | yes | - | Single server. |
 | `lib/store.ts:addMcpServer` | POST /v1/mcp-servers | session | yes | yes* | Connect; server runs tool discovery and returns the tool list. |
+| `lib/store.ts:updateMcpServer` · `deleteMcpServer` | PUT/DELETE /v1/mcp-servers/:id | session (builder+) | yes | - | Edit/remove a server. RBAC = **builder+** (`mcp.manage`). Audited `mcp.*`. |
+| `lib/store.ts:reconnectMcpServer` | POST /v1/mcp-servers/:id/discover | session (builder+) | yes | yes | Re-run MCP `tools/list` discovery; refreshes the cached catalog + health. |
+| `lib/store.ts:setMcpToolEnabled` | PATCH mcp-tool enabled toggle (part of PUT /v1/mcp-servers/:id) | session (builder+) | yes | - | Allow-list toggle for a discovered MCP tool (not all-by-default, spec B7). |
+| *(net FE)* tool dry-run | POST /v1/tools/:id/test-invoke | session (builder+) | yes | yes | Dry-run a repo tool against sample args in the sandbox (11 §1); no FE mock yet. |
+| *(net FE)* MCP dry-run | POST /v1/mcp-servers/:id/test-invoke | session (builder+) | yes | yes | Dry-run a discovered MCP tool (discover→select→bind→invoke round-trip, spec D). No FE mock yet. |
+| approvals inbox | GET /v1/approvals?workspace=:id | session (publisher+ `tool.approve`) | yes | - | Pending/decided tool-call approvals (`tool_approvals`, 01); pairs with the `approval_requested` notification (16 §2.6). **Mocked:** `useApprovals` → `/approvals` page. |
+| approval decide | POST /v1/approvals/:id/decide | session (publisher+ `tool.approve`) | yes | - | Approve/deny a paused run's tool call → resumes `runtime` (03). Audited. **Mocked:** `decideApproval`. |
+
+> **Field notes (new shapes ahead of the backend).** `McpServer.{egress, approval, credentials, auth(enum)}`
+> — per-server `egress` allow-list (deny-by-default, 09 §10 / 01 §4.6), an `approval` policy, multi-secret
+> `credentials`, and an `auth` enum (none/bearer/oauth/headers). `McpTool.riskTier` and
+> `RepoTool.{subagentTarget, builtinId, riskTier}` (`tools.ts`) carry the risk tier that drives the
+> approval gate + the sub-agent/built-in binding target. `HttpToolConfig.egress` mirrors the per-server
+> egress field for HTTP tools. **Agent tool bindings encode MCP tools as `mcp:<serverId>/<tool>` refs**
+> (`tools.ts:mcpRef`/`resolveToolRef`). `RepoTool.{maxDepth, maxFanout}` carry the sub-agent delegation caps
+> (`subagent_configs`, 01). `Run.source` now includes `tool_test` / `subagent` values (mocked in `data.ts` +
+> the Runs source filter)
+> once dry-run + sub-agent runs are surfaced on the Runs page.
 
 ## Channels (messaging apps — P2)
 
