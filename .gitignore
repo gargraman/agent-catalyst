@@ -65,3 +65,6 @@ graphify-out/
 # Local agent / Claude settings (keep local-only; tracked skills under .claude/ are unaffected)
 .claude/settings.local.json
 .claude/*.local.json
+
+# Pitch / ELT materials kept local-only (moved out of docs/)
+.claude/ai-champions-elt/
