@@ -183,7 +183,7 @@ export default function ChannelDetailPage() {
                   Subject <span className="text-ink">{resolution.subjectType}</span> · role <span className="text-ink">{resolution.role}</span>
                   {resolution.teams.length > 0 && <> · teams <span className="text-ink">{resolution.teams.join(", ")}</span></>}
                 </p>
-                <ResourceLine label="Tools" granted={resolution.grantedTools} denied={resolution.deniedTools.map((d) => d.name)} />
+                <ResourceLine label="Tools" granted={resolution.grantedTools} denied={resolution.deniedTools.map((d) => d.name)} connect={resolution.connectTools.map((d) => d.name)} />
                 <ResourceLine label="Knowledge" granted={resolution.grantedKbs} denied={resolution.deniedKbs.map((d) => d.name)} />
                 <ResourceLine label="Skills" granted={resolution.grantedSkills} denied={resolution.deniedSkills.map((d) => d.name)} />
               </CardContent>
@@ -249,15 +249,20 @@ function Row({ label, value }: { label: string; value: string }) {
   );
 }
 
-function ResourceLine({ label, granted, denied }: { label: string; granted: string[]; denied: string[] }) {
+function ResourceLine({ label, granted, denied, connect = [] }: { label: string; granted: string[]; denied: string[]; connect?: string[] }) {
   return (
     <div>
       <div className="text-xs font-medium text-ink-2">{label}</div>
       <div className="mt-1 flex flex-wrap gap-1.5">
-        {granted.length === 0 && denied.length === 0 && <span className="text-xs text-muted">None bound</span>}
+        {granted.length === 0 && denied.length === 0 && connect.length === 0 && <span className="text-xs text-muted">None bound</span>}
         {granted.map((g) => (
           <span key={g} className="inline-flex items-center gap-1 rounded-md bg-good/12 px-2 py-0.5 text-[11px] text-good">
             <Check className="size-3" /> {g}
+          </span>
+        ))}
+        {connect.map((c) => (
+          <span key={c} className="inline-flex items-center gap-1 rounded-md bg-accent-soft/50 px-2 py-0.5 text-[11px] text-accent" title="Per-user: the chat user connects their own account on first use">
+            {c} · connect
           </span>
         ))}
         {denied.map((d) => (

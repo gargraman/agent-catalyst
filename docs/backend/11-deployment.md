@@ -405,9 +405,10 @@ spec:
 ```
 
 > ⚠️ **PgBouncer + RLS:** the tenant guard sets `SET LOCAL app.workspace_id` inside the request
-> transaction (01 §6, 09). This is **only safe in `transaction` pool mode** — `session` pooling would
-> leak the GUC across tenants on a reused connection. This is a correctness-and-security constraint, not
-> a tuning preference.
+> transaction (01 §6, 09). This needs a **transaction-scoped connection checkout** — PgBouncer in
+> `transaction` pool mode (what this deploy uses), or an equivalent per-request transaction (`09 §7`);
+> `session` pooling would leak the GUC across tenants on a reused connection. It's a
+> correctness-and-security constraint, not a tuning preference.
 
 **Scaling shape** (plan Part 4): `api` scales out on request concurrency; `worker` batch pool scales on
 queue depth; Postgres is the vertical/stateful core (read replicas for dashboards); Redis is queue +

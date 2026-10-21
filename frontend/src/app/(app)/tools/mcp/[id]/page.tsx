@@ -14,6 +14,7 @@ import { GateButton } from "@/components/gate";
 import { useAuth, usePrincipal } from "@/lib/auth";
 import { canManage, canUse } from "@/lib/access-policy";
 import { MCP_AUTH_METHODS, mcpAuthLabel } from "@/lib/mcp";
+import { PER_USER_OAUTH_APP_FIELDS } from "@/lib/oauth-app";
 import { riskTone } from "@/lib/tools";
 import {
   deleteMcpServer, reconnectMcpServer, setMcpToolEnabled, updateMcpServer, useMcpServer,
@@ -61,6 +62,8 @@ export default function McpServerDetailPage() {
   const manage = can("mcp.manage") && canManage(server.accessPolicy, principal);
   const manageTitle = manage ? undefined : "Restricted by this server's access policy";
   const credFields = MCP_AUTH_METHODS[server.auth]?.credentialFields ?? [];
+  const perUser = server.authMode === "per_user";
+  const credDisplayFields = perUser ? PER_USER_OAUTH_APP_FIELDS : credFields;
   const enabledCount = server.tools.filter((t) => t.enabled).length;
 
   function remove() {
@@ -115,6 +118,8 @@ export default function McpServerDetailPage() {
               <Row label="Transport" value={server.transport} />
               <Row label={server.transport === "http" ? "Endpoint" : "Command"} value={<span className="font-mono text-xs">{server.endpoint}</span>} />
               <Row label="Authentication" value={mcpAuthLabel(server.auth)} />
+              <Row label="Credential mode" value={perUser ? "Per-user — each caller connects their own account" : "Shared service credential"} />
+              {perUser && server.oauthScopes ? <Row label="OAuth scopes" value={<span className="font-mono text-xs">{server.oauthScopes}</span>} /> : null}
               <Row label="Egress allow-list" value={server.egress?.length ? server.egress.join(", ") : "none"} />
               <Row label="Approval policy" value={server.approval === "ask" ? "Ask (require approval per call)" : "Auto"} />
               <Row label="Last discovery" value={relative(server.lastDiscovery)} />
@@ -159,13 +164,13 @@ export default function McpServerDetailPage() {
           <Card>
             <CardHeader><CardTitle>Credentials</CardTitle></CardHeader>
             <CardContent className="pt-0">
-              {server.auth === "none" ? (
+              {!perUser && server.auth === "none" ? (
                 <p className="text-sm text-muted">No authentication — this server requires no vaulted credential.</p>
               ) : (
                 <Table>
-                  <THead><tr><TH>Secret</TH><TH>Masked reference</TH></tr></THead>
+                  <THead><tr><TH>{perUser ? "OAuth app credential" : "Secret"}</TH><TH>Masked reference</TH></tr></THead>
                   <tbody>
-                    {credFields.map((f) => {
+                    {credDisplayFields.map((f) => {
                       const ref = server.credentials?.[f.key];
                       return (
                         <TR key={f.key}>
@@ -176,6 +181,12 @@ export default function McpServerDetailPage() {
                     })}
                   </tbody>
                 </Table>
+              )}
+              {perUser && (
+                <p className="mt-3 text-xs text-ink-2">
+                  Per-user mode: these are the shared OAuth <strong>app</strong> credentials. Each caller connects
+                  their own account at first use; per-user tokens are stored per connection, not here.
+                </p>
               )}
               <p className="mt-3 flex items-center gap-1.5 text-xs text-muted">
                 <Lock className="size-3.5" /> Raw secrets live in the vault; only masked references are kept.

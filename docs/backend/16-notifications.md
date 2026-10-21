@@ -198,8 +198,9 @@ The one emit point whose recipients are **not** the §1.1 owner set. When `runti
 node (03) hits a tool binding with `requires_approval` (a `tool_risk_tier` the policy marks destructive —
 01, 09 §10), it **pauses the run** and writes a `tool_approvals` row (`approval_status='pending'`, 01); the
 run resumes only on an approve/deny decision (`POST /v1/approvals/:id/decide`, 08). That pause must reach
-whoever can *act on* it, so this kind addresses **the workspace's publishers + admins** (the
-`memberships` rows with `role in ('publisher','admin')`, 01 §4.1) — **not** `agents.owner_subject`. A
+whoever can *act on* it, so this kind addresses **the workspace's publishers + admins** — the members of
+the workspace's backing Okta group when its `member_role='publisher'`, plus `platform_admins` (the
+group-driven model, §1.1; there is no `memberships` roster) — **not** `agents.owner_subject`. A
 builder can author a destructive binding but, by the reconciled RBAC (09, spec B12), approving its live
 execution is a publisher/admin decision.
 

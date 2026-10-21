@@ -5633,7 +5633,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
         </div>
         <ul>
           <li>mcp_user_connections keyed (workspace_id, user_subject, mcp_server_id) — connect once, reused across future sessions, other channels AND the console</li>
-          <li>The token is vaulted (per-user DEK), refreshed automatically, revoked on offboarding</li>
+          <li>The refresh token is vaulted per (user, server) under a per-user DEK; on expiry the run re-asks to connect (re-consent), revoked on offboarding + cascade on mcp_server delete</li>
           <li>This is the &#39;user-specific MCP json&#39; persisted so later sessions skip the connect step</li>
         </ul>
       </div>
@@ -5665,11 +5665,13 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
       <div class="card">
         <div class="card-header">
           <div class="card-dot slate"></div>
-          <h3>Status: PROPOSED — delta vs current design</h3>
+          <h3>Status: PROPOSED (doc 17, P2+) — delta vs the locked design</h3>
         </div>
         <ul>
-          <li>Not in docs/backend today: MCP creds are workspace-level + shared; access_policy only gates visibility</li>
+          <li>NOT in the locked schema (01) or API surface (08); today MCP creds are workspace-level + shared and access_policy only gates visibility</li>
           <li>Needs: mcp_servers.auth_mode ∈ {shared_service, per_user} · mcp_user_connections table · an OAuth connect/callback route</li>
+          <li>RISK — silent downgrade: behind an API token there is NO interactive connect path → 403 mcp.connect_required, OR (if the server allows) a fallback to shared_service that silently drops per-user least-privilege + audit</li>
+          <li>Underspecified: status/expires_at/revoke fields exist, but the OAuth refresh-grant flow, rotation cadence, and revocation propagation to the provider are not pinned</li>
           <li>Caveat: eval has no real user → per_user tools use a designated service connection or are excluded from scoring (not deterministically evaluable)</li>
         </ul>
       </div>

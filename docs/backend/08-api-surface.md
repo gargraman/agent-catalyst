@@ -8,7 +8,7 @@
 
 ## 1. Conventions
 
-**Two auth planes, two URL prefixes** (reconciling the FE map's `/v1/...` with spec B11):
+**URL prefixes by plane** (reconciling the FE map's `/v1/...` with spec B11). The full auth model is **four planes** (`09 §1`: console session · caller token · channel · platform-admin); this catalog's HTTP surface is:
 
 | Plane | Prefix | Auth | Who calls it |
 |---|---|---|---|
@@ -453,7 +453,7 @@ class EvalRunOut(BaseModel):
 class RunOut(BaseModel):                  # mirrors TS Run
     id: str; agent_id: str = Field(alias="agentId"); agent: str
     version: str
-    source: str                          # run_source (01): Playground|API|Eval|tool_test|subagent
+    source: str                          # run_source (01): Playground|API|Eval|Channel|tool_test|subagent
     status: str                          # success|error|blocked
     latency_ms: int = Field(alias="latencyMs")
     tokens: int

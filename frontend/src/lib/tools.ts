@@ -44,6 +44,9 @@ export type ResolvedTool = {
   description?: string;
   serverName?: string; // MCP only
   riskTier?: "read" | "write" | "destructive";
+  /** True when the bound MCP server / HTTP tool uses per-user credentials (doc 17): each caller connects
+   *  their own account at runtime rather than a shared service credential. Surfaced at bind time. */
+  perUser?: boolean;
   /** True when the ref no longer resolves (deleted tool/server) — render as a removable dangling ref. */
   missing?: boolean;
 };
@@ -63,9 +66,13 @@ export function resolveToolRef(
     return {
       ref, kind: "MCP", label: tool.name, description: tool.description,
       serverName: server.name, riskTier: tool.riskTier,
+      perUser: server.authMode === "per_user",
     };
   }
   const repo = ctx.tools.find((t) => t.name === ref);
   if (!repo) return { ref, kind: "unknown", label: ref, missing: true };
-  return { ref, kind: repo.kind, label: repo.name, description: repo.description, riskTier: repo.riskTier };
+  return {
+    ref, kind: repo.kind, label: repo.name, description: repo.description, riskTier: repo.riskTier,
+    perUser: repo.httpConfig?.authMode === "per_user",
+  };
 }

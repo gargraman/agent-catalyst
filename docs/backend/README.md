@@ -43,9 +43,10 @@ containers); where it **extends or pushes back**, the delta is argued inline (se
 
 ## The two ideas that shape everything
 
-1. **One shared runtime (00 §1).** Playground, eval workers, and the published endpoint all call the
-   *same* `runtime.invoke(version_snapshot, …)`. If they didn't, a drift report would be evaluating code
-   production never runs. The runtime is a library with no HTTP coupling; three thin callers wrap it.
+1. **One shared runtime (00 §1).** Playground, eval workers, the published endpoint, and channels all call
+   the *same* `runtime.invoke(version_snapshot, …)`. If they didn't, a drift report would be evaluating code
+   production never runs. The runtime is a library with no HTTP coupling; four thin callers wrap it (plus
+   recursive sub-agents, 03 §8).
 
 2. **Immutable version snapshots (01 §4).** `agents` is mutable config; `agent_versions` is a frozen,
    fully-resolved snapshot the runtime reads *instead of* the live agent row. This is what makes

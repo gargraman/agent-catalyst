@@ -660,16 +660,25 @@ export const SKILLS: Skill[] = [
 // is set when an operator enables a tool and drives the runtime approval gate. [ref: backend/01 §4.6,
 // backend/09 §10]
 export type McpTool = { name: string; description: string; enabled: boolean; riskTier?: "read" | "write" | "destructive" };
-// @backend mcp_servers row. `auth` is an enum (see mcp.ts MCP_AUTH_METHODS); the raw credential(s) are
-// vaulted and only `credentials` (masked refs, keyed by credentialField key) are persisted/returned,
-// like Channel.credentials. `egress` is the per-server deny-by-default allow-list (maps to
-// mcp_servers.config.egress.allow.domains) and `approval` is a coarse server-level default for the
+// @backend mcp_servers row. `auth` is the transport auth enum (see mcp.ts MCP_AUTH_METHODS); the raw
+// credential(s) are vaulted and only `credentials` (masked refs, keyed by credentialField key) are
+// persisted/returned, like Channel.credentials. `egress` is the per-server deny-by-default allow-list (maps
+// to mcp_servers.config.egress.allow.domains) and `approval` is a coarse server-level default for the
 // per-tool risk-tier approval gate. [ref: backend/01 §4.6, backend/09 §10, spec B7]
+//
+// @backend `authMode` is the ORTHOGONAL downstream-identity axis (mcp_servers.auth_mode, doc 17 §2) — it
+// is frozen config and a DRIFT_TRIGGER (doc 17 §2 / 05 §6):
+//   • "shared_service" (default, = today): one fixed credential in `credentials`, used for every caller.
+//   • "per_user": each caller connects their OWN account via OAuth at first use. Here `credentials` holds
+//     only the shared OAuth *app* registration (clientId/clientSecret) + `oauthScopes`; per-user tokens are
+//     a separate `mcp_user_connections` store connected at runtime (doc 17 §3), never captured here.
 export type McpServer = {
   id: string; name: string; transport: "stdio" | "http"; endpoint: string;
   status: "connected" | "error" | "disconnected"; auth: McpAuth; toolCount: number;
   lastDiscovery: string; boundAgents: number; tools: McpTool[];
-  credentials?: Record<string, CredentialRef>; // keyed by credentialField key; masked only
+  authMode: "shared_service" | "per_user"; // downstream identity: fixed shared cred vs per-caller OAuth (doc 17)
+  credentials?: Record<string, CredentialRef>; // shared_service: the fixed cred(s); per_user: the OAuth app creds. masked only
+  oauthScopes?: string; // per_user: scopes requested from each user's OAuth grant (e.g. "repo, read:user")
   egress?: string[]; // allowed domains (deny-by-default)
   approval?: "auto" | "ask"; // server-level default approval policy
   workspaceId?: string;
@@ -686,8 +695,29 @@ export const MCP_SERVERS: McpServer[] = [
       { name: "create_issue", description: "Create a new issue", enabled: false, riskTier: "write" },
       { name: "add_comment", description: "Comment on an issue", enabled: false, riskTier: "write" },
     ],
-    credentials: { accessToken: { masked: "ya29.A0••••••••a1B2", vaultPath: "vault://mcp/jira-mcp" } },
+    authMode: "per_user",
+    credentials: {
+      clientId: { masked: "atl-cli••••••••7a2e", vaultPath: "vault://mcp/jira-mcp/client-id" },
+      clientSecret: { masked: "atl-sec••••••••f19d", vaultPath: "vault://mcp/jira-mcp/client-secret" },
+    },
+    oauthScopes: "read:jira-work, write:jira-work",
     egress: ["mcp.internal", "api.atlassian.com"], approval: "auto",
+  },
+  {
+    id: "github-mcp", name: "GitHub", transport: "http", endpoint: "https://mcp.internal/github",
+    status: "connected", auth: "oauth", toolCount: 4, lastDiscovery: "2026-10-04T04:10:00Z", boundAgents: 1,
+    tools: [
+      { name: "search_code", description: "Search code across repositories the user can see", enabled: true, riskTier: "read" },
+      { name: "get_pull_request", description: "Fetch a pull request by number", enabled: true, riskTier: "read" },
+      { name: "create_issue", description: "Open an issue in a repository", enabled: false, riskTier: "write" },
+    ],
+    authMode: "per_user",
+    credentials: {
+      clientId: { masked: "Iv1.ab••••••••c3d4", vaultPath: "vault://mcp/github-mcp/client-id" },
+      clientSecret: { masked: "ghs-se••••••••0b7a", vaultPath: "vault://mcp/github-mcp/client-secret" },
+    },
+    oauthScopes: "repo, read:user",
+    egress: ["mcp.internal", "api.github.com"], approval: "auto",
   },
   {
     id: "vt-mcp", name: "VirusTotal", transport: "http", endpoint: "https://mcp.internal/virustotal",
@@ -697,6 +727,7 @@ export const MCP_SERVERS: McpServer[] = [
       { name: "lookup_ip", description: "Reputation for an IP address", enabled: true, riskTier: "read" },
       { name: "lookup_domain", description: "Reputation for a domain", enabled: true, riskTier: "read" },
     ],
+    authMode: "shared_service",
     credentials: { token: { masked: "vt_pat••••••••9f3c", vaultPath: "vault://mcp/vt-mcp" } },
     egress: ["mcp.internal", "www.virustotal.com"], approval: "auto",
   },
@@ -707,12 +738,14 @@ export const MCP_SERVERS: McpServer[] = [
       { name: "run_search", description: "Run a read-only SPL search", enabled: true, riskTier: "read" },
       { name: "list_indexes", description: "List available indexes", enabled: true, riskTier: "read" },
     ],
+    authMode: "shared_service",
     egress: ["mcp.internal"], approval: "ask",
   },
   {
     id: "gdrive-mcp", name: "Google Drive", transport: "http", endpoint: "https://mcp.internal/gdrive",
     status: "error", auth: "oauth", toolCount: 0, lastDiscovery: "2026-10-04T04:10:00Z", boundAgents: 0,
     tools: [],
+    authMode: "shared_service",
     credentials: { accessToken: { masked: "ya29.A0••••••••7e4d", vaultPath: "vault://mcp/gdrive-mcp" } },
     egress: ["mcp.internal", "www.googleapis.com"], approval: "auto",
   },
@@ -726,6 +759,7 @@ export const MCP_SERVERS: McpServer[] = [
       { name: "list_time_off", description: "List time-off balances and requests", enabled: true, riskTier: "read" },
       { name: "submit_time_off", description: "Submit a time-off request", enabled: false, riskTier: "destructive" },
     ],
+    authMode: "shared_service",
     credentials: { accessToken: { masked: "ya29.A0••••••••c5a9", vaultPath: "vault://mcp/workday-mcp" } },
     egress: ["mcp.internal", "wd2-impl-services1.workday.com"], approval: "ask",
     workspaceId: "trellix-people",
@@ -737,6 +771,7 @@ export const MCP_SERVERS: McpServer[] = [
       { name: "search_candidates", description: "Search candidates and applications", enabled: true, riskTier: "read" },
       { name: "get_application", description: "Fetch a single application by id", enabled: true, riskTier: "read" },
     ],
+    authMode: "shared_service",
     credentials: { token: { masked: "gh_pat••••••••b2e1", vaultPath: "vault://mcp/greenhouse-mcp" } },
     egress: ["mcp.internal", "harvest.greenhouse.io"], approval: "auto",
     workspaceId: "trellix-people",
@@ -745,6 +780,7 @@ export const MCP_SERVERS: McpServer[] = [
     id: "slack-hr-mcp", name: "Slack (People)", transport: "http", endpoint: "https://mcp.internal/slack-people",
     status: "error", auth: "oauth", toolCount: 0, lastDiscovery: "2026-10-04T04:15:00Z", boundAgents: 0,
     tools: [],
+    authMode: "shared_service",
     credentials: { accessToken: { masked: "xoxb-1••••••••d7f0", vaultPath: "vault://mcp/slack-hr-mcp" } },
     egress: ["mcp.internal", "slack.com"], approval: "auto",
     workspaceId: "trellix-people",
@@ -752,12 +788,19 @@ export const MCP_SERVERS: McpServer[] = [
 ];
 
 /* @backend Shape of tools.config/schema (jsonb) for an HTTP tool. The secret behind `auth` is vaulted;
-   only `authRef` (masked) is persisted/returned, like CredentialRef. [ref: backend/01-data-model.md §4.6] */
+   only `authRef` (masked) is persisted/returned, like CredentialRef. [ref: backend/01-data-model.md §4.6]
+   @backend `authMode` mirrors McpServer.authMode (doc 17, DRIFT_TRIGGER): "shared_service" (default) uses
+   the fixed `authRef`; "per_user" means each caller connects their own OAuth account — `oauthApp` holds the
+   shared OAuth app creds (clientId/clientSecret, masked) + `oauthScopes`, and per-user tokens live in the
+   runtime connection store, not here. */
 export type HttpToolConfig = {
   method: "GET" | "POST" | "PUT" | "DELETE";
   url: string;
   auth: "none" | "bearer" | "api_key_header" | "basic";
-  authRef?: CredentialRef; // present when auth !== "none"
+  authRef?: CredentialRef; // present when auth !== "none" AND authMode is shared_service
+  authMode?: "shared_service" | "per_user"; // default shared_service
+  oauthApp?: Record<string, CredentialRef>; // per_user: the shared OAuth app creds (clientId/clientSecret), masked
+  oauthScopes?: string; // per_user: scopes requested from each user's OAuth grant
   headers?: string; // raw "Key: Value" per line
   argsSchema?: string; // JSON text; validated as JSON in the tool dialog before save
   egress?: string[]; // allowed domains (deny-by-default); maps to tools.config.egress.allow.domains
@@ -960,9 +1003,9 @@ export type ToolApproval = {
   workspaceId?: string;
 };
 export const TOOL_APPROVALS: ToolApproval[] = [
-  { id: "appr-5c01", agentId: "triage-copilot", agent: AGENT_BY("triage-copilot"), runId: "run-7f3a27", toolRef: "mcp:jira-mcp/create_issue", toolLabel: "create_issue · Jira", riskTier: "write", argsPreview: `{ "project": "SOC", "summary": "Contain host win-… " }`, status: "pending", requestedAt: "2026-10-04T09:15:40Z", requestedBy: "svc: platform-gateway" },
+  { id: "appr-5c01", agentId: "triage-copilot", agent: AGENT_BY("triage-copilot"), runId: "run-7f3a27", toolRef: "mcp:jira-mcp/create_issue", toolLabel: "create_issue · Jira", riskTier: "write", argsPreview: `{ "project": "SOC", "summary": "Contain host win-… " }`, status: "pending", requestedAt: "2026-10-04T09:15:40Z", requestedBy: "slack · @marcus.reed" },
   { id: "appr-5bf4", agentId: "incident-report-writer", agent: AGENT_BY("incident-report-writer"), runId: "run-7f3a05", toolRef: "http-dryrun-query", toolLabel: "http-dryrun-query", riskTier: "write", argsPreview: `{ "query": "index=main sourcetype=auth …" }`, status: "pending", requestedAt: "2026-10-04T09:10:10Z", requestedBy: "you" },
-  { id: "appr-5be0", agentId: "triage-copilot", agent: AGENT_BY("triage-copilot"), runId: "run-7f39a1", toolRef: "mcp:jira-mcp/add_comment", toolLabel: "add_comment · Jira", riskTier: "write", argsPreview: `{ "issue": "SOC-4821", "body": "Auto-triage: …" }`, status: "approved", requestedAt: "2026-10-04T08:30:00Z", requestedBy: "svc: platform-gateway", decidedBy: "Raman Garg", decidedAt: "2026-10-04T08:32:00Z" },
+  { id: "appr-5be0", agentId: "triage-copilot", agent: AGENT_BY("triage-copilot"), runId: "run-7f39a1", toolRef: "mcp:jira-mcp/add_comment", toolLabel: "add_comment · Jira", riskTier: "write", argsPreview: `{ "issue": "SOC-4821", "body": "Auto-triage: …" }`, status: "approved", requestedAt: "2026-10-04T08:30:00Z", requestedBy: "slack · @marcus.reed", decidedBy: "Raman Garg", decidedAt: "2026-10-04T08:32:00Z" },
 
   /* ---- Trellix People Ops workspace ---- */
   { id: "appr-5a90", agentId: "pto-helper", agent: AGENT_BY("pto-helper"), runId: "run-8a12a0", toolRef: "mcp:workday-mcp/submit_time_off", toolLabel: "submit_time_off · Workday", riskTier: "destructive", argsPreview: `{ "worker": "E-20481", "days": 3, "type": "PTO" }`, status: "pending", requestedAt: "2026-10-04T09:12:00Z", requestedBy: "slack · @amara.osei", workspaceId: "trellix-people" },

@@ -182,6 +182,7 @@ export default function EvaluationsPage() {
           </Explain>
           <Explain icon={<Gauge className="size-4" />} title="Quality and efficiency">
             Each run scores quality (deterministic checks plus a fixed LLM judge) and efficiency (cost, tokens, latency) against a frozen baseline.
+            Per-user tools can&apos;t be scored deterministically — eval uses a designated service connection or excludes them.
           </Explain>
           <Explain icon={<TriangleAlert className="size-4" />} title="Small sets flagged">
             Suites with fewer than 10 cases are marked low-confidence and widen the drift threshold to limit false positives.

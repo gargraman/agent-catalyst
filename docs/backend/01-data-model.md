@@ -73,7 +73,7 @@ create type agent_status      as enum ('draft','published','archived','eval_fail
 create type version_status    as enum ('draft','evaluated','published','deprecated');
 create type drift_state       as enum ('none','stable','watch','regressed');
 create type eval_verdict      as enum ('pass','fail','low_confidence');
-create type run_source        as enum ('playground','api','eval','tool_test','subagent');  -- tool_test = tool/mcp test-invoke (08); subagent = delegated child run (03 §8)
+create type run_source        as enum ('playground','api','eval','channel','tool_test','subagent');  -- channel = messaging-channel run, worker-executed (12); tool_test = tool/mcp test-invoke (08); subagent = delegated child run (03 §8)
 create type run_status        as enum ('success','error','blocked');
 create type provider_name     as enum ('anthropic','openai','google','mistral','meta','azure','bedrock');
 -- DEPRECATED: ingestion status uses job_status via the generic `jobs` table (§4.8); this enum is unused. Kept only to avoid a migration churn; do not reference in new DDL.
@@ -649,7 +649,7 @@ create table spans (                              -- per-step trace (model call,
   id            uuid primary key default gen_random_uuid(),
   workspace_id  uuid not null references workspaces(id),
   run_id        uuid not null references runs(id),
-  kind          text not null,                   -- model | tool | retrieval | guardrail | judge
+  kind          text not null,                   -- model | tool | retrieval | guardrail | judge | skill (10)
   name          text not null,
   input_tokens  int, output_tokens int, cost_usd numeric(12,6),
   latency_ms    int,

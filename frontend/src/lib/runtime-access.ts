@@ -30,6 +30,10 @@ export type RunResolution = {
   status: RunStatus;
   grantedTools: string[];
   deniedTools: Denied[];
+  // per_user MCP tools (doc 17) the caller may use only after connecting their OWN account first — a
+  // distinct state from granted/denied. Populated for interactive callers (console / channel-federated);
+  // token & service callers get these in deniedTools instead (no interactive connect path, doc 17 §6).
+  connectTools: Denied[];
   grantedKbs: string[];
   deniedKbs: Denied[];
   grantedSkills: string[];
@@ -42,7 +46,7 @@ export type RunResolution = {
 //   a Playground preview only; keep the RunResolution shape, replace decodeToken with a /resolve-run
 //   (or token-introspection) call. [ref: backend-integration-plan.md#runtime-request]
 /** Deterministic mock decode of a pasted token. Real IAM validates a JWT and reads claims. */
-function decodeToken(token: string, agent: Agent): Omit<RunResolution, "grantedTools" | "deniedTools" | "grantedKbs" | "deniedKbs" | "grantedSkills" | "deniedSkills"> {
+function decodeToken(token: string, agent: Agent): Omit<RunResolution, "grantedTools" | "deniedTools" | "connectTools" | "grantedKbs" | "deniedKbs" | "grantedSkills" | "deniedSkills"> {
   const t = token.toLowerCase();
   const subjectType: "user" | "service" = t.includes("user") ? "user" : "service";
   const tenant = t.includes("grc") ? "trellix-grc" : t.includes("labs") ? "trellix-labs" : (agent.workspaceId ?? DEFAULT_WORKSPACE_ID);
@@ -95,6 +99,7 @@ export function resolveRun(ctx: RunCtx, agent: Agent, session: Session, mcpServe
   const full = base.scopes.includes("*");
   const grantedTools: string[] = [];
   const deniedTools: Denied[] = [];
+  const connectTools: Denied[] = [];
   const grantedKbs: string[] = [];
   const deniedKbs: Denied[] = [];
   const grantedSkills: string[] = [];
@@ -117,6 +122,16 @@ export function resolveRun(ctx: RunCtx, agent: Agent, session: Session, mcpServe
     if (!canUse(s.accessPolicy, principal)) return "MCP server not accessible";
     return null;
   };
+  // per_user MCP (doc 17): the caller must connect their own account before this tool is usable.
+  // Interactive callers can do it in-session; a published token / service account cannot (no interactive path).
+  const isPerUserMcp = (ref: string): boolean => {
+    const m = parseMcpRef(ref);
+    if (!m) return false;
+    const s = mcpServers.find((x) => x.id === m.serverId);
+    return !!s && s.authMode === "per_user";
+  };
+  const interactiveCaller = ctx.mode === "session" || (ctx.mode === "channel" && base.subjectType === "user");
+  const connectReason = ctx.mode === "channel" ? "connect via chat on first use" : "connect your account on first use";
   // A bound skill is denied when it was removed or is restricted by its own access policy for this caller.
   // Skills never execute code, so this is a pure visibility check (no scope breadth like tools/KBs).
   // No-op when no skill list is supplied (can't evaluate → don't spuriously deny; fall back to the id).
@@ -134,6 +149,13 @@ export function resolveRun(ctx: RunCtx, agent: Agent, session: Session, mcpServe
       const label = toolLabel(ref);
       const serverReason = serverBlockedReason(ref);
       if (serverReason) { deniedTools.push({ name: label, reason: serverReason }); return; }
+      // per_user MCP: grantable only after the caller connects their own account (doc 17). Interactive
+      // callers get a "connect" state; token/service callers fail closed (no interactive connect path).
+      if (isPerUserMcp(ref)) {
+        if (interactiveCaller) connectTools.push({ name: label, reason: connectReason });
+        else deniedTools.push({ name: label, reason: "per-user credentials — no interactive connect for this caller" });
+        return;
+      }
       // session or "full" token grants all; partial token grants every other tool
       const inScope = full || i % 2 === 0;
       if (inScope) grantedTools.push(label);
@@ -158,7 +180,7 @@ export function resolveRun(ctx: RunCtx, agent: Agent, session: Session, mcpServe
     boundSkills.forEach((id) => deniedSkills.push({ name: skillLabel(id), reason }));
   }
 
-  return { ...base, status, grantedTools, deniedTools, grantedKbs, deniedKbs, grantedSkills, deniedSkills };
+  return { ...base, status, grantedTools, deniedTools, connectTools, grantedKbs, deniedKbs, grantedSkills, deniedSkills };
 }
 
 export const statusLabel: Record<RunStatus, string> = {

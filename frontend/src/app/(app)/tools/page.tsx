@@ -12,12 +12,14 @@ import { Tabs } from "@/components/tabs";
 import { StatTile } from "@/components/stat-tile";
 import { GateButton } from "@/components/gate";
 import { AccessPolicyEditor } from "@/components/access-policy-editor";
+import { CredentialModeToggle, PerUserOAuthFields } from "@/components/credential-mode-fields";
 import { useAuth, usePrincipal } from "@/lib/auth";
 import { canUse, policySummary, type AccessPolicy } from "@/lib/access-policy";
 import { useMcpServers, useTools, useAgents, addTool, updateTool, deleteTool, reconnectMcpServer, genId } from "@/lib/store";
 import { mcpAuthLabel } from "@/lib/mcp";
 import { riskTone } from "@/lib/tools";
 import { maskSecret, vaultRef } from "@/lib/secrets";
+import { finalizeOauthApp, oauthAppComplete } from "@/lib/oauth-app";
 import type { HttpToolConfig, McpServer, RepoTool } from "@/lib/data";
 import { relative } from "@/lib/format";
 
@@ -100,7 +102,10 @@ function McpTab({ servers }: { servers: McpServer[] }) {
                   </CardTitle>
                   <CardDescription className="font-mono">{s.endpoint}</CardDescription>
                 </div>
-                <Badge tone={s.transport === "http" ? "accent" : "violet"}>{s.transport}</Badge>
+                <span className="flex items-center gap-1.5">
+                  {s.authMode === "per_user" && <Badge tone="accent">Per-user</Badge>}
+                  <Badge tone={s.transport === "http" ? "accent" : "violet"}>{s.transport}</Badge>
+                </span>
               </CardHeader>
               <CardContent className="space-y-3 pt-0">
                 <div className="flex items-center justify-between text-xs">
@@ -274,6 +279,8 @@ function ToolDialog({ open, editing, onClose }: { open: boolean; editing: RepoTo
   const [url, setUrl] = React.useState(editing?.httpConfig?.url ?? "");
   const [auth, setAuth] = React.useState<HttpToolConfig["auth"]>(editing?.httpConfig?.auth ?? "none");
   const [secret, setSecret] = React.useState("");
+  const [authMode, setAuthMode] = React.useState<"shared_service" | "per_user">(editing?.httpConfig?.authMode ?? "shared_service");
+  const [oauthCreds, setOauthCreds] = React.useState<Record<string, string>>({});
   const [headers, setHeaders] = React.useState(editing?.httpConfig?.headers ?? "");
   const [argsSchema, setArgsSchema] = React.useState(editing?.httpConfig?.argsSchema ?? "");
   const [egress, setEgress] = React.useState(editing?.httpConfig?.egress?.join(", ") ?? "");
@@ -284,9 +291,13 @@ function ToolDialog({ open, editing, onClose }: { open: boolean; editing: RepoTo
 
   const trimmedName = name.trim();
   const nameTaken = !isEdit && tools.some((t) => t.name === trimmedName);
+  // `authMode` is the shared-vs-per-user axis (doc 17); per_user captures the OAuth app creds instead of a fixed secret.
+  const perUser = authMode === "per_user";
   // An edited HTTP tool keeps its existing vaulted secret if the auth method is unchanged and no new one typed.
   const keepExistingSecret = !!editing?.httpConfig?.authRef && editing.httpConfig.auth === auth;
-  const needsSecret = kind === "HTTP" && auth !== "none" && !keepExistingSecret;
+  const keepExistingOauth = !!editing?.httpConfig?.oauthApp && editing.httpConfig.authMode === "per_user";
+  const needsSecret = kind === "HTTP" && !perUser && auth !== "none" && !keepExistingSecret;
+  const needsOauth = kind === "HTTP" && perUser && !keepExistingOauth;
   const argsSchemaError = (() => {
     const v = argsSchema.trim();
     if (!v) return "";
@@ -300,6 +311,7 @@ function ToolDialog({ open, editing, onClose }: { open: boolean; editing: RepoTo
     trimmedName.length > 0 && !nameTaken && description.trim().length > 0 &&
     (kind !== "HTTP" || url.trim().length > 0) &&
     (!needsSecret || secret.trim().length > 0) &&
+    (!needsOauth || oauthAppComplete(oauthCreds)) &&
     !argsSchemaError && !headersError;
 
   function submit() {
@@ -307,18 +319,36 @@ function ToolDialog({ open, editing, onClose }: { open: boolean; editing: RepoTo
     const base = { name: trimmedName, kind, description: description.trim(), riskTier } as Partial<RepoTool>;
     let patch: Partial<RepoTool>;
     if (kind === "HTTP") {
-      const authRef =
-        auth === "none" ? undefined
-          : secret.trim() ? { masked: maskSecret(secret), vaultPath: vaultRef("tool", genId("tool")) }
-          : editing?.httpConfig?.authRef; // preserve existing vaulted secret on edit
       const egressList = egress.split(",").map((s) => s.trim()).filter(Boolean);
-      const httpConfig: HttpToolConfig = {
-        method, url: url.trim(), auth,
-        ...(authRef ? { authRef } : {}),
+      const common = {
         ...(headers.trim() ? { headers: headers.trim() } : {}),
         ...(argsSchema.trim() ? { argsSchema: argsSchema.trim() } : {}),
         ...(egressList.length ? { egress: egressList } : {}),
       };
+      let httpConfig: HttpToolConfig;
+      if (perUser) {
+        // Per-user: capture the shared OAuth app creds; the fixed authRef is unused. MERGE over the existing
+        // refs so rotating one field (or only the scopes) on edit never drops the other vaulted app creds.
+        const fresh = finalizeOauthApp(oauthCreds); // only re-typed password fields produce new refs
+        const oauthApp = { ...(editing?.httpConfig?.oauthApp ?? {}), ...fresh.refs };
+        const oauthScopes = (oauthCreds.scopes ?? "").trim() || editing?.httpConfig?.oauthScopes;
+        httpConfig = {
+          method, url: url.trim(), auth: "none", authMode: "per_user",
+          ...(Object.keys(oauthApp).length ? { oauthApp } : {}),
+          ...(oauthScopes ? { oauthScopes } : {}),
+          ...common,
+        };
+      } else {
+        const authRef =
+          auth === "none" ? undefined
+            : secret.trim() ? { masked: maskSecret(secret), vaultPath: vaultRef("tool", genId("tool")) }
+            : editing?.httpConfig?.authRef; // preserve existing vaulted secret on edit
+        httpConfig = {
+          method, url: url.trim(), auth, authMode: "shared_service",
+          ...(authRef ? { authRef } : {}),
+          ...common,
+        };
+      }
       patch = { ...base, httpConfig, subagentTarget: undefined, builtinId: undefined };
     } else if (kind === "Sub-agent") {
       patch = {
@@ -387,20 +417,25 @@ function ToolDialog({ open, editing, onClose }: { open: boolean; editing: RepoTo
                 </Field>
               </div>
             </div>
-            <div className="grid gap-4 sm:grid-cols-3">
-              <Field label="Auth">
-                <Select value={auth} onChange={(e) => setAuth(e.target.value as HttpToolConfig["auth"])}>
-                  {AUTH_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-                </Select>
-              </Field>
-              {auth !== "none" && (
-                <div className="sm:col-span-2">
-                  <Field label="Credential" hint={keepExistingSecret ? "Leave blank to keep the current vaulted secret." : "Stored in the vault; only a masked reference is kept."}>
-                    <Input type="password" value={secret} onChange={(e) => setSecret(e.target.value)} placeholder={keepExistingSecret ? "•••••••• (unchanged)" : "Paste secret"} />
-                  </Field>
-                </div>
-              )}
-            </div>
+            <CredentialModeToggle value={authMode} onChange={setAuthMode} hint="Who provides the credential this tool calls with" perUserSub="Each user connects their own account (OAuth)" />
+            {!perUser ? (
+              <div className="grid gap-4 sm:grid-cols-3">
+                <Field label="Auth">
+                  <Select value={auth} onChange={(e) => setAuth(e.target.value as HttpToolConfig["auth"])}>
+                    {AUTH_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                  </Select>
+                </Field>
+                {auth !== "none" && (
+                  <div className="sm:col-span-2">
+                    <Field label="Credential" hint={keepExistingSecret ? "Leave blank to keep the current vaulted secret." : "Stored in the vault; only a masked reference is kept."}>
+                      <Input type="password" value={secret} onChange={(e) => setSecret(e.target.value)} placeholder={keepExistingSecret ? "•••••••• (unchanged)" : "Paste secret"} />
+                    </Field>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <PerUserOAuthFields values={oauthCreds} onChange={setOauthCreds} keepExisting={keepExistingOauth} />
+            )}
             <Field label="Egress allow-list" hint="Optional. Comma-separated domains this tool may reach (deny-by-default).">
               <Input value={egress} onChange={(e) => setEgress(e.target.value)} placeholder="api.internal, example.com" />
             </Field>

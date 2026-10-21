@@ -100,8 +100,14 @@ else:
 |---|---|
 | `playground` / console | inline connect prompt; resolves to `principal_id` |
 | `channel` (Slack/GChat/Teams) | in-chat connect link; resolves to the federated Okta subject (Teams can use **Entra OBO** to skip the manual connect) |
-| `api` (published token) | **no interactive path** — works only if the token's subject pre-connected, else `403 mcp.connect_required` (or the server falls back to `shared_service`) |
+| `api` (published token) | **no interactive path** — works only if the token's subject pre-connected, else `403 mcp.connect_required`; a `shared_service` fallback is possible but **off by default** (⚠️ below) |
 | `eval` | no real user → see §7 |
+
+> ⚠️ **Silent-downgrade risk.** Letting a `per_user` server fall back to `shared_service` for a token caller
+> **defeats the per-user least-privilege + audit goal** (§1): the call silently runs as the shared service
+> identity. So the fallback is **opt-in per server, off by default**; when enabled it MUST emit a
+> `substitution`-style span + Run flag (`02 §5`) and is barred for destructive tools. The default is to fail
+> closed with `403 mcp.connect_required`.
 
 ## 7. Eval & reproducibility caveat
 
@@ -113,8 +119,22 @@ per-user *token* is runtime state — so "reproducible" means *reproducible give
 
 ## 8. Security
 
-- Refresh tokens are high-value and long-lived → vaulted per `(user, server)`, rotated, **revoked on
-  offboarding** (and on `mcp_server` delete via cascade).
+**Token lifecycle (refresh / rotation / revocation).** Only the OAuth **refresh token** is persisted —
+vaulted per `(user, server)` under the per-user DEK (§3); access tokens are never stored.
+- **Refresh grant:** at invoke time, if the cached access token is missing or expired the worker exchanges
+  the stored refresh token for a fresh access token (standard OAuth `refresh_token` grant), uses it
+  in-memory and discards it. `expires_at` tracks the access token; `last_used_at` is bumped on use.
+- **Rotation:** providers that return a **new** refresh token on each grant (rotating refresh tokens) have it
+  re-vaulted at the same `vault_path` atomically; `status` stays `connected`. No fixed cadence — rotation is
+  provider-driven, on-use.
+- **Refresh failure:** a refused / expired / revoked-at-provider refresh sets `status='expired'`; the current
+  run returns `mcp.connect_required` (re-consent, surfaced in-chat / inline) — it does not silently fall back
+  to `shared_service` (see §6 ⚠️).
+- **Revocation:** `status='revoked'` on offboarding or `mcp_server` delete (cascade) stops *our* use
+  immediately. **Propagating revocation upstream** (calling the provider's OAuth revoke endpoint on explicit
+  disconnect) is best-effort — a dangling grant can survive if the provider exposes no revoke endpoint.
+  **[OPEN — P2.a: the upstream revoke call + reconciliation are not yet specified.]**
+
 - The MCP server's declared **scopes bound** what the delegated token can do; the per-call **egress
   allow-list** still applies at the sandbox boundary (`11 §1`).
 - The signed `state` is single-use (nonce) and short-lived; the callback rejects a mismatch.

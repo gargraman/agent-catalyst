@@ -91,7 +91,7 @@ export default function NewAgentPage() {
   // Enabled MCP tools from connected, usable servers — bindable as qualified `mcp:<serverId>/<tool>` refs.
   const mcpToolOptions = useMcpServers()
     .filter((s) => s.status === "connected" && canUse(s.accessPolicy, principal))
-    .flatMap((s) => s.tools.filter((t) => t.enabled).map((t) => ({ ref: mcpRef(s.id, t.name), label: t.name, description: t.description, serverName: s.name })));
+    .flatMap((s) => s.tools.filter((t) => t.enabled).map((t) => ({ ref: mcpRef(s.id, t.name), label: t.name, description: t.description, serverName: s.name, perUser: s.authMode === "per_user" })));
   const isValidToolRef = (ref: string) => toolOptions.some((t) => t.name === ref) || mcpToolOptions.some((m) => m.ref === ref);
   // Skills the builder can use; only `published` skills are bindable (drafts are shown disabled below).
   const skillOptions = useSkills().filter((s) => canUse(s.accessPolicy, principal));
@@ -302,7 +302,7 @@ export default function NewAgentPage() {
                     <button key={m.ref} onClick={() => setTools((l) => toggle(l, m.ref))}
                       className={`flex items-center justify-between rounded-lg border px-3 py-2.5 text-left text-sm ${on ? "border-accent bg-accent-soft" : "border-border bg-elevated hover:border-border-strong"}`}>
                       <span className="min-w-0"><span className="block truncate font-mono text-xs font-medium text-ink">{m.label}</span>
-                        <span className="block truncate text-xs text-muted">MCP · {m.serverName}</span></span>
+                        <span className="block truncate text-xs text-muted">MCP · {m.serverName}{m.perUser ? " · per-user" : ""}</span></span>
                       {on ? <Check className="size-4 text-accent" /> : <span className="size-4 rounded border border-border" />}
                     </button>
                   );

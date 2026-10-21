@@ -712,8 +712,8 @@ function ToolsTab({ agent }: { agent: ReturnType<typeof getAgent> & {} }) {
                   <div className="flex items-center gap-3">
                     {meta.icon}
                     <div>
-                      <p className="font-mono text-sm text-ink">{r.label}</p>
-                      <p className="text-xs text-muted">{meta.label}{r.riskTier && r.riskTier !== "read" ? ` · ${r.riskTier}` : ""}</p>
+                      <p className="flex items-center gap-2 font-mono text-sm text-ink">{r.label}{r.perUser && <Badge tone="accent">Per-user</Badge>}</p>
+                      <p className="text-xs text-muted">{meta.label}{r.riskTier && r.riskTier !== "read" ? ` · ${r.riskTier}` : ""}{r.perUser ? " · caller connects their own account" : ""}</p>
                     </div>
                   </div>
                   {canEdit && <button onClick={() => { updateAgent(agent.id, { tools: agent.tools.filter((x) => x !== ref) }, false); toast("Tool removed", "neutral"); }} aria-label="Remove tool" className="text-muted transition-colors hover:text-critical"><X className="size-4" /></button>}
@@ -1485,7 +1485,7 @@ function ToolsDialog({ agent, open, onClose }: { agent: Agent; open: boolean; on
 
         {mcpWithEnabled.map(({ server, enabled }) => (
           <div key={server.id}>
-            <p className="mb-1 flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted"><Plug className="size-3.5" /> {server.name}</p>
+            <p className="mb-1 flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted"><Plug className="size-3.5" /> {server.name}{server.authMode === "per_user" && <Badge tone="accent">Per-user</Badge>}</p>
             <div className="divide-y divide-border">
               {enabled.map((t) => {
                 const ref = mcpRef(server.id, t.name);

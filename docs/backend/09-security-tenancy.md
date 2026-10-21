@@ -315,7 +315,7 @@ A dedicated suite asserts tenant A can never read or act on tenant B, run in CI 
   (`POST /versions/:vid/skills`) — `skills`/`skill_resources`/`skill_bindings` are `WorkspaceScoped` (01 §4.4),
   so bindings inherit the version's `workspace_id` and RLS + the guard partition every query; a cross-tenant
   bind is a 404, not a leak.
-- **tool dry-runs & sub-agents:** a `tool_test`/`mcp_test` dry-run (08) and a sub-agent **child** run (03 §8)
+- **tool dry-runs & sub-agents:** a `tool_test` dry-run (08; also covers MCP test-invoke) and a sub-agent **child** run (03 §8)
   stay within the caller's tenant — the child `runtime.invoke` inherits the parent `workspace_id` (never
   crosses), and the approvals inbox + `POST /approvals/:id/decide` are workspace-filtered so A can neither see
   nor decide B's `tool_approvals`.
@@ -326,7 +326,9 @@ A dedicated suite asserts tenant A can never read or act on tenant B, run in CI 
 ## 9. Secrets — Vault Transit envelope encryption
 
 Provider keys, tool creds, connector creds, MCP auth — **none are ever stored plaintext** (01
-`provider_keys` holds only `masked` + `vault_path`). Envelope scheme, **per-workspace DEK**:
+`provider_keys` holds only `masked` + `vault_path`). Base envelope scheme, **per-workspace DEK** (the
+diagram + code below show this tier; **provider keys are the exception** — they move to a *platform-scope*
+pool DEK per **§9.1**, while tool / connector / channel / per-user-MCP creds keep the per-workspace DEK):
 
 ```mermaid
 flowchart LR

@@ -55,7 +55,7 @@ class BudgetGuard:
         spent = await redis.incrbyfloat(f"spend:{workspace_id}:{month}", est_usd)
         if spent > self.cap(workspace_id):
             await redis.incrbyfloat(f"spend:{workspace_id}:{month}", -est_usd)   # roll back
-            raise BudgetExceeded()                       # → HTTP 402/429 (08)
+            raise BudgetExceeded()                       # → HTTP 402 budget.exceeded (08; rate-limit is a separate 429)
         return Reservation(workspace_id, est_usd)
     async def reconcile(self, res: Reservation, actual_usd: float):
         await redis.incrbyfloat(f"spend:{res.workspace_id}:{month}", actual_usd - res.est_usd)

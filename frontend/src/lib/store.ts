@@ -670,8 +670,23 @@ export function addTool(t: RepoTool) {
 }
 // @backend PUT /v1/mcp-servers/:id - update server config (auth/egress/approval + tool allow-list).
 export function updateMcpServer(id: string, patch: Partial<McpServer>, notify = true) {
-  set({ mcpServers: state.mcpServers.map((s) => (s.id === id ? { ...s, ...patch } : s)) });
-  if (notify) toast("MCP server updated");
+  const prev = state.mcpServers.find((s) => s.id === id);
+  const mcpServers = state.mcpServers.map((s) => (s.id === id ? { ...s, ...patch } : s));
+  // auth_mode is a DRIFT_TRIGGER (doc 17 §2 / 05 §5): flipping shared_service↔per_user changes the frozen
+  // tool_bindings snapshot, so it invalidates every bound agent's eval. Mirror the KB/skill fan-out.
+  // auth_mode AND the per-user OAuth scopes change the frozen tool_bindings grant surface → DRIFT_TRIGGER.
+  const driftRelevant = !!prev && (
+    (patch.authMode !== undefined && patch.authMode !== prev.authMode) ||
+    (patch.oauthScopes !== undefined && patch.oauthScopes !== prev.oauthScopes)
+  );
+  const prefix = `${MCP_REF_PREFIX}${id}/`;
+  set({
+    mcpServers,
+    ...(driftRelevant
+      ? { agents: state.agents.map((a) => (a.tools.some((ref) => ref.startsWith(prefix)) ? { ...a, needsReEval: true } : a)) }
+      : {}),
+  });
+  if (notify) toast(driftRelevant ? "MCP server updated — bound agents need re-eval" : "MCP server updated");
 }
 // @backend DELETE /v1/mcp-servers/:id - disconnect + forget a server (vaulted creds revoked server-side).
 //   Agent bindings referencing it become dangling refs (resolveToolRef renders them as removable).
@@ -701,8 +716,20 @@ export function setMcpToolEnabled(serverId: string, toolName: string, enabled: b
 }
 // @backend PUT /v1/tools/:id - update a repository tool (config/schema/risk tier). Identity is `name`.
 export function updateTool(name: string, patch: Partial<RepoTool>) {
-  set({ tools: state.tools.map((t) => (t.name === name ? { ...t, ...patch } : t)) });
-  toast("Tool updated");
+  const prev = state.tools.find((t) => t.name === name);
+  const tools = state.tools.map((t) => (t.name === name ? { ...t, ...patch } : t));
+  // A tool's auth-mode OR per-user OAuth scopes change the frozen tool_bindings grant surface → DRIFT_TRIGGER.
+  const driftRelevant = patch.httpConfig !== undefined && (
+    (prev?.httpConfig?.authMode ?? "shared_service") !== (patch.httpConfig?.authMode ?? "shared_service") ||
+    (prev?.httpConfig?.oauthScopes ?? "") !== (patch.httpConfig?.oauthScopes ?? "")
+  );
+  set({
+    tools,
+    ...(driftRelevant
+      ? { agents: state.agents.map((a) => (a.tools.includes(name) ? { ...a, needsReEval: true } : a)) }
+      : {}),
+  });
+  toast(driftRelevant ? "Tool updated — bound agents need re-eval" : "Tool updated");
 }
 // @backend DELETE /v1/tools/:id - remove a repository tool. Agent bindings by this name become dangling
 //   refs (resolveToolRef renders them as removable).

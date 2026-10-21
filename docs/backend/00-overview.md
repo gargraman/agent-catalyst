@@ -11,13 +11,14 @@
 
 If "test," "eval," and "production" ran different code paths, a drift report would be a lie — you'd be
 evaluating code the published endpoint never runs. So the runtime is a **library**, not a service, and
-three thin callers wrap it:
+**four** thin callers wrap it (sub-agent delegation adds a recursive fifth `run_source`, `03 §8`):
 
 ```mermaid
 flowchart LR
   PG["POST /versions/:id/playground/chat"] --> core
   PUB["POST /v1/agents/:id/invoke"] --> core
   EV["eval worker (per case)"] --> core
+  CHAN["channel event → worker (12)"] --> core
   subgraph core["runtime.invoke(snapshot, inputs, ctx) — the shared core"]
     direction LR
     GR["guardrails (06)"] --> RET["retrieval (04)"] --> GW["provider gateway (02)"]
@@ -25,7 +26,7 @@ flowchart LR
   end
 ```
 
-*Three thin callers, one core.* The pipeline (guardrails → retrieval → gateway, with obs cross-cutting) runs identically for all three.
+*Four thin callers, one core* (playground · published · eval · channel; sub-agents recurse into it, `03 §8`). The pipeline (guardrails → retrieval → gateway, with obs cross-cutting) runs identically for all of them.
 
 Everything else — dashboards, CRUD, versioning, token mint, export — is **boring, reliable software
 with no model in it** (the `scope.md` governing principle). Spend the real care on the gateway (02),
@@ -119,7 +120,7 @@ from dataclasses import dataclass
 @dataclass
 class RunContext:
     workspace_id: str
-    run_source: str                 # "playground" | "api" | "eval"
+    run_source: str                 # "playground"|"api"|"eval"|"channel"|"tool_test"|"subagent" (full enum: 01)
     principal_id: str | None        # console user (playground) — None for token callers
     caller_token_id: str | None     # published-token caller — None for console
     idempotency_key: str | None

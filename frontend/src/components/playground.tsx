@@ -129,6 +129,7 @@ export function Playground({ agent, version }: { agent: Agent; version?: string 
               title="Tools"
               granted={res.grantedTools}
               denied={res.deniedTools}
+              connect={res.connectTools}
               empty="No tools bound"
               blocked={blocked}
             />
@@ -165,7 +166,7 @@ function Chip({ label, value }: { label: string; value: React.ReactNode }) {
 }
 
 function ResourceGroup({
-  icon, title, granted, denied, empty, blocked,
+  icon, title, granted, denied, empty, blocked, connect = [],
 }: {
   icon: React.ReactNode;
   title: string;
@@ -173,8 +174,10 @@ function ResourceGroup({
   denied: { name: string; reason: string }[];
   empty: string;
   blocked: boolean;
+  /** per_user tools the caller may use only after connecting their own account (doc 17). */
+  connect?: { name: string; reason: string }[];
 }) {
-  if (granted.length === 0 && denied.length === 0) {
+  if (granted.length === 0 && denied.length === 0 && connect.length === 0) {
     return <p className="text-xs text-muted">{empty}</p>;
   }
   return (
@@ -186,7 +189,13 @@ function ResourceGroup({
             <CircleCheck className="size-3.5 shrink-0 text-good" /> {name}
           </li>
         ))}
-        {(blocked ? [...granted.map((name) => ({ name, reason: "run blocked" })), ...denied] : denied).map((d) => (
+        {!blocked && connect.map((c) => (
+          <li key={c.name} className="flex items-center gap-2 text-xs text-accent" title={c.reason}>
+            <KeyRound className="size-3.5 shrink-0" /> <span>{c.name}</span>
+            <span className="ml-auto text-[10px] normal-case text-ink-2">{c.reason}</span>
+          </li>
+        ))}
+        {(blocked ? [...granted.map((name) => ({ name, reason: "run blocked" })), ...connect, ...denied] : denied).map((d) => (
           <li key={d.name} className="flex items-center gap-2 text-xs text-muted line-through decoration-muted/50" title={d.reason}>
             <Lock className="size-3.5 shrink-0 no-underline" /> <span className="no-underline">{d.name}</span>
             <span className="ml-auto text-[10px] normal-case no-underline">{d.reason}</span>

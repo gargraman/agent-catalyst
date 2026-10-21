@@ -7,9 +7,11 @@ import {
   Card, CardHeader, CardTitle, CardContent, Button, Field, Input, Select, Badge, StatusDot,
 } from "@/components/ui";
 import { Stepper } from "@/components/stepper";
+import { CredentialModeToggle, PerUserOAuthFields } from "@/components/credential-mode-fields";
 import { addMcpServer, toast, genId, nowIso } from "@/lib/store";
 import { MCP_AUTH_METHODS, MCP_AUTHS, mcpAuthLabel, type McpAuth } from "@/lib/mcp";
 import { finalizeMcpCredentials, mcpCredentialsComplete } from "@/lib/mcp-credentials";
+import { PER_USER_OAUTH_APP_FIELDS, finalizeOauthApp, oauthAppComplete } from "@/lib/oauth-app";
 import { riskTone } from "@/lib/tools";
 import type { McpTool } from "@/lib/data";
 
@@ -40,7 +42,9 @@ export default function NewMcpServerPage() {
   const [command, setCommand] = React.useState("");
 
   // Auth — the raw secret(s) captured per credential field, masked into CredentialRefs on finish.
+  // `authMode` is the orthogonal downstream-identity axis (doc 17): shared service cred vs per-user OAuth.
   const [auth, setAuth] = React.useState<McpAuth>("none");
+  const [authMode, setAuthMode] = React.useState<"shared_service" | "per_user">("shared_service");
   const [creds, setCreds] = React.useState<Record<string, string>>({});
 
   // Discover
@@ -53,12 +57,18 @@ export default function NewMcpServerPage() {
 
   const selected = (discovered ?? []).filter((t) => enabled[t.name]);
   const selectedCount = selected.length;
+  const perUser = authMode === "per_user";
   const credFields = MCP_AUTH_METHODS[auth].credentialFields;
-  const authComplete = mcpCredentialsComplete(auth, creds);
+  const oauthCredCount = PER_USER_OAUTH_APP_FIELDS.filter((f) => (creds[f.key] ?? "").trim()).length;
+  const authComplete = perUser ? oauthAppComplete(creds) : mcpCredentialsComplete(auth, creds);
 
   function changeAuth(next: McpAuth) {
     setAuth(next);
     setCreds({}); // clear captured secrets when the method changes
+  }
+  function changeAuthMode(next: "shared_service" | "per_user") {
+    setAuthMode(next);
+    setCreds({}); // credential fields differ between shared-service and per-user modes
   }
 
   function discover() {
@@ -79,18 +89,21 @@ export default function NewMcpServerPage() {
 
   function finish() {
     const egressList = egress.split(",").map((s) => s.trim()).filter(Boolean);
+    const oauth = perUser ? finalizeOauthApp(creds) : null;
     addMcpServer({
       id: genId("mcp"),
       name: name.trim(),
       transport,
       endpoint: (transport === "http" ? endpoint : command).trim(),
       status: "connected",
-      auth,
+      auth: perUser ? "oauth" : auth,
+      authMode,
       toolCount: selectedCount,
       lastDiscovery: nowIso(),
       boundAgents: 0,
       tools: selected.map((t) => ({ name: t.name, description: t.description, enabled: true, riskTier: t.riskTier })),
-      credentials: finalizeMcpCredentials(auth, creds),
+      credentials: perUser ? oauth!.refs : finalizeMcpCredentials(auth, creds),
+      oauthScopes: perUser ? oauth!.scopes : undefined,
       egress: egressList,
       approval,
     });
@@ -135,24 +148,33 @@ export default function NewMcpServerPage() {
 
           {step === 1 && (
             <div className="space-y-4">
-              <Field label="Authentication">
-                <Select value={auth} onChange={(e) => changeAuth(e.target.value as McpAuth)}>
-                  {MCP_AUTHS.map((a) => <option key={a} value={a}>{mcpAuthLabel(a)}</option>)}
-                </Select>
-              </Field>
-              {credFields.map((f) => (
-                <Field key={f.key} label={f.label} hint={f.hint}>
-                  <Input
-                    type={f.type === "password" ? "password" : "text"}
-                    value={creds[f.key] ?? ""}
-                    onChange={(e) => setCreds((s) => ({ ...s, [f.key]: e.target.value }))}
-                    placeholder={f.placeholder}
-                  />
-                </Field>
-              ))}
-              {MCP_AUTH_METHODS[auth].credentialHint && (
-                <p className="text-xs text-muted">{MCP_AUTH_METHODS[auth].credentialHint}</p>
+              <CredentialModeToggle value={authMode} onChange={changeAuthMode} hint="Who provides the credential this server calls with" />
+
+              {!perUser ? (
+                <>
+                  <Field label="Authentication">
+                    <Select value={auth} onChange={(e) => changeAuth(e.target.value as McpAuth)}>
+                      {MCP_AUTHS.map((a) => <option key={a} value={a}>{mcpAuthLabel(a)}</option>)}
+                    </Select>
+                  </Field>
+                  {credFields.map((f) => (
+                    <Field key={f.key} label={f.label} hint={f.hint}>
+                      <Input
+                        type={f.type === "password" ? "password" : "text"}
+                        value={creds[f.key] ?? ""}
+                        onChange={(e) => setCreds((s) => ({ ...s, [f.key]: e.target.value }))}
+                        placeholder={f.placeholder}
+                      />
+                    </Field>
+                  ))}
+                  {MCP_AUTH_METHODS[auth].credentialHint && (
+                    <p className="text-xs text-muted">{MCP_AUTH_METHODS[auth].credentialHint}</p>
+                  )}
+                </>
+              ) : (
+                <PerUserOAuthFields values={creds} onChange={setCreds} />
               )}
+
               <div>
                 <Button variant="outline" size="sm" disabled={!authComplete} onClick={() => toast("Connection ok")}>
                   <ShieldCheck className="size-3.5" /> Test connection
@@ -222,8 +244,11 @@ export default function NewMcpServerPage() {
               <Row k="Name" v={name || "Untitled server"} />
               <Row k="Transport" v={<Badge tone={transport === "http" ? "accent" : "violet"}>{transport}</Badge>} />
               <Row k={transport === "http" ? "Endpoint" : "Command"} v={<span className="font-mono text-xs">{(transport === "http" ? endpoint : command) || "-"}</span>} />
-              <Row k="Authentication" v={mcpAuthLabel(auth)} />
-              <Row k="Credentials" v={auth === "none" ? "none" : `${Object.keys(finalizeMcpCredentials(auth, creds)).length} vaulted`} />
+              <Row k="Credential mode" v={perUser ? "Per-user (each caller connects their own account)" : "Shared service credential"} />
+              <Row k="Authentication" v={perUser ? "OAuth (per-user)" : mcpAuthLabel(auth)} />
+              <Row k="Credentials" v={perUser
+                ? `${oauthCredCount} app cred(s) vaulted`
+                : auth === "none" ? "none" : `${Object.keys(finalizeMcpCredentials(auth, creds)).length} vaulted`} />
               <Row k="Egress allow-list" v={egress.trim() || "none"} />
               <Row k="Approval policy" v={approval === "auto" ? "Auto" : "Ask"} />
               <Row k="Selected tools" v={<span className="inline-flex items-center gap-1.5"><StatusDot tone="good" />{selectedCount} of {(discovered ?? []).length}</span>} />
