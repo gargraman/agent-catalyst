@@ -24,6 +24,14 @@ request time (not stored, not the `memberships` table) — see `backend/09 §2.1
 **in this app** is the **per-resource access policy** — which roles/teams (Okta groups), or the owner, may
 use or manage each agent, KB, tool, MCP server, and channel.
 
+> ⚠️ **SUPERSEDED (2026-10-20 group-driven pivot; scope.md).** The 2026-10-15 app-managed-roster model below
+> is reversed. Membership + role are now **Okta-group-driven**: each workspace binds **ONE authoritative Okta
+> group** (`oktaGroup`) conferring a single base role (`memberRole ∈ {viewer,builder,publisher}`); a
+> deployment-wide **platform-admin group** is admin everywhere and the only principal that can
+> create/delete/(de)activate/edit workspaces. **Removed:** `access` open/restricted, invites, self-join, the
+> per-user roster. **Visibility = group membership** (platform-admins see all); the Members view is read-only.
+> `teams` (functional Okta groups) are unchanged. The original note is kept below for history.
+>
 > **Scope note (decision, 2026-10-15 — reverses the earlier "deferred" stance):** workspaces now have an
 > `access` mode (`open` = any org member can join · `restricted` = invite-only), and membership is the
 > app-managed roster. A workspace MAY carry an **optional backing Okta group** that auto-grants membership;

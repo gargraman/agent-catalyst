@@ -42,6 +42,7 @@ configurable in the builder and snapshotted into an immutable AgentVersion.
 | 4 | Input contract | declared typed inputs the caller must pass (beyond `messages`) | P1 |
 | 5 | Output contract | free text **or** structured output (JSON schema) + citations toggle | P1 |
 | 6 | Tools | built-in · HTTP/custom · code-exec · **MCP tools** · **sub-agents** | P2 |
+| 6a | Skills | bound **Skill(s)** = packaged **instruction fragment + bundled reference files** (injected into the prompt; **no code-exec** — peer to KBs, not a tool) | P2 |
 | 7 | Knowledge / data sources | bound **KnowledgeBase(s)** + retrieval config (RAG) | **P1-min / P2-full** |
 | 8 | Memory | short-term (session) + long-term (persistent) settings | P1 (session) / P2 (long-term) |
 | 9 | Context management | window limit · truncation/compaction strategy | P1 |
@@ -79,7 +80,15 @@ input/output contract; context-management settings. `[P1]` per-workspace **month
 enforced — revised 2026-10-19); `[P2]` concurrency controls + per-endpoint budgets.
 
 **3. Tools & skills** — `[P2]` tool repository; HTTP/custom tools; **MCP** connect + discovery + tool
-selection (B7); **sub-agent** delegation (LangGraph subgraphs).
+selection (B7); **sub-agent** delegation (LangGraph subgraphs). `[P2]` **Skills** — a reusable, versioned
+capability package = an **instruction fragment** (injected into the prompt like the system prompt) + **bundled
+reference files** (stored like a KB's documents). A skill is a **version-bindable capability peer to
+KnowledgeBases**, **not** a tool: it **does not execute code**, so it never touches the sandbox, egress
+allow-list, or the approval gate (no risk tier / approval / test-invoke). Its only new surface is
+prompt-injection via the instruction text and **package provenance**, so skills are **signed at publish** and
+only signed skills are bindable; they carry no credentials. Governance is **open registration + signing** (any
+builder+ authors); a bound skill's content folds into the version `snapshot_hash`, so editing a skill re-arms
+the eval gate on every bound agent (backend `01 §4.4`, `03 §4`, `05 §6`, `09 §10`).
 
 **4. Knowledge / data sources (RAG)** — `[P1-min]` upload files → ingest → retrieve;
 `[P2-full]` connectors (S3/GCS, Confluence, Notion, Drive, Git, DB), web crawl, scheduled re-sync,
@@ -202,11 +211,16 @@ erDiagram
   DOCUMENT ||--o{ CHUNK : split_into
   AGENT_VERSION ||--o{ RETRIEVAL_BINDING : retrieves_via
   KNOWLEDGE_BASE ||--o{ RETRIEVAL_BINDING : bound_in
+  WORKSPACE ||--o{ SKILL : owns
+  SKILL ||--o{ SKILL_RESOURCE : bundles
+  AGENT_VERSION ||--o{ SKILL_BINDING : applies
+  SKILL ||--o{ SKILL_BINDING : bound_as
 ```
 
 Legend: `TOOL_BINDING.kind ∈ {http, mcp, builtin, subagent}`; MCP bindings snapshot the discovered
 tool schema. `CHUNK` holds the pgvector embedding. `RETRIEVAL_BINDING` = version↔KB + retrieval
-config. `SpendLimit`/`ConcurrencyLimit`/RBAC tables created P1, used P2 (additive). No voice tables.
+config. `SKILL` = instruction fragment + bundled `SKILL_RESOURCE` files (no code-exec); `SKILL_BINDING`
+= version↔Skill with the skill content hash snapshotted (folds into `snapshot_hash`). `SpendLimit`/`ConcurrencyLimit`/RBAC tables created P1, used P2 (additive). No voice tables.
 
 ### B4. Architecture topology
 ```mermaid
@@ -359,7 +373,8 @@ notifications (`backend/16`). These close the three gaps that make the platform 
 leadership-visible, owner-notifying) rather than a console.
 
 **Phase 2 — Extensibility + hardening.**
-Tool repository; **MCP** connect/discover/bind; sub-agent delegation; full data-source connectors +
+Tool repository; **MCP** connect/discover/bind; sub-agent delegation; **skills** (signed instruction+resource
+packages, version-bindable, no code-exec); full data-source connectors +
 crawl + re-sync + reranking; long-term memory; full guardrail library; concurrency limits + per-endpoint/
 finer spend controls (the per-workspace monthly cap itself is P1);
 RBAC + audit hardening; usage/cost dashboards.

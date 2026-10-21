@@ -1,0 +1,58 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "runtime.invoke() — the one shared core",
+    "subtitle": "What playground, published invoke and every eval case all run — not a linear pipe",
+    "output": "docs/diagrams/backend-design/runtime-invoke-pipeline.html",
+    "quality_profile": "showcase"
+  },
+  "lanes": [
+    { "id": "callers", "label": "Callers" },
+    { "id": "core", "label": "runtime.invoke() core" },
+    { "id": "policy", "label": "Guardrails & HITL", "variant": "exception" },
+    { "id": "data", "label": "Retrieval · providers · tools" }
+  ],
+  "phases": [
+    { "id": "admit", "label": "Admit", "fromCol": 0, "toCol": 2 },
+    { "id": "graph", "label": "LangGraph (loop)", "fromCol": 3, "toCol": 4, "variant": "emphasis" },
+    { "id": "finish", "label": "Finalize", "fromCol": 5, "toCol": 5, "variant": "dashed" }
+  ],
+  "groups": [
+    { "id": "loop", "label": "Agentic loop · model ⇄ tools (result → next model_call)", "lane": "core", "fromCol": 4, "toCol": 5, "variant": "emphasis" },
+    { "id": "pol", "label": "fail-closed · runs twice", "lane": "policy", "fromCol": 2, "toCol": 5, "variant": "security" },
+    { "id": "sbx", "label": "sandboxed (P2)", "lane": "data", "fromCol": 5, "toCol": 5, "variant": "dashed" }
+  ],
+  "mainPath": ["caller", "validate", "in_gr", "build", "model", "out_gr", "emit"],
+  "nodes": [
+    { "id": "caller", "lane": "callers", "col": 0, "type": "external", "label": "4 callers", "sublabel": "playground · published · eval · channel" },
+    { "id": "snapshot", "lane": "core", "col": 0, "type": "database", "label": "VersionSnapshot", "sublabel": "frozen · never the live agent row", "tag": "immutability in code" },
+    { "id": "validate", "lane": "core", "col": 1, "type": "backend", "label": "validate + budget", "sublabel": "IO contract · reserve spend" },
+    { "id": "in_gr", "lane": "policy", "col": 2, "type": "security", "label": "input guardrails", "sublabel": "fail-closed", "tag": "block → END (no model call)" },
+    { "id": "blocked", "lane": "policy", "col": 3, "type": "security", "label": "blocked", "sublabel": "emit blocked · END" },
+    { "id": "build", "lane": "core", "col": 3, "type": "backend", "label": "build_messages", "sublabel": "prompt + skills + memory + always_on RAG" },
+    { "id": "model", "lane": "core", "col": 4, "type": "backend", "label": "model_call", "sublabel": "stream tokens", "tag": "loop ≤ 8 tool calls · 30s deadline" },
+    { "id": "gateway", "lane": "data", "col": 4, "type": "backend", "label": "provider gateway", "sublabel": "LiteLLM transport · cost from profiles" },
+    { "id": "execute", "lane": "data", "col": 5, "type": "messagebus", "label": "execute_tools / retriever", "sublabel": "sandbox · egress (P2) · loops to model" },
+    { "id": "out_gr", "lane": "policy", "col": 5, "type": "security", "label": "output guardrails", "sublabel": "streaming sliding-buffer redact" },
+    { "id": "emit", "lane": "core", "col": 5, "type": "backend", "label": "emit + reconcile", "sublabel": "Run · spans · cost · reconcile" }
+  ],
+  "edges": [
+    { "id": "e-call", "from": "caller", "to": "validate", "variant": "emphasis" },
+    { "id": "e-snap", "from": "snapshot", "to": "validate", "label": "frozen snapshot", "role": "branch" },
+    { "id": "e-val-gr", "from": "validate", "to": "in_gr", "variant": "emphasis" },
+    { "id": "e-gr-build", "from": "in_gr", "to": "build", "label": "pass", "variant": "emphasis" },
+    { "id": "e-gr-blk", "from": "in_gr", "to": "blocked", "label": "blocked", "variant": "security", "role": "error" },
+    { "id": "e-build-model", "from": "build", "to": "model", "variant": "emphasis" },
+    { "id": "e-model-gw", "from": "model", "to": "gateway", "label": "transport · cost", "variant": "emphasis" },
+    { "id": "e-model-exec", "from": "model", "to": "execute", "label": "tool call ⟲ result loops to model", "variant": "security", "role": "branch" },
+    { "id": "e-model-out", "from": "model", "to": "out_gr", "label": "final", "variant": "emphasis" },
+    { "id": "e-out-emit", "from": "out_gr", "to": "emit", "variant": "emphasis" }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "The one core", "items": ["Playground, published invoke, every eval case AND channel messages call this SAME runtime.invoke(snapshot, inputs, ctx)", "A sub-agent tool call is a 5th, recursive caller (run_source=subagent, P2 · depth/fan-out capped); published + playground run in api, eval + channel run in the worker", "If they diverged, a drift report would score code the endpoint never runs — runtime/ is a pure library (no FastAPI/HTTP types), imported by api + worker"] },
+    { "dot": "rose", "title": "Why a frozen snapshot", "items": ["invoke() reads an immutable VersionSnapshot, never the live agents row — editing an agent changes nothing live", "Re-pointing a published version is eval-gated: can't publish a version whose behavior drifted since its last PASS (409)", "snapshot_hash folds in prompt+params+retrieval_config+kb_index+skills — a stale hash would serve a PASS and bypass the gate"] },
+    { "dot": "amber", "title": "Not a linear pipe", "items": ["Guardrails run TWICE: input before any model call, output after the final token", "Retrieval is conditional — pre-model when always_on, else a retriever-as-tool chosen inside the loop", "model ⇄ execute_tools is a bounded agentic loop; MAX_TOOL_CALLS (8) caps cost, ctx.deadline_s (30s) caps latency; the approval gate parks the run via LangGraph interrupt() + Postgres checkpointer (survives restarts)"] },
+    { "dot": "slate", "title": "Source", "items": ["docs/backend/00-overview.md §1/§4 · 03-runtime.md §2/§4 (graph nodes) · 02 (gateway/cost) · 05 (eval gate) · 06 (guardrails)", "Companion: backend-deployment-plane.html (where api/worker/sandbox run)"] }
+  ]
+}

@@ -1,0 +1,195 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": {
+    "title": "Org Governance — the platform-admin reporting plane",
+    "subtitle": "A 4th plane above the tenant planes: one SECURITY DEFINER read across every workspace, audited, metadata-only for private (doc 15)",
+    "output": "docs/diagrams/backend-design/org-governance-reporting.html",
+    "quality_profile": "showcase"
+  },
+  "participants": [
+    {
+      "id": "admin",
+      "type": "external",
+      "label": "Platform admin",
+      "sublabel": "leadership / central ops"
+    },
+    {
+      "id": "api",
+      "type": "backend",
+      "label": "api · org",
+      "sublabel": "routers/org.py"
+    },
+    {
+      "id": "fn",
+      "type": "security",
+      "label": "SECURITY DEFINER",
+      "sublabel": "org_report_* fn"
+    },
+    {
+      "id": "db",
+      "type": "database",
+      "label": "Postgres",
+      "sublabel": "all workspaces"
+    },
+    {
+      "id": "audit",
+      "type": "database",
+      "label": "audit_logs",
+      "sublabel": "org-level (ws NULL)"
+    }
+  ],
+  "segments": [
+    {
+      "from": 158,
+      "to": 214,
+      "label": "Authorize"
+    },
+    {
+      "from": 220,
+      "to": 362,
+      "label": "Elevated cross-tenant read"
+    },
+    {
+      "from": 368,
+      "to": 492,
+      "label": "Audit & project"
+    }
+  ],
+  "messages": [
+    {
+      "id": "get",
+      "from": "admin",
+      "to": "api",
+      "y": 168,
+      "label": "GET /api/v1/org/agents (OIDC session)",
+      "variant": "emphasis",
+      "note": "require_platform_admin · platform_admins roster · 403 else"
+    },
+    {
+      "id": "call",
+      "from": "api",
+      "to": "fn",
+      "y": 226,
+      "label": "org_report_agents()"
+    },
+    {
+      "id": "read",
+      "from": "fn",
+      "to": "db",
+      "y": 256,
+      "label": "read EVERY workspace",
+      "variant": "security",
+      "note": "the ONE sanctioned crossing — bypasses RLS, no SET LOCAL"
+    },
+    {
+      "id": "rows",
+      "from": "db",
+      "to": "fn",
+      "y": 314,
+      "label": "rows (all tenants)",
+      "variant": "return"
+    },
+    {
+      "id": "estate",
+      "from": "fn",
+      "to": "api",
+      "y": 344,
+      "label": "estate rows",
+      "variant": "return"
+    },
+    {
+      "id": "writeaudit",
+      "from": "api",
+      "to": "audit",
+      "y": 374,
+      "label": "org.report.read (ws NULL)",
+      "variant": "security",
+      "note": "every call audited; tenant audit view can't see NULL-ws rows"
+    },
+    {
+      "id": "resp",
+      "from": "api",
+      "to": "admin",
+      "y": 432,
+      "label": "estate (metadata-only for private)",
+      "variant": "return",
+      "note": "private: existence/owner/verdict/spend — NOT system_prompt / IO"
+    }
+  ],
+  "activations": [
+    {
+      "participant": "api",
+      "from": 168,
+      "to": 432,
+      "type": "backend"
+    },
+    {
+      "participant": "fn",
+      "from": 226,
+      "to": 344,
+      "type": "security"
+    },
+    {
+      "participant": "db",
+      "from": 256,
+      "to": 314,
+      "type": "database"
+    },
+    {
+      "participant": "audit",
+      "from": 374,
+      "to": 398,
+      "type": "database"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "A 4th plane, read-only",
+      "items": [
+        "The three auth planes (console / token / channel) are all tenant-scoped to one workspace_id",
+        "Org governance is deliberately NOT tenant-scoped — it sees across every workspace at once",
+        "Modeled as a 4th plane above them: OIDC session + platform_admins roster → permission org.report.read",
+        "Deployment-wide (one org per deploy), never mutates — governance, not publish/edit/invoke"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "The one sanctioned crossing",
+      "items": [
+        "A SECURITY DEFINER Postgres fn owned by the migration role — not constrained by the RLS policies that gate the app role",
+        "EXECUTE-locked to a dedicated platform_report reader role, called only by the org router",
+        "The tenant-isolation suite gets an explicit test: this is the ONLY path returning rows from >1 workspace",
+        "read-only · STABLE · query-time aggregation (Redis-cached), nightly MV only if the estate outgrows a live scan"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Metadata, not content (honors private)",
+      "items": [
+        "A platform admin is NOT a workspace admin and holds no owner subject, so the private tier is honored",
+        "Report MAY show metadata: existence, owning workspace, owner, status, eval verdict, drift, 30d spend, policy tier, compliance flags",
+        "It MUST NOT show content: system_prompt, snapshot internals, run I/O, traces, eval-case I/O",
+        "Content on a private resource = separate, explicitly-audited org.report.content_read"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "The three reports",
+      "items": [
+        "GET /api/v1/org/agents — the estate (one row per agent, all workspaces)",
+        "GET /api/v1/org/spend — rollup by workspace / agent / model (same runs.cost_usd figure)",
+        "GET /api/v1/org/compliance — exceptions: unregistered · unevaluated · over_budget · no_owner (query-time, reads 14's registration fields)"
+      ]
+    },
+    {
+      "dot": "slate",
+      "title": "Source",
+      "items": [
+        "docs/backend/15-org-governance-reporting.md §1 plane /§2 crossing+audit+metadata /§3 reports",
+        "tables: platform_admins · audit_logs (workspace_id now nullable) · agents.registered_at/owner_subject (14)"
+      ]
+    }
+  ]
+}

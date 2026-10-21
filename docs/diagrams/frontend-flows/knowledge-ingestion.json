@@ -1,0 +1,47 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "Knowledge Ingestion & Credential Vaulting",
+    "subtitle": "Wizard → source + credential capture → persist → mock indexing",
+    "output": "docs/diagrams/frontend-flows/knowledge-ingestion.html",
+    "quality_profile": "showcase"
+  },
+  "lanes": [
+    { "id": "wizard", "label": "Builder (3-step wizard)" },
+    { "id": "creds", "label": "Source & credentials" },
+    { "id": "store", "label": "Store / mock API" },
+    { "id": "worker", "label": "Ingestion worker" }
+  ],
+  "phases": [
+    { "id": "configure", "label": "Configure", "fromCol": 0, "toCol": 1 },
+    { "id": "capture", "label": "Capture", "fromCol": 2, "toCol": 2, "variant": "security" },
+    { "id": "persist", "label": "Persist", "fromCol": 3, "toCol": 3 },
+    { "id": "index", "label": "Index", "fromCol": 4, "toCol": 5, "variant": "dashed" }
+  ],
+  "mainPath": ["basics", "source", "addKB", "addDS", "ingest", "ready"],
+  "nodes": [
+    { "id": "basics", "lane": "wizard", "col": 0, "type": "frontend", "label": "Step 1 · Basics", "sublabel": "name · embedding · chunking" },
+    { "id": "source", "lane": "wizard", "col": 1, "type": "frontend", "label": "Step 2 · First source", "sublabel": "upload · web · connector · manual" },
+    { "id": "cred", "lane": "creds", "col": 2, "type": "security", "label": "finalizeCredential", "sublabel": "maskSecret · vaultRef", "tag": "masked ref only" },
+    { "id": "addKB", "lane": "store", "col": 2, "type": "backend", "label": "addKnowledgeBase", "sublabel": "status: indexing" },
+    { "id": "addDS", "lane": "store", "col": 3, "type": "backend", "label": "addDataSource", "sublabel": "+ IngestionJob (running)", "tag": "flags bound agents re-eval" },
+    { "id": "ingest", "lane": "worker", "col": 4, "type": "messagebus", "label": "scheduleIngestionCompletion", "sublabel": "setTimeout (mock)" },
+    { "id": "ready", "lane": "store", "col": 5, "type": "database", "label": "KB ready", "sublabel": "job completed · source synced" }
+  ],
+  "edges": [
+    { "id": "e-next", "from": "basics", "to": "source", "label": "next (name set)" },
+    { "id": "e-finish", "from": "source", "to": "addKB", "label": "finish: build KB", "variant": "emphasis" },
+    { "id": "e-cred", "from": "source", "to": "cred", "label": "connector secret?", "variant": "security", "role": "branch" },
+    { "id": "e-credref", "from": "cred", "to": "addDS", "label": "credentialRef", "variant": "dashed" },
+    { "id": "e-attach", "from": "addKB", "to": "addDS", "label": "attach source" },
+    { "id": "e-enqueue", "from": "addDS", "to": "ingest", "label": "enqueue", "variant": "dashed", "role": "async" },
+    { "id": "e-flip", "from": "ingest", "to": "ready", "label": "flip terminal", "variant": "dashed" }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "Source types", "items": ["File upload (FileDropzone — collects File[], never uploads)", "Web crawl (seed URL + depth)", "Connector: S3 · Confluence · Git · Google Drive", "Manual paste · Skip for now"] },
+    { "dot": "rose", "title": "Credential model", "items": ["maskSecret: ≤10 chars → all bullets; else first 6 + •••••••• + last 4", "vaultRef(kind,id) → vault://… placeholder", "oauth → 'oauth:••••••••' · service_account → masked file name", "Only the masked CredentialRef {masked, vaultPath} is persisted"] },
+    { "dot": "amber", "title": "Drift", "items": ["addDataSource & reingest flag every bound agent needsReEval", "Changing the embedding model triggers a re-eval"] },
+    { "dot": "orange", "title": "Mock seams vs real contract", "items": ["Indexing is a setTimeout flip, not a real worker; real ingestion is an arq job tracked by a generic jobs row (kind=ingestion) — there is NO ingestion_jobs table", "Poll via GET /api/v1/ingestion-jobs; add source = POST /api/v1/knowledge-bases/:id/sources (async)", "nominalDocs() fakes a doc count; 'Test connection' and connector OAuth are simulated no-ops", "Source: app/(app)/knowledge/* · components/{source-picker,file-dropzone}.tsx · lib/{connectors,secrets}.ts"] }
+  ]
+}

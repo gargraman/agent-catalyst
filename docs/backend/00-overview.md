@@ -102,6 +102,13 @@ agent-catalyst/
 `runtime/` has **no FastAPI import** and **no HTTP types**. It takes a `RunContext` and yields
 `StreamEvent`s. That's what lets the eval worker and the HTTP endpoint share it.
 
+> **Skills need no new module.** A skill is an instruction fragment + bundled reference files that **does not
+> execute code** (01 §4.4), so unlike MCP/tools it adds **no `services/skills/` unit and no sandbox**. Skill
+> **CRUD + publish-signing** live in `api` (a `routers/skills.py` + `schemas/skills.py`, 08); bundled-resource
+> **ingest reuses `ingestion/`** (same MinIO upload → content-hash path as KB documents, 04); and **injection**
+> is a few lines in `runtime/graph/nodes.py` `build_messages` (03 §4) that compose the frozen skill fragments
+> into the prompt. No execution substrate is involved anywhere.
+
 ## 4. The single entry point
 
 ```python
@@ -160,7 +167,7 @@ async def invoke(
 ```
 
 The `VersionSnapshot` is the load-bearing type: a **frozen, fully-resolved** config (prompt, params,
-resolved capability profile, retrieval bindings, guardrail config, tool schemas). It is built once
+resolved capability profile, retrieval bindings, guardrail config, tool schemas, skill bindings). It is built once
 when a version is created and stored immutably (`01-data-model.md §4`). `invoke()` **never reads a
 live `agents` row** — that is how "editing the agent changes nothing live until an eval-gated
 re-point" is enforced in code, not by convention.
@@ -241,6 +248,7 @@ These extend or push back on the locked spec. Each is justified in the reference
 | 5 | — | `VersionSnapshot` is a real frozen type that `invoke()` reads **instead of** the live agent row, enforcing immutability in code | 01, this doc |
 | 6 | Single "MCP worker" (spec B7) | A **separate, network-isolated `sandbox` unit** for MCP + tool execution (per-call gVisor + egress allow-list proxy), dispatched by `api`/`worker` — not folded into the general worker | 11 §1, this doc §2 |
 | 7 | MCP/tool mgmt gated to **publisher/admin** (spec B12) | MCP/tool management reconciled **down to builder+** (`mcp.manage`/`tool.manage`); only **provider-key** mgmt stays admin-only | 09, spec B12 |
+| 8 | Spec lists "tools & skills" (A0 #6, A1 §3) without defining skills | **Skills are a first-class, version-bindable capability** — a signed instruction+resource package that is injected into the prompt and **does not execute code** (peer to KBs; not a tool). Open-registration + signing; folds into `snapshot_hash` | 01 §4.4, 03 §4, 05 §6, 08, 09 |
 
 ## 8. Naming conventions (so every doc agrees)
 

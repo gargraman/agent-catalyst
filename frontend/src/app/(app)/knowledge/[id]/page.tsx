@@ -100,9 +100,12 @@ export default function KnowledgeDetailPage() {
     const agent = agents.find((a) => a.id === effectiveBindAgent);
     // Defense-in-depth: only bind to an agent the caller is allowed to manage.
     if (!agent || !kb || !canManage(agent.accessPolicy, principal)) return;
-    if (!agent.knowledgeBases.includes(kb.id)) {
-      updateAgent(agent.id, { knowledgeBases: [...agent.knowledgeBases, kb.id] }, false);
+    if (agent.knowledgeBases.includes(kb.id)) {
+      toast(`${agent.name} already has "${kb.name}"`, "neutral");
+      setBindOpen(false);
+      return;
     }
+    updateAgent(agent.id, { knowledgeBases: [...agent.knowledgeBases, kb.id] }, false);
     toast(`Bound "${kb.name}" to ${agent.name}`);
     setBindOpen(false);
   }

@@ -1,0 +1,221 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": {
+    "title": "Channel Ingress — the 4th thin caller",
+    "subtitle": "POST /channels/{platform}/events: verify signature → federate to Okta → ack-fast → worker runtime.invoke → reply (doc 12)",
+    "output": "docs/diagrams/backend-design/channel-ingress.html",
+    "quality_profile": "showcase"
+  },
+  "participants": [
+    {
+      "id": "platform",
+      "type": "external",
+      "label": "Platform",
+      "sublabel": "Slack · Teams · GChat"
+    },
+    {
+      "id": "ingress",
+      "type": "backend",
+      "label": "api · channels",
+      "sublabel": "verify · federate · route"
+    },
+    {
+      "id": "okta",
+      "type": "security",
+      "label": "Okta / IAM",
+      "sublabel": "subject + groups"
+    },
+    {
+      "id": "redis",
+      "type": "messagebus",
+      "label": "Redis",
+      "sublabel": "channel queue"
+    },
+    {
+      "id": "worker",
+      "type": "backend",
+      "label": "worker",
+      "sublabel": "channel pool"
+    },
+    {
+      "id": "runtime",
+      "type": "backend",
+      "label": "runtime.invoke",
+      "sublabel": "run_source=channel"
+    }
+  ],
+  "segments": [
+    {
+      "from": 158,
+      "to": 356,
+      "label": "Ingress (ack-fast ≤ 2s)"
+    },
+    {
+      "from": 362,
+      "to": 492,
+      "label": "Process (worker, async)"
+    },
+    {
+      "from": 496,
+      "to": 552,
+      "label": "Reply"
+    }
+  ],
+  "messages": [
+    {
+      "id": "event",
+      "from": "platform",
+      "to": "ingress",
+      "y": 168,
+      "label": "POST /channels/{platform}/events",
+      "variant": "emphasis",
+      "note": "verify signature first — the trust anchor"
+    },
+    {
+      "id": "federate",
+      "from": "ingress",
+      "to": "okta",
+      "y": 212,
+      "label": "federate: email → subject",
+      "variant": "security",
+      "note": "mint short-lived platform token"
+    },
+    {
+      "id": "subject",
+      "from": "okta",
+      "to": "ingress",
+      "y": 268,
+      "label": "subject + Okta groups",
+      "variant": "return"
+    },
+    {
+      "id": "enqueue",
+      "from": "ingress",
+      "to": "redis",
+      "y": 298,
+      "label": "enqueue (agent · snapshot · msg)",
+      "note": "coarse gate: channel okta_group"
+    },
+    {
+      "id": "ack",
+      "from": "ingress",
+      "to": "platform",
+      "y": 342,
+      "label": "200 OK (ack)",
+      "variant": "return"
+    },
+    {
+      "id": "dequeue",
+      "from": "redis",
+      "to": "worker",
+      "y": 374,
+      "label": "dequeue"
+    },
+    {
+      "id": "invoke",
+      "from": "worker",
+      "to": "runtime",
+      "y": 404,
+      "label": "invoke(ctx: channel)",
+      "variant": "emphasis",
+      "note": "session=platform:thread · two access gates"
+    },
+    {
+      "id": "events",
+      "from": "runtime",
+      "to": "worker",
+      "y": 478,
+      "label": "events (buffered)",
+      "variant": "return"
+    },
+    {
+      "id": "reply",
+      "from": "worker",
+      "to": "platform",
+      "y": 508,
+      "label": "post reply",
+      "variant": "emphasis",
+      "note": "worker also writes runs + spans (obs)"
+    }
+  ],
+  "activations": [
+    {
+      "participant": "ingress",
+      "from": 168,
+      "to": 342,
+      "type": "backend"
+    },
+    {
+      "participant": "okta",
+      "from": 212,
+      "to": 268,
+      "type": "security"
+    },
+    {
+      "participant": "redis",
+      "from": 298,
+      "to": 374,
+      "type": "messagebus"
+    },
+    {
+      "participant": "worker",
+      "from": 374,
+      "to": 508,
+      "type": "backend"
+    },
+    {
+      "participant": "runtime",
+      "from": 404,
+      "to": 466,
+      "type": "backend"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "rose",
+      "title": "Trust anchor = the signature",
+      "items": [
+        "Signature verification is the SOLE proof of identity — trust the platform's assertion, never a user-presented token",
+        "Slack: HMAC over raw body + timestamp (replay window) · Teams: Bot Framework JWT · GChat: Google JWT (audience)",
+        "Reject on any mismatch; rate-limit per channel"
+      ]
+    },
+    {
+      "dot": "cyan",
+      "title": "Federated identity (membership-independent)",
+      "items": [
+        "Verified platform email → okta.lookup_subject (email is the join key); unmapped → in-chat denial",
+        "Mint a short-lived platform token: role = CHANNEL_INVOKE_ROLE (fixed baseline 'viewer'), teams = Okta groups",
+        "Teams uses Entra OBO exchange; federated users need NO memberships row",
+        "Channel is pinned to one workspace_id; RLS partitions everything"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Two access gates",
+      "items": [
+        "Coarse: channel.okta_group must be in the user's groups — enforced BEFORE the token is minted",
+        "Fine: agent.access_policy via can_use inside runtime — token carries no owner subject, so private agents fail closed",
+        "Both gates must pass for the end user to reach the agent"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "4th caller, ack-fast / process-async",
+      "items": [
+        "A channel is the fourth thin caller of the SAME runtime.invoke — it adds ingress + federation + delivery, nothing inside",
+        "Ingress verifies + enqueues and returns 200 within ~2–3s; the worker runs invoke(run_source=channel) out-of-band",
+        "Reply is delivered by the worker (buffer SSE → one message in v1); runs + spans recorded like any call"
+      ]
+    },
+    {
+      "dot": "slate",
+      "title": "Source",
+      "items": [
+        "docs/backend/12-channels.md §ingress/§verification/§identity/§invoke-mapping · 09 (federation, token) · 00 (one core)",
+        "services/api/channels/{router,verify,normalize,federate,route,deliver}.py · tables channels · channel_agents"
+      ]
+    }
+  ]
+}

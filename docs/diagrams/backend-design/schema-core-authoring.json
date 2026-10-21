@@ -1,0 +1,259 @@
+{
+  "schema_version": 1,
+  "diagram_type": "erd",
+  "meta": {
+    "title": "Core Schema — Authoring, Versioning, Knowledge, Skills, Evals",
+    "subtitle": "Postgres+pgvector (docs/backend/01). Every tenant row carries workspace_id (RLS). Part 1 of 2.",
+    "quality_profile": "standard",
+    "output": "docs/diagrams/backend-design/schema-core-authoring.html",
+    "views": [
+      { "id": "immutability", "label": "Immutability core", "focus": ["agents", "agent_versions", "retrieval_bindings", "skill_bindings", "eval_baselines"], "note": "agent_versions is the frozen snapshot; every *_binding pins version_id, never the live agent row." },
+      { "id": "rag", "label": "RAG lineage", "focus": ["knowledge_bases", "data_sources", "documents", "chunks", "retrieval_bindings"], "note": "source → document → chunk (pgvector); a version binds a KB at a pinned kb_index_version." },
+      { "id": "evalloop", "label": "Eval loop", "focus": ["eval_suites", "eval_cases", "eval_baselines", "eval_runs", "eval_results", "agent_versions"], "note": "a run scores a candidate version vs a frozen baseline across the suite's cases." }
+    ]
+  },
+  "layout": { "mode": "grid", "gapX": 60, "gapY": 24 },
+  "entities": [
+    { "id": "orgs", "label": "orgs", "tag": "identity", "row": 0, "col": 0, "attributes": [
+      { "name": "id", "type": "uuid", "key": "pk" },
+      { "name": "name", "type": "text" },
+      { "name": "created_at", "type": "timestamptz" }
+    ] },
+    { "id": "workspaces", "label": "workspaces", "tag": "identity", "row": 1, "col": 0, "width": 320, "attributes": [
+      { "name": "id", "type": "uuid", "key": "pk" },
+      { "name": "org_id", "type": "uuid", "key": "fk", "references": "orgs.id" },
+      { "name": "slug", "type": "text", "key": "uk" },
+      { "name": "name", "type": "text" },
+      { "name": "okta_group", "type": "text" },
+      { "name": "member_role", "type": "member_role" },
+      { "name": "default_provider", "type": "provider_name" },
+      { "name": "default_model", "type": "text" },
+      { "name": "request_timeout_s", "type": "int" },
+      { "name": "eval_min_cases", "type": "int" },
+      { "name": "eval_quality_threshold", "type": "numeric(5,2)" },
+      { "name": "eval_efficiency_budget_pct", "type": "numeric(5,2)" },
+      { "name": "eval_allow_low_conf_override", "type": "boolean" },
+      { "name": "archived_at", "type": "timestamptz" },
+      { "name": "created_at", "type": "timestamptz" }
+    ] },
+
+    { "id": "agents", "label": "agents", "tag": "agents", "row": 0, "col": 2, "width": 240, "attributes": [
+      { "name": "id", "type": "uuid", "key": "pk" },
+      { "name": "workspace_id", "type": "uuid", "key": "fk", "references": "workspaces.id" },
+      { "name": "slug", "type": "text", "key": "uk" },
+      { "name": "name", "type": "text" },
+      { "name": "description", "type": "text" },
+      { "name": "status", "type": "agent_status" },
+      { "name": "owner_subject", "type": "text" },
+      { "name": "registered_at", "type": "timestamptz" },
+      { "name": "tags", "type": "text[]" },
+      { "name": "active_version_id", "type": "uuid", "key": "fk", "references": "agent_versions.id" },
+      { "name": "drift", "type": "drift_state" },
+      { "name": "access_policy", "type": "jsonb" },
+      { "name": "created_at", "type": "timestamptz" },
+      { "name": "updated_at", "type": "timestamptz" }
+    ] },
+    { "id": "agent_versions", "label": "agent_versions", "tag": "agents", "row": 1, "col": 2, "width": 250, "attributes": [
+      { "name": "id", "type": "uuid", "key": "pk" },
+      { "name": "workspace_id", "type": "uuid", "key": "fk", "references": "workspaces.id" },
+      { "name": "agent_id", "type": "uuid", "key": "fk", "references": "agents.id" },
+      { "name": "label", "type": "text", "key": "uk" },
+      { "name": "status", "type": "version_status" },
+      { "name": "created_by", "type": "text" },
+      { "name": "model_config", "type": "jsonb" },
+      { "name": "profile_snapshot", "type": "jsonb" },
+      { "name": "system_prompt", "type": "text" },
+      { "name": "prompt_hash", "type": "text" },
+      { "name": "io_contract", "type": "jsonb" },
+      { "name": "memory_config", "type": "jsonb" },
+      { "name": "context_config", "type": "jsonb" },
+      { "name": "guardrail_config", "type": "jsonb" },
+      { "name": "snapshot_hash", "type": "text" },
+      { "name": "publishable", "type": "boolean" },
+      { "name": "created_at", "type": "timestamptz" }
+    ] },
+
+    { "id": "knowledge_bases", "label": "knowledge_bases", "tag": "knowledge / RAG", "row": 0, "col": 1, "width": 235, "attributes": [
+      { "name": "id", "type": "uuid", "key": "pk" },
+      { "name": "workspace_id", "type": "uuid", "key": "fk", "references": "workspaces.id" },
+      { "name": "slug", "type": "text", "key": "uk" },
+      { "name": "name", "type": "text" },
+      { "name": "embedding_model", "type": "text" },
+      { "name": "embedding_dim", "type": "int" },
+      { "name": "chunk_config", "type": "jsonb" },
+      { "name": "index_version", "type": "int" },
+      { "name": "access_policy", "type": "jsonb" },
+      { "name": "created_at", "type": "timestamptz" }
+    ] },
+    { "id": "data_sources", "label": "data_sources", "tag": "knowledge / RAG", "row": 1, "col": 1, "width": 235, "attributes": [
+      { "name": "id", "type": "uuid", "key": "pk" },
+      { "name": "workspace_id", "type": "uuid", "key": "fk", "references": "workspaces.id" },
+      { "name": "kb_id", "type": "uuid", "key": "fk", "references": "knowledge_bases.id" },
+      { "name": "name", "type": "text" },
+      { "name": "kind", "type": "data_source_kind" },
+      { "name": "status", "type": "text" },
+      { "name": "config", "type": "jsonb" },
+      { "name": "doc_count", "type": "int" },
+      { "name": "updated_at", "type": "timestamptz" }
+    ] },
+    { "id": "documents", "label": "documents", "tag": "knowledge / RAG", "row": 2, "col": 1, "width": 235, "attributes": [
+      { "name": "id", "type": "uuid", "key": "pk" },
+      { "name": "workspace_id", "type": "uuid", "key": "fk", "references": "workspaces.id" },
+      { "name": "kb_id", "type": "uuid", "key": "fk", "references": "knowledge_bases.id" },
+      { "name": "source_id", "type": "uuid", "key": "fk", "references": "data_sources.id" },
+      { "name": "uri", "type": "text" },
+      { "name": "title", "type": "text" },
+      { "name": "content_hash", "type": "text" },
+      { "name": "meta", "type": "jsonb" },
+      { "name": "created_at", "type": "timestamptz" }
+    ] },
+    { "id": "chunks", "label": "chunks", "tag": "knowledge / RAG", "row": 3, "col": 1, "width": 235, "attributes": [
+      { "name": "id", "type": "uuid", "key": "pk" },
+      { "name": "workspace_id", "type": "uuid", "key": "fk", "references": "workspaces.id" },
+      { "name": "kb_id", "type": "uuid", "key": "fk", "references": "knowledge_bases.id" },
+      { "name": "document_id", "type": "uuid", "key": "fk", "references": "documents.id" },
+      { "name": "ordinal", "type": "int" },
+      { "name": "text", "type": "text" },
+      { "name": "token_count", "type": "int" },
+      { "name": "embedding", "type": "vector(3072)" },
+      { "name": "meta", "type": "jsonb" },
+      { "name": "created_at", "type": "timestamptz" }
+    ] },
+    { "id": "retrieval_bindings", "label": "retrieval_bindings", "tag": "knowledge / RAG", "row": 4, "col": 1, "width": 235, "attributes": [
+      { "name": "id", "type": "uuid", "key": "pk" },
+      { "name": "workspace_id", "type": "uuid", "key": "fk", "references": "workspaces.id" },
+      { "name": "version_id", "type": "uuid", "key": ["fk", "uk"], "references": "agent_versions.id" },
+      { "name": "kb_id", "type": "uuid", "key": ["fk", "uk"], "references": "knowledge_bases.id" },
+      { "name": "kb_index_version", "type": "int" },
+      { "name": "retrieval_config", "type": "jsonb" },
+      { "name": "injection", "type": "text" }
+    ] },
+
+    { "id": "skills", "label": "skills", "tag": "skills", "row": 0, "col": 3, "width": 230, "attributes": [
+      { "name": "id", "type": "uuid", "key": "pk" },
+      { "name": "workspace_id", "type": "uuid", "key": "fk", "references": "workspaces.id" },
+      { "name": "slug", "type": "text", "key": "uk" },
+      { "name": "name", "type": "text" },
+      { "name": "description", "type": "text" },
+      { "name": "instructions", "type": "text" },
+      { "name": "version", "type": "text" },
+      { "name": "content_hash", "type": "text" },
+      { "name": "status", "type": "skill_status" },
+      { "name": "signature", "type": "text" },
+      { "name": "signed_by", "type": "text" },
+      { "name": "signed_at", "type": "timestamptz" },
+      { "name": "access_policy", "type": "jsonb" },
+      { "name": "created_at", "type": "timestamptz" }
+    ] },
+    { "id": "skill_resources", "label": "skill_resources", "tag": "skills", "row": 1, "col": 3, "width": 230, "attributes": [
+      { "name": "id", "type": "uuid", "key": "pk" },
+      { "name": "workspace_id", "type": "uuid", "key": "fk", "references": "workspaces.id" },
+      { "name": "skill_id", "type": "uuid", "key": "fk", "references": "skills.id" },
+      { "name": "name", "type": "text" },
+      { "name": "kind", "type": "skill_resource_kind" },
+      { "name": "uri", "type": "text" },
+      { "name": "content_hash", "type": "text" },
+      { "name": "size_kb", "type": "numeric(10,2)" },
+      { "name": "created_at", "type": "timestamptz" }
+    ] },
+    { "id": "skill_bindings", "label": "skill_bindings", "tag": "skills", "row": 2, "col": 3, "width": 230, "attributes": [
+      { "name": "id", "type": "uuid", "key": "pk" },
+      { "name": "workspace_id", "type": "uuid", "key": "fk", "references": "workspaces.id" },
+      { "name": "version_id", "type": "uuid", "key": ["fk", "uk"], "references": "agent_versions.id" },
+      { "name": "skill_id", "type": "uuid", "key": ["fk", "uk"], "references": "skills.id" },
+      { "name": "skill_content_hash", "type": "text" }
+    ] },
+
+    { "id": "eval_suites", "label": "eval_suites", "tag": "evals / drift", "row": 0, "col": 4, "width": 230, "attributes": [
+      { "name": "id", "type": "uuid", "key": "pk" },
+      { "name": "workspace_id", "type": "uuid", "key": "fk", "references": "workspaces.id" },
+      { "name": "agent_id", "type": "uuid", "key": "fk", "references": "agents.id" },
+      { "name": "name", "type": "text" },
+      { "name": "created_at", "type": "timestamptz" }
+    ] },
+    { "id": "eval_cases", "label": "eval_cases", "tag": "evals / drift", "row": 1, "col": 4, "width": 230, "attributes": [
+      { "name": "id", "type": "uuid", "key": "pk" },
+      { "name": "workspace_id", "type": "uuid", "key": "fk", "references": "workspaces.id" },
+      { "name": "suite_id", "type": "uuid", "key": "fk", "references": "eval_suites.id" },
+      { "name": "input", "type": "jsonb" },
+      { "name": "assertions", "type": "jsonb" },
+      { "name": "rubric", "type": "jsonb" },
+      { "name": "expected", "type": "jsonb" },
+      { "name": "created_at", "type": "timestamptz" }
+    ] },
+    { "id": "eval_baselines", "label": "eval_baselines", "tag": "evals / drift", "row": 2, "col": 4, "width": 230, "attributes": [
+      { "name": "id", "type": "uuid", "key": "pk" },
+      { "name": "workspace_id", "type": "uuid", "key": "fk", "references": "workspaces.id" },
+      { "name": "agent_id", "type": "uuid", "key": "fk", "references": "agents.id" },
+      { "name": "suite_id", "type": "uuid", "key": "fk", "references": "eval_suites.id" },
+      { "name": "version_id", "type": "uuid", "key": "fk", "references": "agent_versions.id" },
+      { "name": "frozen_by", "type": "text" },
+      { "name": "frozen_at", "type": "timestamptz" },
+      { "name": "results_hash", "type": "text" }
+    ] },
+    { "id": "eval_runs", "label": "eval_runs", "tag": "evals / drift", "row": 3, "col": 4, "width": 230, "attributes": [
+      { "name": "id", "type": "uuid", "key": "pk" },
+      { "name": "workspace_id", "type": "uuid", "key": "fk", "references": "workspaces.id" },
+      { "name": "agent_id", "type": "uuid", "key": "fk", "references": "agents.id" },
+      { "name": "version_id", "type": "uuid", "key": "fk", "references": "agent_versions.id" },
+      { "name": "baseline_version_id", "type": "uuid", "key": "fk", "references": "agent_versions.id" },
+      { "name": "suite_id", "type": "uuid", "key": "fk", "references": "eval_suites.id" },
+      { "name": "trigger", "type": "text" },
+      { "name": "verdict", "type": "eval_verdict" },
+      { "name": "quality", "type": "numeric(5,2)" },
+      { "name": "quality_delta", "type": "numeric(6,2)" },
+      { "name": "cost_delta", "type": "numeric(6,2)" },
+      { "name": "latency_delta", "type": "numeric(8,2)" },
+      { "name": "case_count", "type": "int" },
+      { "name": "reason", "type": "text" },
+      { "name": "dimensions", "type": "jsonb" },
+      { "name": "started_at", "type": "timestamptz" },
+      { "name": "finished_at", "type": "timestamptz" }
+    ] },
+    { "id": "eval_results", "label": "eval_results", "tag": "evals / drift", "row": 4, "col": 4, "width": 230, "attributes": [
+      { "name": "id", "type": "uuid", "key": "pk" },
+      { "name": "workspace_id", "type": "uuid", "key": "fk", "references": "workspaces.id" },
+      { "name": "eval_run_id", "type": "uuid", "key": "fk", "references": "eval_runs.id" },
+      { "name": "case_id", "type": "uuid", "key": "fk", "references": "eval_cases.id" },
+      { "name": "passed", "type": "boolean" },
+      { "name": "det_results", "type": "jsonb" },
+      { "name": "judge_score", "type": "numeric(5,2)" },
+      { "name": "judge_verdict", "type": "jsonb" },
+      { "name": "issue", "type": "text" },
+      { "name": "candidate_output", "type": "text" },
+      { "name": "cost_usd", "type": "numeric(12,6)" },
+      { "name": "latency_ms", "type": "int" }
+    ] }
+  ],
+  "relationships": [
+    { "id": "ws_org", "from": "workspaces", "to": "orgs", "fromCardinality": "many", "toCardinality": "one" },
+    { "id": "ag_ws", "from": "agents", "to": "workspaces", "fromCardinality": "many", "toCardinality": "one" },
+    { "id": "av_agent", "from": "agent_versions", "to": "agents", "fromCardinality": "many", "toCardinality": "one", "identifying": true },
+    { "id": "agent_active", "from": "agents", "to": "agent_versions", "fromCardinality": "one", "toCardinality": "one", "toOptional": true, "variant": "dashed", "identifying": false },
+    { "id": "kb_ws", "from": "knowledge_bases", "to": "workspaces", "fromCardinality": "many", "toCardinality": "one" },
+    { "id": "ds_kb", "from": "data_sources", "to": "knowledge_bases", "fromCardinality": "many", "toCardinality": "one", "identifying": true },
+    { "id": "doc_ds", "from": "documents", "to": "data_sources", "fromCardinality": "many", "toCardinality": "one", "identifying": true },
+    { "id": "ch_doc", "from": "chunks", "to": "documents", "fromCardinality": "many", "toCardinality": "one", "identifying": true },
+    { "id": "rb_av", "from": "retrieval_bindings", "to": "agent_versions", "fromCardinality": "many", "toCardinality": "one", "identifying": true },
+    { "id": "rb_kb", "from": "retrieval_bindings", "to": "knowledge_bases", "fromCardinality": "many", "toCardinality": "one" },
+    { "id": "sk_ws", "from": "skills", "to": "workspaces", "fromCardinality": "many", "toCardinality": "one" },
+    { "id": "sr_sk", "from": "skill_resources", "to": "skills", "fromCardinality": "many", "toCardinality": "one", "identifying": true },
+    { "id": "sb_av", "from": "skill_bindings", "to": "agent_versions", "fromCardinality": "many", "toCardinality": "one", "identifying": true },
+    { "id": "sb_sk", "from": "skill_bindings", "to": "skills", "fromCardinality": "many", "toCardinality": "one" },
+    { "id": "es_agent", "from": "eval_suites", "to": "agents", "fromCardinality": "many", "toCardinality": "one" },
+    { "id": "es_ws", "from": "eval_suites", "to": "workspaces", "fromCardinality": "many", "toCardinality": "one" },
+    { "id": "ec_es", "from": "eval_cases", "to": "eval_suites", "fromCardinality": "many", "toCardinality": "one", "identifying": true },
+    { "id": "eb_version", "from": "eval_baselines", "to": "agent_versions", "fromCardinality": "one", "toCardinality": "one", "toOptional": true },
+    { "id": "eb_suite", "from": "eval_baselines", "to": "eval_suites", "fromCardinality": "many", "toCardinality": "one" },
+    { "id": "er_version", "from": "eval_runs", "to": "agent_versions", "fromCardinality": "many", "toCardinality": "one" },
+    { "id": "er_suite", "from": "eval_runs", "to": "eval_suites", "fromCardinality": "many", "toCardinality": "one" },
+    { "id": "eres_run", "from": "eval_results", "to": "eval_runs", "fromCardinality": "many", "toCardinality": "one", "identifying": true },
+    { "id": "eres_case", "from": "eval_results", "to": "eval_cases", "fromCardinality": "many", "toCardinality": "one" }
+  ],
+  "cards": [
+    { "dot": "rose", "title": "The immutability core (why agent_versions is huge)", "items": ["agent_versions is the frozen VersionSnapshot the runtime reads — invoke() never touches a live agents row", "snapshot_hash folds model_config + prompt_hash + retrieval_config + kb_index_version + skill_content_hash; a stale hash would bypass the eval cache/gate", "publishable is set TRUE only by a PASS eval; any DRIFT_TRIGGER edit flips it FALSE (spec B5)", "profile_snapshot freezes the capability profile so a pricing/feature change can't silently alter a published agent"] },
+    { "dot": "cyan", "title": "Frontend features → tables", "items": ["agents/new + agents/[id] hub ↔ agents · agent_versions (data.ts Agent, Version)", "knowledge/* ↔ knowledge_bases · data_sources · documents · chunks (pgvector) · retrieval_bindings (DataSource, KnowledgeBase)", "skills/* ↔ skills · skill_resources · skill_bindings (Skill, SkillResource; signed at publish)", "evaluations + agents/[id] Evals tab ↔ eval_suites · eval_cases · eval_baselines · eval_runs · eval_results (EvalRun, EvalSuite, EvalCaseDef)"] },
+    { "dot": "amber", "title": "Modeling rules", "items": ["Every table carries workspace_id uuid not null (the RLS tenancy key): the four domain-root tables (agents, knowledge_bases, skills, eval_suites) draw the → workspaces line; child tables show it as an fk badge to cut noise", "Money is numeric(12,6) USD; tokens are integer; timestamps are timestamptz (UTC)", "chunks.embedding is vector(3072), HNSW-indexed via halfvec cast, namespaced per (workspace_id, kb_id)", "*_bindings and eval_* are version-scoped snapshots — they pin agent_versions.id, not the live agent"] },
+    { "dot": "slate", "title": "Source & scope", "items": ["docs/backend/01-data-model.md §4 (DDL) · §6 (RLS) · spec.md A0/B2/B5 (completeness, version pinning, eval triggers)", "Part 1 of 2 — tools/MCP, publish/runs/observability, jobs/audit/quotas, adoption & notifications follow in Part 2", "Cross-part FKs (tool_bindings, published_endpoints, runs, eval_baselines→version) all re-anchor on agent_versions"] }
+  ]
+}

@@ -248,4 +248,27 @@ not a curated list of blessed MCP endpoints.
 > reused one layer out for the provider-egress precondition in §1 (and 09 §9.1 / 11 §12) — one mechanism,
 > two boundaries (tool/MCP sandbox egress and platform→provider egress).
 
+## 6. Skill governance = open registration + signing (mirrors MCP)
+
+Skills (01 §4.4) follow the **same open-registration stance as MCP servers (§5)**: **any builder+** may author
+a workspace-scoped skill (`skill.manage`, 09 §4) — there is **deliberately no vetted catalog and no
+registration gate**. Because a skill **does not execute code**, it does not get the egress/sandbox leg of §5;
+instead trust rests on three machines that already exist plus signing:
+
+- **Per-resource `access_policy`** (09 §5) — who in the workspace may see/use/manage the skill (same unified
+  `AccessPolicy` as every other resource).
+- **Package signing/provenance** (09 §10, 01 §4.4) — skills are **signed at publish** and the signature is
+  **verified at bind**; only `published` (signed) skills are bindable. This is the skills analog of the egress
+  allow-list: the thing that makes "any builder may author one" safe to bind.
+- **Audit** — `skill.publish` and `skill.bind` join the audited actions in 09 §12.
+- **The eval gate** — a skill only affects a published agent through a version whose `snapshot_hash` folds in
+  the skill content (01 §4.2, 05 §6), so a skill edit re-arms the publish eval gate on every bound agent.
+
+**Skill bindings should feed the dedup signature (§3) — recommend yes.** The agent signature currently embeds
+`{name, description, system_prompt, io_contract}`. Two agents that differ only by an identical bound skill are
+behaviorally near-identical, and a skill *is* injected prompt content, so **including the bound-skill ids (or
+their `skill_content_hash`es) in the signature tuple improves "reuse first" accuracy** — it lets the scanner
+catch "same agent, skill moved into a package." Treat it as an additive refinement to the §3 tuple, recomputed
+on each new version alongside the snapshot freeze; pin the embedding model exactly as §3 requires.
+
 → Next: `15-org-governance-reporting.md`.

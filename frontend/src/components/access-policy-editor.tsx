@@ -13,7 +13,7 @@ import { ROLE_LABEL, ROLE_ORDER, type Role } from "@/lib/permissions";
 import { type AccessPolicy, defaultPolicy, policySummary } from "@/lib/access-policy";
 import { setAccessPolicy } from "@/lib/store";
 
-type Kind = "agent" | "knowledge" | "tool" | "mcp" | "channel";
+type Kind = "agent" | "knowledge" | "tool" | "mcp" | "channel" | "skill";
 
 function Chips<T extends string>({
   options, selected, onToggle, disabled, label,

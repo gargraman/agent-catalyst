@@ -4,17 +4,18 @@ import * as React from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
-  Activity, Bot, Check, ChevronsUpDown, Database, Gauge, Globe, LayoutDashboard,
-  LogOut, Menu, MessageSquare, MessagesSquare, Plug, Plus, Search, Settings, ShieldCheck, X,
+  Activity, Bot, Check, ChevronsUpDown, Database, Gauge, LayoutDashboard,
+  LogOut, Menu, MessageSquare, MessagesSquare, Plug, Plus, Search, Settings, ShieldCheck, Sparkles, X,
 } from "lucide-react";
 import { ThemeToggle } from "./theme-toggle";
-import { Avatar, Input } from "./ui";
+import { Avatar, Button, Field, Input, Select } from "./ui";
+import { Dialog } from "./dialog";
 import { GateButton } from "./gate";
 import { cn } from "@/lib/utils";
 import { useAuth, useWorkspace } from "@/lib/auth";
 import { ROLE_LABEL, ROLE_ORDER, type Role } from "@/lib/permissions";
-import { TEAMS } from "@/lib/iam";
-import { toast, joinWorkspace } from "@/lib/store";
+import { TEAMS, slugify } from "@/lib/iam";
+import { toast, addWorkspace, setPlatformAdminOverride, usePlatformAdminOverride } from "@/lib/store";
 import { ORG } from "@/lib/org";
 
 type NavItem = { href: string; label: string; icon: React.ComponentType<{ className?: string }> };
@@ -27,6 +28,7 @@ const NAV: { group: string; items: NavItem[] }[] = [
   { group: "Build", items: [
     { href: "/knowledge", label: "Knowledge", icon: Database },
     { href: "/tools", label: "Tools & MCP", icon: Plug },
+    { href: "/skills", label: "Skills", icon: Sparkles },
     { href: "/channels", label: "Channels", icon: MessagesSquare },
   ] },
   { group: "Observe", items: [
@@ -109,11 +111,27 @@ function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
 }
 
 function WorkspaceSwitcher() {
-  const { workspaces, joinable, workspace, setWorkspace } = useWorkspace();
+  const { workspaces, workspace, setWorkspace, isPlatformAdmin } = useWorkspace();
   const { role } = useAuth();
   const [open, setOpen] = React.useState(false);
   const ref = useDismiss(() => setOpen(false));
   const current = workspace;
+
+  // Create-workspace dialog — platform-admins only (they can see/manage every space).
+  const [createOpen, setCreateOpen] = React.useState(false);
+  const [name, setName] = React.useState("");
+  const [oktaGroup, setOktaGroup] = React.useState("");
+  const [memberRole, setMemberRole] = React.useState<Role>("builder");
+  const slug = slugify(name);
+  const canCreate = name.trim().length > 0 && oktaGroup.trim().length > 0;
+  const openCreate = () => { setOpen(false); setName(""); setOktaGroup(""); setMemberRole("builder"); setCreateOpen(true); };
+  const submitCreate = () => {
+    if (!canCreate) return;
+    addWorkspace({ name, oktaGroup, memberRole });
+    setCreateOpen(false);
+  };
+  // Base role a workspace's group can confer — admin is reserved for platform-admins.
+  const BASE_ROLES: Role[] = ROLE_ORDER.filter((r) => r !== "admin");
 
   return (
     <div className="relative" ref={ref}>
@@ -143,31 +161,54 @@ function WorkspaceSwitcher() {
               {w.id === current?.id && <Check className="size-3.5 text-accent" />}
             </button>
           ))}
-          {joinable.length > 0 && (
-            <>
-              <p className="px-2 pb-1 pt-2 text-[10px] uppercase tracking-wide text-muted">Open spaces</p>
-              {joinable.map((w) => (
-                <button
-                  key={w.id}
-                  onClick={() => { joinWorkspace(w.id); setOpen(false); }}
-                  className="flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-elevated"
-                >
-                  <span className="inline-flex size-6 items-center justify-center rounded-md bg-overlay text-[10px] font-bold text-ink-2">{w.short}</span>
-                  <span className="min-w-0 flex-1 truncate text-sm text-ink-2">{w.name}</span>
-                  <span className="inline-flex items-center gap-1 text-[11px] font-medium text-accent"><Globe className="size-3" />Join</span>
-                </button>
-              ))}
-            </>
+          {isPlatformAdmin && (
+            <div className="mt-1 border-t border-border pt-1">
+              <button
+                onClick={openCreate}
+                className="flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left text-sm font-medium text-accent transition-colors hover:bg-elevated"
+              >
+                <span className="inline-flex size-6 items-center justify-center rounded-md bg-accent-soft/60 text-accent"><Plus className="size-3.5" /></span>
+                Create workspace
+              </button>
+            </div>
           )}
         </div>
       )}
+
+      <Dialog
+        open={createOpen}
+        onClose={() => setCreateOpen(false)}
+        title="Create workspace"
+        description="An isolated tenant backed by an Okta group. Members of that group get the base role you pick; it starts with a default config and a small starter kit."
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setCreateOpen(false)}>Cancel</Button>
+            <Button variant="primary" onClick={submitCreate} disabled={!canCreate}>Create workspace</Button>
+          </>
+        }
+      >
+        <div className="space-y-4">
+          <Field label="Workspace name" hint={slug ? `Slug: ${slug} — set now, immutable` : "Used to derive the immutable slug."}>
+            <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Acme SOC" autoFocus />
+          </Field>
+          <Field label="Backing Okta group" hint="Being in this group grants access to the workspace. Membership is managed in Okta.">
+            <Input value={oktaGroup} onChange={(e) => setOktaGroup(e.target.value)} placeholder="e.g. ap-acme-soc" />
+          </Field>
+          <Field label="Member role" hint="Role the group confers to its members. Admin is reserved for platform admins.">
+            <Select value={memberRole} onChange={(e) => setMemberRole(e.target.value as Role)}>
+              {BASE_ROLES.map((r) => <option key={r} value={r}>{ROLE_LABEL[r]}</option>)}
+            </Select>
+          </Field>
+        </div>
+      </Dialog>
     </div>
   );
 }
 
 function UserMenu() {
-  const { user, role, overridden, setRole } = useAuth();
+  const { user, role, overridden, setRole, isPlatformAdmin } = useAuth();
   const { setWorkspace, workspaces, setTeams } = useWorkspace();
+  const platformAdminOverride = usePlatformAdminOverride();
   const [open, setOpen] = React.useState(false);
   const ref = useDismiss(() => setOpen(false));
   const teams = user.teams;
@@ -176,6 +217,7 @@ function UserMenu() {
   const signOut = () => {
     setRole(null);
     setTeams(null);
+    setPlatformAdminOverride(null);
     if (workspaces[0]) setWorkspace(workspaces[0].id);
     setOpen(false);
     toast("Signed out (mock). Role reset to IAM default", "neutral");
@@ -214,6 +256,28 @@ function UserMenu() {
               ))}
             </div>
             <p className="pt-1.5 text-[11px] leading-snug text-muted">Dev-only override. Real role comes from {ORG.idpName}.</p>
+          </div>
+          <div className="border-t border-border px-3 py-2">
+            <p className="flex items-center gap-1.5 pb-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted">
+              <ShieldCheck className="size-3" /> Platform admin
+            </p>
+            <div className="grid grid-cols-2 gap-1">
+              {([["On", true], ["Off", false]] as const).map(([label, val]) => (
+                <button
+                  key={label}
+                  onClick={() => setPlatformAdminOverride(val)}
+                  className={cn(
+                    "rounded-md border px-2 py-1 text-xs font-medium transition-colors",
+                    isPlatformAdmin === val ? "border-accent bg-accent-soft text-accent" : "border-border bg-elevated text-ink-2 hover:bg-overlay",
+                  )}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            <p className="pt-1.5 text-[11px] leading-snug text-muted">
+              Dev-only preview of the platform-admin group{platformAdminOverride != null && " · overriding"}. Governs workspace create/delete + admin everywhere.
+            </p>
           </div>
           <div className="border-t border-border px-3 py-2">
             <p className="pb-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted">Preview teams</p>
@@ -271,10 +335,17 @@ function SidebarInner({ onNavigate }: { onNavigate?: () => void }) {
   );
 }
 
-/** Thin context banner: read-only for viewers, preview notice when overriding. */
+/** Thin context banner: inactive workspace (read-only freeze), read-only for viewers, preview on override. */
 function ContextBanner() {
   const { role, overridden } = useAuth();
-  const { workspace } = useWorkspace();
+  const { workspace, active } = useWorkspace();
+  if (!active) {
+    return (
+      <div className="border-b border-border bg-warning/10 px-4 py-1.5 text-center text-xs text-warning md:px-6">
+        {workspace?.name ?? "This workspace"} is inactive — read-only. Reactivate it in Settings → Workspace to resume.
+      </div>
+    );
+  }
   if (role === "viewer") {
     return (
       <div className="border-b border-border bg-warning/10 px-4 py-1.5 text-center text-xs text-warning md:px-6">

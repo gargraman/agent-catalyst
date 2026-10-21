@@ -1,5 +1,10 @@
 # People Ops (non-AI) workspace — design & implementation plan
 
+> ⚠️ **Note (2026-10-20 group-driven pivot; scope.md):** this plan predates the Okta-group access model.
+> References to `MOCK_PROFILE.memberships`, `memberWorkspaces`/`joinableWorkspaces`, and `access` mode are
+> superseded — People Ops is now backed by an Okta group (`ap-people`) conferring its `memberRole`; the demo
+> user sees it via platform-admin (or by being in that group). The workspace/persona intent is unchanged.
+
 - **Status:** Implemented — shipped in `640453f` (People Ops workspace + per-workspace
   metrics + standalone Playground). The eval-failure explainer/remedies that `resume-screener`
   (`eval_failing`) exercises landed as a follow-on in `4a397e2`.

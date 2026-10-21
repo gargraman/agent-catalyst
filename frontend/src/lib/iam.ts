@@ -1,38 +1,34 @@
 import type { Role } from "./permissions";
 import { ORG } from "./org";
 
-/* Mock Trellix IAM profile. Real IAM replaces this with the OIDC session + claims;
-   the shapes (memberships per workspace, teams) stay the same. */
+/* Mock Trellix IAM profile. Real IAM replaces this with the OIDC session + `groups` claim. */
 
-// @backend identity has TWO sources — do NOT conflate them [ref: frontend-auth-access-plan.md, backend/09 §2.1]:
-//   - WORKSPACES + MOCK_PROFILE.memberships (the workspaces a user belongs to + their role-per-workspace):
-//     APP-MANAGED (invite / join-open), on top of org-level Okta authentication. A user authenticates
-//     against the org Okta tenant; membership in a space is then an app roster entry, created by a space
-//     admin's invite or by the user joining an `access: "open"` space. An optional per-space backing Okta
-//     group (`Workspace.oktaGroup`) MAY auto-grant membership, but the app roster is the system of record.
-//   - TEAMS + MOCK_PROFILE.teams: these ARE Okta groups, carried in the OIDC `groups` claim and normalized
-//     to team slugs at login (NOT a directory read, NOT stored). They drive the per-resource access policy
-//     and the channel end-user gate. Replace these constants with those two sources; keep the types.
+// @backend identity is Okta-GROUP-DRIVEN [ref: backend/09 §2.1, backend/15; reverses scope.md 2026-10-15]:
+//   - Each Workspace binds ONE authoritative Okta group (Workspace.oktaGroup). Being in that group = access
+//     to the workspace; the group confers a single base role (Workspace.memberRole). There is NO app-managed
+//     roster, NO invites, NO self-join, NO open/restricted.
+//   - PLATFORM_ADMIN_GROUP: a deployment-wide Okta group whose members are admin in EVERY workspace and are
+//     the only principals allowed to create/delete/(de)activate/edit workspaces (backend/15 platform_admins).
+//   - TEAMS + MOCK_PROFILE.teams: functional Okta groups (OIDC `groups` claim) driving the per-resource
+//     access policy + channel end-user gate. SEPARATE namespace from workspace groups — do not conflate.
 
 export type Workspace = {
   id: string;
   name: string;
   short: string;
-  // How a user gains membership (Google Chat / Teams / Splunk space model):
-  //   open       — any authenticated org member can discover + join (default role: DEFAULT_JOIN_ROLE)
-  //   restricted — invite-only; non-members cannot see it in the switcher
-  access: "open" | "restricted";
-  // Optional per-space backing Okta group that auto-grants membership (nullable; app roster stays SoR).
-  oktaGroup?: string;
+  // Authoritative backing Okta group: membership in it grants access to this workspace.
+  oktaGroup: string;
+  // Role the group confers to every member. `admin` is reserved for platform-admins — never a memberRole.
+  memberRole: Role;
 };
 
 export const WORKSPACES: Workspace[] = [
-  { id: "trellix-xdr", name: "Trellix XDR", short: "TX", access: "restricted", oktaGroup: "ap-xdr" },
-  { id: "trellix-grc", name: "Trellix GRC", short: "GR", access: "restricted" },
-  { id: "trellix-labs", name: "Trellix Labs", short: "TL", access: "open", oktaGroup: "ap-labs" },
-  { id: "trellix-people", name: "Trellix People Ops", short: "PO", access: "restricted" },
-  // An OPEN space the mock user is NOT a member of — exercises the discover/join flow.
-  { id: "trellix-sandbox", name: "Trellix Sandbox", short: "SB", access: "open" },
+  { id: "trellix-xdr", name: "Trellix XDR", short: "TX", oktaGroup: "ap-xdr", memberRole: "publisher" },
+  { id: "trellix-grc", name: "Trellix GRC", short: "GR", oktaGroup: "ap-grc", memberRole: "viewer" },
+  { id: "trellix-labs", name: "Trellix Labs", short: "TL", oktaGroup: "ap-labs", memberRole: "builder" },
+  { id: "trellix-people", name: "Trellix People Ops", short: "PO", oktaGroup: "ap-people", memberRole: "builder" },
+  // A workspace whose group the demo user is NOT in — only visible because platform-admins see all.
+  { id: "trellix-sandbox", name: "Trellix Sandbox", short: "SB", oktaGroup: "ap-sandbox", memberRole: "builder" },
 ];
 
 // Default/fallback tenant for the mock world. Derived from the seed (NOT org branding) so it can never
@@ -40,40 +36,65 @@ export const WORKSPACES: Workspace[] = [
 // @backend remove - the active workspace comes from the session; this is a demo-seed default only.
 export const DEFAULT_WORKSPACE_ID = WORKSPACES[0].id;
 
-// Role granted when a user self-joins an `access: "open"` space (least privilege).
-// @backend the join endpoint (POST /v1/workspaces/:id/join, backend/08) assigns this default role.
-export const DEFAULT_JOIN_ROLE: Role = "viewer";
+// Deployment-wide platform-admin Okta group: admin in every workspace + the only principal allowed to
+// manage workspaces (create/delete/(de)activate/edit). [ref: backend/15 platform_admins; §auto-upsert-from-group]
+export const PLATFORM_ADMIN_GROUP = "ap-platform-admin";
 
 // Teams ARE Okta groups (sourced from the OIDC `groups` claim, backend/09 §2.1). These names mirror the
-// Okta group display names; a real session normalizes the claim to these slugs. Distinct from the optional
-// per-space backing group (Workspace.oktaGroup) — do not conflate functional teams with space membership.
+// Okta group display names; a real session normalizes the claim to these slugs. Distinct from the workspace
+// backing group (Workspace.oktaGroup) — do not conflate functional teams with space membership.
 export const TEAMS = ["SOC", "Detection", "Platform", "GRC", "Research", "People"] as const;
 export type Team = (typeof TEAMS)[number];
 
 export type IamProfile = {
   name: string;
   email: string;
-  teams: Team[]; // Okta groups (from the OIDC `groups` claim), not workspace memberships
-  memberships: Record<string, Role>; // workspaceId -> role (app-managed roster)
+  teams: Team[]; // functional Okta groups (OIDC `groups` claim) — access policy + channel gate
+  groups: string[]; // workspace backing Okta groups (+ maybe PLATFORM_ADMIN_GROUP) the user belongs to
 };
 
 export const MOCK_PROFILE: IamProfile = {
   name: "Raman Garg",
   email: `raman.garg@${ORG.emailDomain}`,
   teams: ["SOC", "Platform", "People"],
-  memberships: {
-    "trellix-xdr": "admin",
-    "trellix-grc": "viewer",
-    "trellix-labs": "builder",
-    "trellix-people": "admin",
-    // NOTE: no entry for "trellix-sandbox" — it is an open space the user can join.
-  },
+  // Demo user is a platform admin (so create/delete is demoable) + in four workspace groups. NOT in
+  // ap-sandbox — that space is only visible because platform-admins see all. Drop the admin group via the
+  // dev "Platform admin" preview toggle to see the member experience.
+  groups: ["ap-xdr", "ap-grc", "ap-labs", "ap-people", PLATFORM_ADMIN_GROUP],
 };
 
-/** Spaces the user already belongs to (shown in the switcher, scoped by role). */
-export const memberWorkspaces = (p: IamProfile): Workspace[] =>
-  WORKSPACES.filter((w) => p.memberships[w.id]);
+/** True when the user is in the deployment-wide platform-admin group. */
+export const isPlatformAdmin = (groups: string[]): boolean => groups.includes(PLATFORM_ADMIN_GROUP);
 
-/** Open spaces the user is NOT yet a member of — discoverable + joinable. */
-export const joinableWorkspaces = (p: IamProfile): Workspace[] =>
-  WORKSPACES.filter((w) => !p.memberships[w.id] && w.access === "open");
+/** Workspaces the user can see: platform-admins see all; otherwise those whose Okta group they're in.
+    @backend the workspace list is store-backed (mutable) so callers pass the live list. */
+export const memberWorkspaces = (
+  p: IamProfile,
+  workspaces: Workspace[] = WORKSPACES,
+  platformAdmin: boolean = isPlatformAdmin(p.groups),
+): Workspace[] => (platformAdmin ? workspaces : workspaces.filter((w) => p.groups.includes(w.oktaGroup)));
+
+/** Effective role in a workspace: admin for platform-admins; else the group's memberRole if in it; else viewer. */
+export const roleFor = (
+  p: IamProfile,
+  workspace: Workspace | undefined,
+  platformAdmin: boolean = isPlatformAdmin(p.groups),
+): Role => {
+  if (platformAdmin) return "admin";
+  if (workspace && p.groups.includes(workspace.oktaGroup)) return workspace.memberRole;
+  return "viewer";
+};
+
+/** Derive a URL-safe slug/id from a workspace name (kebab-case).
+    @backend the server assigns the immutable slug at creation (workspaces.slug, backend/01 §4.1); this
+    mirrors it client-side for the mock create flow. */
+export const slugify = (name: string): string =>
+  name.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+
+/** Two-letter avatar initials for a workspace name (Workspace.short). */
+export const shortOf = (name: string): string => {
+  const words = name.trim().split(/\s+/).filter(Boolean);
+  if (words.length === 0) return "–";
+  if (words.length === 1) return words[0].slice(0, 2).toUpperCase();
+  return (words[0][0] + words[1][0]).toUpperCase();
+};

@@ -48,6 +48,12 @@ runtime; it is reachable **only via `api`/`worker` dispatch** (never the proxy) 
 path out is the egress allow-list proxy** (`config.egress`, 01 §4.6 / 09 §10) — deny-by-default, so a
 compromised tool cannot exfiltrate or SSRF.
 
+> **Skills add NO deployment surface.** Unlike MCP/tools, a skill **does not execute code** (01 §4.4), so it
+> introduces **no sandbox/execution dependency and no new unit** — nothing touches `SBX` or the egress proxy.
+> Skill CRUD/publish is served by the existing `api`; bundled skill resources **ride the existing MinIO +
+> `ingestion/` path** (same upload/content-hash substrate as KB documents, 04). The only net-new dependency is
+> the package-signing/provenance verifier below (§12).
+
 Legend: **App tier** (`api`, `worker`, `web`) is stateless and scales horizontally. **Postgres is the
 stateful core.** Redis is queue + concurrency semaphores + cache (07). The `runtime` library (00 §3)
 is the single code path shared by `api` and `worker`, so playground, eval, and published invoke run
@@ -499,6 +505,11 @@ The runtime sits on two fast-churning libraries — **LangGraph** (orchestration
     escalation path if gVisor's syscall surface proves insufficient.
   - Both are added to the **CI license scan** above: MCP SDK **MIT**, gVisor **Apache-2.0** — both
     permissive, re-checked on bump.
+- **Skill-package signing/provenance verifier (P2, design-placeholder pin).** Skills are signed at publish and
+  verified at bind (01 §4.4, 09 §10). The signing/verification backend is a **sigstore/cosign-style** verifier
+  (e.g. `sigstore-python`, Apache-2.0) — pinned and license-scanned the same way as the deps above, re-verified
+  on bump. This is **not** an execution dependency (skills don't run code); it only signs/verifies the package
+  content hash, so it sits in `api` (publish/bind), not in the sandbox.
 - These two pins are what make **`config.egress` (01 §4.6 / 09 §10) a real network boundary** rather than
   an advisory field: the Squid allow-list proxy + NetworkPolicy enforce the per-server egress allow-list,
   and the **same machinery backs the provider-egress precondition** for key-custody enforcement

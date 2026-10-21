@@ -15,16 +15,15 @@ import { CopyButton } from "@/components/copy-button";
 import { GateButton } from "@/components/gate";
 import { Member, type WorkspaceSettings, type Limits, type EvalPolicy } from "@/lib/data";
 import {
-  useMembers, useInvites, useProviderKeys, useTokens,
-  useAgents, useKnowledgeBases, useMcpServers, useTools, useChannels,
+  useMembers, useProviderKeys, useTokens,
+  useAgents, useKnowledgeBases, useMcpServers, useTools, useChannels, useSkills,
   useWorkspaceSettings, useLimits, useEvalPolicy, useActiveWorkspaceId,
   addProviderKey, rotateProviderKey, revokeProviderKey,
-  inviteMember, revokeInvite, removeMember,
   addToken, revokeToken,
-  updateWorkspaceSettings, archiveWorkspace, updateLimits, setEvalPolicy,
+  updateWorkspaceSettings, updateWorkspace, setWorkspaceActive, deleteWorkspace, updateLimits, setEvalPolicy,
   genId, nowIso,
 } from "@/lib/store";
-import { ROLE_ORDER, ROLE_LABEL, ROLE_PERMISSIONS, type Permission } from "@/lib/permissions";
+import { ROLE_ORDER, ROLE_LABEL, ROLE_PERMISSIONS, type Permission, type Role } from "@/lib/permissions";
 import { useWorkspace, useAuth } from "@/lib/auth";
 import { AccessPolicyEditor } from "@/components/access-policy-editor";
 import { ORG } from "@/lib/org";
@@ -33,7 +32,7 @@ import { policySummary, type AccessPolicy } from "@/lib/access-policy";
 import { dateShort, relative } from "@/lib/format";
 
 /** Access-policy editor kinds (mirrors the local Kind in access-policy-editor.tsx). */
-type EditorKind = "agent" | "knowledge" | "tool" | "mcp" | "channel";
+type EditorKind = "agent" | "knowledge" | "tool" | "mcp" | "channel" | "skill";
 
 const roleTone: Record<Member["role"], "violet" | "accent" | "neutral"> = {
   Admin: "violet", Publisher: "accent", Builder: "neutral", Viewer: "neutral",
@@ -45,25 +44,62 @@ const CURL = `curl -N https://agent-platform.internal/v1/agents/soc-triage-copil
   -d '{"messages":[{"role":"user","content":"Triage alert 48213"}],"stream":true}'`;
 
 function Workspace() {
-  const { workspace } = useWorkspace();
+  const { workspace, active, isPlatformAdmin } = useWorkspace();
   const settings = useWorkspaceSettings();
   const { can } = useAuth();
   // Single source of truth: settings are selected by activeWorkspaceId, so save/remount off the same id.
   const wsId = useActiveWorkspaceId();
+  // Identity/provider edits obey the read-only freeze: can("settings.manage") is true only for a platform
+  // admin AND an active workspace. Activate/Delete must BYPASS the freeze, so they gate on isPlatformAdmin
+  // (freeze-independent) — otherwise an inactive space becomes a trap.
   // Keyed by wsId so a tenant switch remounts the form (re-seeds state) without a setState-in-effect.
-  return <WorkspaceForm key={wsId} wsId={wsId} wsName={workspace?.name ?? ""} settings={settings} canEdit={can("settings.manage")} />;
+  return (
+    <WorkspaceForm
+      key={wsId}
+      wsId={wsId}
+      wsName={workspace?.name ?? ""}
+      wsOktaGroup={workspace?.oktaGroup ?? ""}
+      wsMemberRole={workspace?.memberRole ?? "builder"}
+      settings={settings}
+      active={active}
+      canEdit={can("settings.manage")}
+      canManageRaw={isPlatformAdmin}
+    />
+  );
 }
 
-function WorkspaceForm({ wsId, wsName, settings, canEdit }: {
-  wsId: string; wsName: string; settings: WorkspaceSettings; canEdit: boolean;
+const BASE_ROLES: Role[] = ROLE_ORDER.filter((r) => r !== "admin"); // admin is reserved for platform-admins
+
+function WorkspaceForm({ wsId, wsName, wsOktaGroup, wsMemberRole, settings, active, canEdit, canManageRaw }: {
+  wsId: string; wsName: string; wsOktaGroup: string; wsMemberRole: Role;
+  settings: WorkspaceSettings; active: boolean; canEdit: boolean; canManageRaw: boolean;
 }) {
+  const [name, setName] = React.useState(wsName);
+  const [okta, setOkta] = React.useState(wsOktaGroup);
+  const [memberRole, setMemberRole] = React.useState<Role>(wsMemberRole);
   const [provider, setProvider] = React.useState(settings.defaultProvider);
   const [model, setModel] = React.useState(settings.defaultModel);
-  const [archiveOpen, setArchiveOpen] = React.useState(false);
+  const [deleteOpen, setDeleteOpen] = React.useState(false);
+  const [confirmText, setConfirmText] = React.useState("");
 
-  const dirty = provider !== settings.defaultProvider || model !== settings.defaultModel;
-  const archived = !!settings.archivedAt;
-  const editable = canEdit && !archived;
+  // Resource counts for the delete confirmation. These hooks are scoped to the active workspace (= wsId).
+  const agentCount = useAgents().length;
+  const kbCount = useKnowledgeBases().length;
+  const toolCount = useTools().length;
+  const mcpCount = useMcpServers().length;
+  const channelCount = useChannels().length;
+  const skillCount = useSkills().length;
+
+  const identityDirty = name.trim() !== wsName || okta.trim() !== wsOktaGroup || memberRole !== wsMemberRole;
+  const settingsDirty = provider !== settings.defaultProvider || model !== settings.defaultModel;
+  const dirty = identityDirty || settingsDirty;
+  const editable = canEdit; // platform-admin AND active (false when frozen)
+
+  const save = () => {
+    if (identityDirty) updateWorkspace(wsId, { name: name.trim(), oktaGroup: okta, memberRole });
+    if (settingsDirty) updateWorkspaceSettings(wsId, { defaultProvider: provider, defaultModel: model });
+  };
+  const closeDelete = () => { setDeleteOpen(false); setConfirmText(""); };
 
   return (
     <div className="space-y-6">
@@ -71,14 +107,25 @@ function WorkspaceForm({ wsId, wsName, settings, canEdit }: {
         <CardHeader>
           <div>
             <CardTitle>Workspace</CardTitle>
-            <CardDescription>General settings for this workspace. Applies to every agent inside it.</CardDescription>
+            <CardDescription>Identity and defaults for this workspace. Applies to every agent inside it.</CardDescription>
           </div>
           <Building2 className="size-4 text-muted" />
         </CardHeader>
         <CardContent className="grid gap-5 sm:grid-cols-2">
-          {/* Name + slug are IAM-owned identity (read-only); only the defaults below are app-editable. */}
-          <Field label="Workspace name" hint={`Managed in ${ORG.idpName}.`}><Input value={wsName} readOnly /></Field>
-          <Field label="Slug" hint="Published endpoint URL segment. Set at creation."><Input value={wsId} readOnly /></Field>
+          <Field label="Workspace name" hint="Display name (platform-admin editable).">
+            <Input value={name} onChange={(e) => setName(e.target.value)} disabled={!editable} />
+          </Field>
+          <Field label="Slug" hint="Published endpoint URL segment. Immutable — set at creation.">
+            <Input value={wsId} readOnly />
+          </Field>
+          <Field label="Backing Okta group" hint="Being in this group grants access to the workspace. Membership is managed in Okta.">
+            <Input value={okta} onChange={(e) => setOkta(e.target.value)} disabled={!editable} placeholder="e.g. ap-acme-soc" />
+          </Field>
+          <Field label="Member role" hint="Role the group confers to its members. Admin is reserved for platform admins.">
+            <Select value={memberRole} onChange={(e) => setMemberRole(e.target.value as Role)} disabled={!editable}>
+              {BASE_ROLES.map((r) => <option key={r} value={r}>{ROLE_LABEL[r]}</option>)}
+            </Select>
+          </Field>
           <Field label="Default provider">
             <Select value={provider} onChange={(e) => setProvider(e.target.value)} disabled={!editable}>
               <option>Anthropic</option><option>OpenAI</option><option>Google</option><option>Mistral</option>
@@ -89,16 +136,8 @@ function WorkspaceForm({ wsId, wsName, settings, canEdit }: {
               <option>claude-opus-5-5</option><option>claude-sonnet-5-5</option><option>gpt-5</option>
             </Select>
           </Field>
-          <Field label="Deployment" hint="Portable containers, no cloud lock-in.">
-            <Input value="Portable / self-hosted" readOnly />
-          </Field>
-          <div className="flex items-end">
-            <GateButton
-              permission="settings.manage"
-              variant="primary"
-              disabled={!dirty || archived}
-              onClick={() => updateWorkspaceSettings(wsId, { defaultProvider: provider, defaultModel: model })}
-            >
+          <div className="flex items-end sm:col-span-2">
+            <GateButton permission="settings.manage" variant="primary" disabled={!dirty} onClick={save}>
               Save changes
             </GateButton>
           </div>
@@ -108,54 +147,78 @@ function WorkspaceForm({ wsId, wsName, settings, canEdit }: {
       <Card className="border-critical/30">
         <CardHeader>
           <div>
-            <CardTitle className="text-critical">Danger zone</CardTitle>
-            <CardDescription>Archiving unpublishes every endpoint in this workspace. This cannot be undone quickly.</CardDescription>
+            <CardTitle className="text-critical">Status &amp; danger zone</CardTitle>
+            <CardDescription>
+              Deactivating makes the workspace read-only and suspends its endpoints — reversible. Deleting
+              removes the workspace and everything in it — permanent.
+            </CardDescription>
           </div>
         </CardHeader>
-        <CardContent>
-          {archived ? (
-            <Badge tone="warning">Archived {dateShort(settings.archivedAt!)}</Badge>
-          ) : (
-            <GateButton permission="settings.manage" variant="danger" onClick={() => setArchiveOpen(true)}>
-              Archive workspace
-            </GateButton>
-          )}
+        <CardContent className="space-y-5">
+          {/* Activate / Deactivate — bypasses the read-only freeze (raw admin check) so it's always reachable. */}
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <p className="text-sm font-medium text-ink">
+                {active ? "Active" : <>Inactive <span className="text-muted">since {dateShort(settings.archivedAt!)}</span></>}
+              </p>
+              <p className="text-xs text-muted">
+                {active ? "The workspace is serving and editable." : "Read-only — all edits and endpoints are suspended."}
+              </p>
+            </div>
+            {active ? (
+              <Button variant="outline" disabled={!canManageRaw} onClick={() => setWorkspaceActive(wsId, false)}>Deactivate</Button>
+            ) : (
+              <Button variant="primary" disabled={!canManageRaw} onClick={() => setWorkspaceActive(wsId, true)}>Activate</Button>
+            )}
+          </div>
+          <Separator />
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <p className="text-sm font-medium text-ink">Delete this workspace</p>
+              <p className="text-xs text-muted">Permanently removes the workspace and all of its resources.</p>
+            </div>
+            <Button variant="danger" disabled={!canManageRaw} onClick={() => setDeleteOpen(true)}>Delete workspace</Button>
+          </div>
         </CardContent>
       </Card>
 
-      <ConfirmDialog
-        open={archiveOpen}
-        onClose={() => setArchiveOpen(false)}
-        onConfirm={() => archiveWorkspace(wsId)}
-        title="Archive workspace"
-        body={<>Archive <span className="font-medium text-ink">{wsName}</span>? Every published endpoint in it stops serving.</>}
-        confirmLabel="Archive workspace"
-      />
+      <Dialog
+        open={deleteOpen}
+        onClose={closeDelete}
+        title="Delete workspace"
+        description="This permanently deletes the workspace and everything inside it. This cannot be undone."
+        footer={
+          <>
+            <Button variant="ghost" onClick={closeDelete}>Cancel</Button>
+            <Button variant="danger" disabled={confirmText.trim() !== wsName} onClick={() => { deleteWorkspace(wsId); closeDelete(); }}>
+              Delete workspace
+            </Button>
+          </>
+        }
+      >
+        <div className="space-y-4 text-sm text-ink-2">
+          <p>Deleting <span className="font-medium text-ink">{wsName}</span> will permanently remove:</p>
+          <ul className="list-disc space-y-0.5 pl-5">
+            <li>{agentCount} agent(s), {kbCount} knowledge base(s), {toolCount} tool(s), {mcpCount} MCP server(s)</li>
+            <li>{channelCount} channel(s), {skillCount} skill(s), and all eval suites, runs, and tokens</li>
+          </ul>
+          <p className="text-xs text-muted">Provider keys (org-level) and the member roster are not affected.</p>
+          <Field label={`Type "${wsName}" to confirm`}>
+            <Input value={confirmText} onChange={(e) => setConfirmText(e.target.value)} placeholder={wsName} autoFocus />
+          </Field>
+        </div>
+      </Dialog>
     </div>
   );
 }
 
-const MEMBER_ROLES: Member["role"][] = ["Viewer", "Builder", "Publisher", "Admin"];
-
 function Members() {
   const members = useMembers();
-  const invites = useInvites();
-  const { can } = useAuth();
-  const canManageMembers = can("member.manage");
-
-  const [inviteOpen, setInviteOpen] = React.useState(false);
-  const [email, setEmail] = React.useState("");
-  const [role, setRole] = React.useState<Member["role"]>("Builder");
-  const [removeTarget, setRemoveTarget] = React.useState<Member | null>(null);
-
-  const submitInvite = () => {
-    const addr = email.trim();
-    if (!addr) return;
-    inviteMember(addr, role);
-    setEmail("");
-    setRole("Builder");
-    setInviteOpen(false);
-  };
+  const { workspace } = useWorkspace();
+  // The group confers ONE role to all its members, so render the workspace's memberRole for every row
+  // (rather than the illustrative per-person seed role) to match the group-driven model.
+  const roleLabel = workspace ? ROLE_LABEL[workspace.memberRole] : "—";
+  const roleBadgeTone = (roleTone[roleLabel as Member["role"]] ?? "neutral");
 
   return (
     <div className="space-y-6">
@@ -164,8 +227,10 @@ function Members() {
           <div>
             <CardTitle>Sign-in &amp; identity</CardTitle>
             <CardDescription>
-              Everyone signs in through {ORG.idpName} (org-level SSO). Who belongs to <em>this</em> space, and at
-              what role, is managed here — by invite, or by joining if the space is open.
+              Everyone signs in through {ORG.idpName} (org-level SSO). Membership in <em>this</em> space is
+              granted by its backing Okta group
+              {workspace?.oktaGroup && <> (<code className="rounded bg-elevated px-1 py-0.5 text-xs text-ink-2">{workspace.oktaGroup}</code>)</>}
+              {" "}— add or remove people in {ORG.idpName}, not here.
             </CardDescription>
           </div>
           <ShieldCheck className="size-4 text-accent" />
@@ -177,22 +242,18 @@ function Members() {
           <div>
             <div className="flex items-center gap-2">
               <CardTitle>Members &amp; roles</CardTitle>
-              <Badge tone="neutral">Space roster</Badge>
+              <Badge tone="neutral">Managed in {ORG.idpName}</Badge>
             </div>
             <CardDescription>
-              Viewer reads only. Builder creates and tests agents. Publisher can publish and manage keys. Admin manages the space, its members, and access.
+              Read-only roster projected from the workspace&apos;s Okta group. Everyone in the group holds the
+              workspace&apos;s member role; platform admins are admins everywhere.
             </CardDescription>
           </div>
-          <GateButton permission="member.manage" variant="primary" size="sm" onClick={() => setInviteOpen(true)}>
-            <Plus className="size-4" /> Invite member
-          </GateButton>
         </CardHeader>
         <CardContent className="pt-0">
           <Table>
             <THead>
-              <TR>
-                <TH>Member</TH><TH>Email</TH><TH>Role</TH><TH>Last active</TH><TH />
-              </TR>
+              <TR><TH>Member</TH><TH>Email</TH><TH>Role</TH><TH>Last active</TH></TR>
             </THead>
             <tbody>
               {members.map((m) => (
@@ -204,86 +265,14 @@ function Members() {
                     </div>
                   </TD>
                   <TD className="text-muted">{m.email}</TD>
-                  <TD><Badge tone={roleTone[m.role]}>{m.role}</Badge></TD>
+                  <TD><Badge tone={roleBadgeTone}>{roleLabel}</Badge></TD>
                   <TD className="text-muted tnum">{relative(m.lastActive)}</TD>
-                  <TD className="text-right">
-                    {canManageMembers && (
-                      <Button variant="ghost" size="sm" onClick={() => setRemoveTarget(m)}>Remove</Button>
-                    )}
-                  </TD>
                 </TR>
               ))}
             </tbody>
           </Table>
         </CardContent>
       </Card>
-
-      {invites.length > 0 && (
-        <Card>
-          <CardHeader>
-            <div>
-              <CardTitle>Pending invites</CardTitle>
-              <CardDescription>Invited people join this space once they accept.</CardDescription>
-            </div>
-          </CardHeader>
-          <CardContent className="pt-0">
-            <Table>
-              <THead>
-                <TR><TH>Email</TH><TH>Role</TH><TH>Invited by</TH><TH>Invited</TH><TH /></TR>
-              </THead>
-              <tbody>
-                {invites.map((i) => (
-                  <TR key={i.email}>
-                    <TD className="text-ink">{i.email}</TD>
-                    <TD><Badge tone={roleTone[i.role]}>{i.role}</Badge></TD>
-                    <TD className="text-muted">{i.invitedBy}</TD>
-                    <TD className="text-muted tnum">{relative(i.invitedAt)}</TD>
-                    <TD className="text-right">
-                      {canManageMembers && (
-                        <Button variant="ghost" size="sm" onClick={() => revokeInvite(i.email)}>Revoke</Button>
-                      )}
-                    </TD>
-                  </TR>
-                ))}
-              </tbody>
-            </Table>
-          </CardContent>
-        </Card>
-      )}
-
-      <Dialog
-        open={inviteOpen}
-        onClose={() => setInviteOpen(false)}
-        title="Invite member"
-        description="Send an invite to join this space at the selected role."
-        footer={
-          <>
-            <Button variant="ghost" size="sm" onClick={() => setInviteOpen(false)}>Cancel</Button>
-            <Button variant="primary" size="sm" disabled={!email.trim()} onClick={submitInvite}>Send invite</Button>
-          </>
-        }
-      >
-        <div className="space-y-3">
-          <Field label="Email">
-            <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder={`name@${ORG.emailDomain}`} />
-          </Field>
-          <Field label="Role">
-            <Select value={role} onChange={(e) => setRole(e.target.value as Member["role"])}>
-              {MEMBER_ROLES.map((r) => <option key={r} value={r}>{r}</option>)}
-            </Select>
-          </Field>
-        </div>
-      </Dialog>
-
-      <ConfirmDialog
-        open={removeTarget != null}
-        onClose={() => setRemoveTarget(null)}
-        title={`Remove ${removeTarget?.name ?? "member"}?`}
-        body="They lose access to this space. They can be invited again later."
-        confirmLabel="Remove"
-        tone="danger"
-        onConfirm={() => { if (removeTarget) removeMember(removeTarget.email); }}
-      />
     </div>
   );
 }
@@ -798,8 +787,8 @@ const CAPABILITIES: { label: string; permission: Permission }[] = [
   { label: "Edit workspace settings & limits", permission: "settings.manage" },
 ];
 
-const kindTone: Record<string, "accent" | "violet" | "neutral" | "serious" | "good"> = {
-  Agent: "accent", Knowledge: "violet", Tool: "neutral", MCP: "serious", Channel: "good",
+const kindTone: Record<string, "accent" | "violet" | "neutral" | "serious" | "good" | "warning"> = {
+  Agent: "accent", Knowledge: "violet", Tool: "neutral", MCP: "serious", Channel: "good", Skill: "warning",
 };
 
 type AccessRow = { key: string; id: string; name: string; kindLabel: string; editorKind: EditorKind; policy: AccessPolicy | undefined };
@@ -810,6 +799,7 @@ function RolesAccess() {
   const mcpServers = useMcpServers();
   const tools = useTools();
   const channels = useChannels();
+  const skills = useSkills();
   const { can } = useAuth();
   const canManage = can("access.manage");
 
@@ -826,6 +816,7 @@ function RolesAccess() {
     ...tools.map((t) => ({ key: `tool-${t.name}`, id: t.name, name: t.name, kindLabel: "Tool", editorKind: "tool" as const, policy: t.accessPolicy })),
     ...mcpServers.map((m) => ({ key: `mcp-${m.id}`, id: m.id, name: m.name, kindLabel: "MCP", editorKind: "mcp" as const, policy: m.accessPolicy })),
     ...channels.map((c) => ({ key: `channel-${c.id}`, id: c.id, name: c.name, kindLabel: "Channel", editorKind: "channel" as const, policy: c.accessPolicy })),
+    ...skills.map((s) => ({ key: `skill-${s.id}`, id: s.id, name: s.name, kindLabel: "Skill", editorKind: "skill" as const, policy: s.accessPolicy })),
   ];
   // Search matches name, kind, and the roles/teams named in the policy (policySummary spells those out).
   const q = query.trim().toLowerCase();
@@ -873,6 +864,7 @@ function RolesAccess() {
               <option value="tool">Tools</option>
               <option value="mcp">MCP</option>
               <option value="channel">Channels</option>
+              <option value="skill">Skills</option>
             </Select>
             <Select className="sm:w-44" value={visFilter} onChange={(e) => setVisFilter(e.target.value as typeof visFilter)}>
               <option value="restricted">Restricted only</option>
@@ -969,9 +961,10 @@ function RolesAccess() {
 }
 
 /* @backend integration points (this page):
- *  - @backend GET /v1/workspaces/:id - workspace config (name/slug read-only; default provider/model editable) [via useWorkspaceSettings]
- *  - @backend PATCH /v1/workspaces/:id - save default provider/model (admin) [via updateWorkspaceSettings]
- *  - @backend POST /v1/workspaces/:id/archive - archive workspace (admin) [via archiveWorkspace]
+ *  - @backend GET /v1/workspaces/:id - workspace config (slug read-only; name/access/provider/model editable) [via useWorkspace + useWorkspaceSettings]
+ *  - @backend PATCH /v1/workspaces/:id - save identity name/access_mode/okta_group (admin) [via updateWorkspace] + default provider/model [via updateWorkspaceSettings]
+ *  - @backend POST /v1/workspaces/:id/archive (deactivate) + NEW reactivate endpoint - reversible Inactive toggle (admin, bypasses the read-only freeze) [via setWorkspaceActive]
+ *  - @backend NO hard-delete endpoint (backend archives) - mock-only cascade removes the space + all its resources (admin) [via deleteWorkspace]
  *  - @backend GET /v1/workspaces/:id/limits - per-workspace spend/concurrency/timeout [via useLimits]
  *  - @backend PUT /v1/workspaces/:id/limits - save limits (admin; enforced at runtime in P2) [via updateLimits]
  *  - @backend GET /v1/provider-keys - provider keys list [via useProviderKeys]
@@ -980,10 +973,9 @@ function RolesAccess() {
  *  - @backend GET /v1/agents/:id/tokens - API tokens list [via useTokens]
  *  - @backend POST /v1/agents/:id/tokens - create token bound to a published endpoint, shown once (publisher+) [via addToken]
  *  - @backend DELETE /v1/tokens/:id - revoke token (publisher+) [via revokeToken]
- *  - @backend GET /v1/members?workspace=:id - space roster [via useMembers]; membership is app-managed:
- *    POST /v1/workspaces/:id/invites (inviteMember), DELETE …/invites/:id (revokeInvite), DELETE /v1/members/:id
- *    (removeMember) — all space-admin (member.manage). Identity (sign-in) still comes from org Okta.
- *  - @backend PUT /v1/{agents|knowledge|tools|mcp|channels}/:id/access-policy - Roles & access now edits per-resource policies across all 5 kinds (admin) [via setAccessPolicy / AccessPolicyEditor]
+ *  - @backend GET /v1/members?workspace=:id - READ-ONLY roster [via useMembers]; membership is Okta-group-
+ *    driven (the workspace's backing group confers its memberRole). No in-app invite/remove — managed in Okta.
+ *  - @backend PUT /v1/{agents|knowledge|tools|mcp|channels|skills}/:id/access-policy - Roles & access now edits per-resource policies across all 6 kinds (admin) [via setAccessPolicy / AccessPolicyEditor]
  *  - @backend the cURL sample is illustrative; the Authentication note describes the IAM/OIDC integration
  * See src/lib/store.ts markers + docs/backend-integration-map.md for the authoritative contracts.
  */

@@ -24,10 +24,13 @@ erDiagram
   WORKSPACE ||--o{ AGENT : contains
   WORKSPACE ||--o{ PROVIDER_KEY : vaults
   WORKSPACE ||--o{ KNOWLEDGE_BASE : owns
+  WORKSPACE ||--o{ SKILL : owns
   WORKSPACE ||--o{ MEMBERSHIP : grants
   AGENT ||--o{ AGENT_VERSION : has
   AGENT_VERSION ||--o{ RETRIEVAL_BINDING : retrieves_via
   AGENT_VERSION ||--o{ TOOL_BINDING : uses
+  AGENT_VERSION ||--o{ SKILL_BINDING : applies
+  SKILL ||--o{ SKILL_RESOURCE : bundles
   TOOL ||--o| SUBAGENT_CONFIG : delegates_as
   AGENT ||--o{ EVAL_SUITE : owns
   EVAL_SUITE ||--o{ EVAL_CASE : contains
@@ -57,6 +60,11 @@ erDiagram
 >
 > **P2 additions (tools/approvals):** `SUBAGENT_CONFIG` (a `kind='subagent'` tool delegating to another agent)
 > and `TOOL_APPROVAL` (human-in-the-loop gate on a `requires_approval` tool call) are detailed in §4.6.
+>
+> **P2 additions (skills):** `SKILL` (a reusable, versioned instruction+resource capability package),
+> `SKILL_RESOURCE` (bundled reference files in MinIO), and `SKILL_BINDING` (a skill frozen onto a version)
+> are detailed in §4.4. Unlike tools/MCP, skills **do not execute code** — there is no risk tier, approval
+> gate, or sandbox for them; the only new controls are prompt-injection handling (06/09) and package signing.
 
 ## 3. Enums (mirror the frontend unions in `data.ts`)
 
@@ -70,13 +78,23 @@ create type run_status        as enum ('success','error','blocked');
 create type provider_name     as enum ('anthropic','openai','google','mistral','meta','azure','bedrock');
 -- DEPRECATED: ingestion status uses job_status via the generic `jobs` table (§4.8); this enum is unused. Kept only to avoid a migration churn; do not reference in new DDL.
 create type ingest_status     as enum ('queued','running','completed','failed');
-create type member_role       as enum ('admin','publisher','builder','viewer');  -- 'admin' = Space Manager (09 §4)
-create type workspace_access   as enum ('open','restricted');                    -- open = any org member can join; restricted = invite-only (09 §2.1)
-create type invite_status      as enum ('pending','accepted','revoked','expired');
+-- ⚠️ REVERSED (2026-10-20 group-driven pivot; scope.md): membership + role are now Okta-GROUP-driven, not an
+--    app-managed roster. Each workspace binds ONE Okta group conferring a single base role (workspaces.okta_group
+--    + workspaces.member_role); platform_admins (§4.9) are admin everywhere. CONSEQUENCES below:
+--    • `workspace_access` enum + `workspaces.access_mode` → REMOVED (no open/restricted; visibility = group membership).
+--    • `memberships` table → no longer the system of record; a read-only roster is projected from the group.
+--    • `workspace_invites` table + `invite_status` → REMOVED (no invites / self-join; membership managed in Okta).
+--    • member_role stays, but is a per-WORKSPACE property (the group's conferred role), not per-user; 'admin' is
+--      reserved for platform_admins. [See 09 §2.1, 15; FE iam.ts]
+create type member_role       as enum ('admin','publisher','builder','viewer');  -- now a per-workspace conferred role (admin reserved for platform_admins)
+create type workspace_access   as enum ('open','restricted');                    -- REMOVED (group-driven pivot); kept only to avoid migration churn — do not reference
+create type invite_status      as enum ('pending','accepted','revoked','expired'); -- REMOVED with workspace_invites (group-driven pivot)
 create type tool_kind         as enum ('http','builtin','subagent','mcp');       -- mcp used P2
 create type tool_risk_tier    as enum ('read','write','destructive');           -- risk tier driving the approval gate (P2)
 create type approval_status   as enum ('pending','approved','denied','expired'); -- human-in-the-loop tool approval lifecycle (P2)
 create type data_source_kind  as enum ('file','web','connector','manual');       -- web/connector ingestion P2; FE connector config+credential capture ships ahead of it
+create type skill_status       as enum ('draft','published','deprecated');         -- P2; only 'published' (signed) skills are bindable
+create type skill_resource_kind as enum ('instruction','reference');              -- the SKILL.md instruction body vs a bundled reference file (data, not instructions)
 create type job_kind          as enum ('ingestion','eval','mcp_discovery','reingest','model_deprecation_scan');  -- model_deprecation_scan: P0 detector (16)
 create type job_status        as enum ('queued','running','completed','failed','cancelled');
 create type notification_kind as enum ('drift','budget_threshold','model_deprecated','eval_failed','registration_gate','dedup_flag','approval_requested');  -- owner-facing notifications (16); approval_requested = pending tool approval (P2)
@@ -235,6 +253,15 @@ The frozen-at-bind `tool_bindings.{risk_tier, requires_approval, subagent_config
 the version snapshot and are covered by `snapshot_hash` — so a risk-tier or approval change yields a new
 version identity, consistent with the tool-schema-snapshot drift handling referenced to doc 05.
 
+The same discipline covers **bound skills** (§4.4 `skill_bindings`): `snapshot_hash` MUST incorporate each
+bound skill's frozen content — the **instruction-text hash + every bundled-resource content hash + the skill
+version** (pinned in `skill_bindings.skill_content_hash`). A skill is injected into the prompt like
+`system_prompt` (03 §4), so editing its instructions or resources is a behavior change exactly like editing
+the prompt. If it did **not** fold into `snapshot_hash`, the eval verdict cache (05 §6) would serve a stale
+PASS on a skill edit and the publish re-eval gate would be silently bypassed — the RAG/`kb_index_version`
+failure mode, repeated. So the skill content hash is part of the version identity, mirroring the KB
+`kb_index_version` and tool-schema snapshot coverage.
+
 ### 4.3 Provider keys (vaulted — never plaintext here)
 
 ```sql
@@ -341,6 +368,68 @@ create table retrieval_bindings (
   injection     text not null default 'tool',    -- 'tool' | 'always_on' (spec B6.5)
   unique (version_id, kb_id)
 );
+```
+
+#### Skills (P2 — tables exist in P1; modelled on knowledge_bases)
+
+A **skill** is a reusable, versioned capability *package*: an **instruction fragment** (injected into the
+prompt like `system_prompt`, 03 §4) + **bundled reference files** (stored like a KB's documents in MinIO).
+It **does NOT execute code** — unlike tools/MCP it never touches the sandbox, egress allow-list, or the
+approval gate (09 §10), so a skill is **not** an SSRF/exfiltration primitive. The only new security vectors
+are prompt-injection via the instruction text (06 output redaction still applies; no secrets in skill text;
+bundled resources are *data, not instructions*) and **package provenance** — skills are **signed at publish**
+and only `published` (signed) skills are bindable (09 §10). Skills carry **no credentials**. `access_policy`
+and workspace-scoping mirror `knowledge_bases`; governance is **open registration + signing** (any builder+
+authors — `skill.manage`, 09 §4), mirroring the MCP open-registration stance (14 §5).
+
+```sql
+create table skills (                             -- FE Skill (data.ts); modelled on knowledge_bases
+  id            uuid primary key default gen_random_uuid(),
+  workspace_id  uuid not null references workspaces(id),
+  slug          text not null,                    -- "soc-triage-playbook" (FE)
+  name          text not null,
+  description   text not null default '',         -- always-loaded summary the model uses to DECIDE to apply the skill (progressive disclosure)
+  instructions  text not null default '',         -- the instruction fragment injected into the prompt (03 §4); untrusted content (06/09)
+  version       text not null default 'v1',       -- FE Skill.version — the authored skill version label
+  content_hash  text not null,                    -- sha256 over {instructions + ordered resource content_hashes + version}; pinned into skill_bindings + folded into snapshot_hash (§4.2, 05 §6)
+  status        skill_status not null default 'draft',   -- draft|published|deprecated; only 'published' is bindable
+  -- provenance / signing (set by POST /skills/:id/publish, 08): skills are signed at publish, verified at bind.
+  signature     text,                             -- detached package signature over content_hash (NULL until published)
+  signed_by     text,                             -- OIDC subject that signed/published
+  signed_at     timestamptz,
+  access_policy jsonb not null default '{"visibility":"workspace"}'::jsonb,  -- FE Skill.accessPolicy; server enforces on read/manage + at invoke (09 §5). PUT /skills/:id/access-policy (08)
+  created_at    timestamptz not null default now(),
+  updated_at    timestamptz not null default now(),
+  unique (workspace_id, slug)
+);
+
+create table skill_resources (                    -- bundled files in MinIO; modelled on documents. NO credentials.
+  id            uuid primary key default gen_random_uuid(),
+  workspace_id  uuid not null references workspaces(id),
+  skill_id      uuid not null references skills(id),
+  name          text not null,                    -- FE SkillResource.name ("SKILL.md", "severity-matrix.md")
+  kind          skill_resource_kind not null,     -- instruction (the SKILL.md body) | reference (bundled file)
+  uri           text not null,                    -- MinIO object key
+  content_hash  text not null,                    -- dedupe + change detection; folds into skills.content_hash
+  size_kb       numeric(10,2),                    -- FE SkillResource.sizeKB (display)
+  created_at    timestamptz not null default now()
+);
+
+-- Which skill(s) a version applies, with the skill content SNAPSHOTTED — modelled EXACTLY on retrieval_bindings
+-- (which pins kb_index_version). The pinned skill_content_hash is what folds into agent_versions.snapshot_hash
+-- (§4.2) so a skill edit busts the eval verdict cache and re-arms the publish gate (05 §6).
+create table skill_bindings (
+  id                 uuid primary key default gen_random_uuid(),
+  workspace_id       uuid not null references workspaces(id),
+  version_id         uuid not null references agent_versions(id),
+  skill_id           uuid not null references skills(id),
+  skill_content_hash text not null,               -- the skills.content_hash pinned at freeze (stale warn; drift trigger 05 §5)
+  unique (version_id, skill_id)
+);
+
+create index on skill_resources (workspace_id, skill_id);   -- a skill's bundled files
+create index on skill_bindings (version_id);                -- a version's applied skills (snapshot assembly)
+create index on skill_bindings (workspace_id, skill_id);    -- bound-agent rollup (FE Skill.boundAgents)
 ```
 
 ### 4.5 Eval & drift (spec B5, FE EvalRun)
@@ -706,6 +795,7 @@ class AgentVersion(Base, WorkspaceScoped):
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
     retrieval_bindings: Mapped[list["RetrievalBinding"]] = relationship()
     tool_bindings: Mapped[list["ToolBinding"]] = relationship()
+    skill_bindings: Mapped[list["SkillBinding"]] = relationship()
 
     def to_snapshot(self) -> "VersionSnapshot":
         """Materialize the frozen, runtime-ready snapshot (00 §4). Pure read; no live agent row."""
@@ -718,6 +808,12 @@ coupling (00 §3).
 
 The new P2 tables `SubagentConfig` and `ToolApproval` (§4.6) use the same `WorkspaceScoped` mixin as every
 other tenant model, so they inherit `workspace_id` and the RLS policy (§6) automatically.
+
+`Skill`, `SkillResource`, and `SkillBinding` (§4.4) likewise use the `WorkspaceScoped` mixin, so they inherit
+`workspace_id` + RLS automatically. A version's `skill_bindings` are assembled into the frozen
+`VersionSnapshot.to_snapshot()` alongside the retrieval/tool bindings — the runtime reads `snapshot.skills`
+(each skill's resolved instructions + bundled resource refs, pinned by `skill_content_hash`) and composes the
+instruction fragments in `build_messages` (03 §4). The runtime still imports only the dataclass, never the ORM.
 
 ## 6. Row-Level Security (defense-in-depth)
 
@@ -746,6 +842,8 @@ Caveats, stated plainly:
 - The new `WorkspaceScoped` P2 tables (`subagent_configs`, `tool_approvals`, §4.6) likewise carry
   `workspace_id` and join the RLS loop automatically — the §7 CI check (every `WorkspaceScoped` table has
   an RLS policy) enforces it.
+- The skill tables (`skills`, `skill_resources`, `skill_bindings`, §4.4) carry `workspace_id` and join the
+  RLS loop + the §7 CI check automatically too — no carve-out.
 - **Elevated carve-outs (the only tables that intentionally cross or skip tenant scope):**
   - Cross-workspace reads (the **org governance report**, 15) use a separate, explicitly-elevated,
     **audited** path (a `SECURITY DEFINER` function callable only by the platform-admin plane, 15 §2) — the
@@ -786,5 +884,7 @@ Caveats, stated plainly:
 | `agent_signatures` | HNSW on `embedding`, `(workspace_id, agent_id)` | dedup similarity scan (14 §3) |
 | `notifications` | `(workspace_id, recipient_subject, read_at)`, unique `(workspace_id, recipient_subject, dedupe_key) where read_at is null` | owner inbox + unread count; **per-recipient** dedupe of open notices (16) |
 | `tool_approvals` | `(workspace_id, status, requested_at)` | approver queue of pending tool approvals (P2) |
+| `skill_bindings` | `(version_id)`, `(workspace_id, skill_id)` | snapshot assembly (a version's applied skills) + bound-agent rollup (`Skill.boundAgents`) (P2) |
+| `skill_resources` | `(workspace_id, skill_id)` | a skill's bundled MinIO files (P2) |
 
 → Next: `02-provider-gateway.md`.

@@ -175,7 +175,7 @@ reverse proxy.
      dev role/team switcher (deleted when real IAM lands).
    - *Caller token (runtime):* `runtime-access.ts`'s decode is a **Playground preview only**; the server
      validates the caller JWT and computes effective access at invoke.
-   - *Per-resource access policies:* persisted via `PUT /api/v1/{agents|knowledge|tools|mcp|channels}/:id/access-policy`
+   - *Per-resource access policies:* persisted via `PUT /api/v1/{agents|knowledge|tools|mcp|channels|skills}/:id/access-policy`
      and **re-enforced server-side** on read/manage and at invoke; client `canUse`/`canManage` are
      UI-gating only. See `frontend-auth-access-plan.md`.
 4. **Streaming** — wire the Playground (standalone `/playground` + the agent-detail tab, both canned
@@ -197,12 +197,13 @@ reverse proxy.
 | `MODELS` / model picker | `GET /api/v1/models` (provider catalog + capability profiles + pricing) |
 | `useKnowledgeBases`, `useKnowledgeBase`, `addKnowledgeBase`, `addDataSource`, `reingest`, `useIngestionJobs`, `source-picker` | `GET /api/v1/knowledge-bases[?workspace=:id` \| `/:id]`, `POST /api/v1/knowledge-bases`, `POST …/:id/sources` (async), `POST …/:id/reingest` (async), `GET /api/v1/ingestion-jobs` (poll/SSE), `GET /api/v1/connectors` (connector registry / field specs) + `POST /api/v1/connectors/credentials` (secret/file → vault → `{masked,vaultPath}`) + presigned upload, `POST /api/v1/versions/:vid/retrieval-bindings` |
 | `useTools`, `addTool`, `useMcpServers`, `useMcpServer`, `addMcpServer` **(MCP P2)** | `GET`/`POST /api/v1/tools` (HTTP tool carries `httpConfig`; secret → vault, only `authRef` persisted), `GET /api/v1/mcp-servers[/:id]`, `POST /api/v1/mcp-servers` (connect + discover), `POST …/:id/discover`, `POST /api/v1/versions/:vid/tools` |
+| `useSkills`, `useSkill`, `addSkill`, `updateSkill`, `publishSkill`, `deleteSkill`, bind via `updateAgent({skills})` **(Skills P2 — mocked)** | `GET /api/v1/skills[?workspace=:id` \| `/:id]`, `POST /api/v1/skills`, `PUT /api/v1/skills/:id`, `POST /api/v1/skills/:id/publish` (sign → bindable), `DELETE /api/v1/skills/:id`, `POST /api/v1/skills/:id/resources` (bundled files → MinIO/ingestion), `POST /api/v1/versions/:vid/skills` (bind→freeze; pins `skill_content_hash` into `snapshot_hash`). **No test-invoke / risk-tier / approval** — skills don't execute code (`backend/01 §4.4`, `08 Skills`). |
 | `useEvalRuns`/`useEvalRunsForAgent`, `addEvalRun`, baseline, suites/cases, starter-set + rollback remedies | `GET /api/v1/evals` · `GET /api/v1/agents/:id/evals`, `POST /api/v1/agents/:id/evals` (async), `GET /api/v1/jobs/:id`, `POST /api/v1/agents/:id/eval-suites`·`/cases`, `POST /api/v1/versions/:vid/baseline` |
 | `useRuns`/`useRunsForAgent`, dashboard/runs charts + stat tiles | `GET /api/v1/runs[?workspace=:id` \| `/:id]`, `GET /api/v1/metrics/{spend,volume,latency,activity}` |
 | Publish & Export, endpoint OpenAPI/snippets | `POST /api/v1/versions/:vid/publish` (**409** if no PASS eval), `POST /api/v1/agents/:id/repoint`, `GET /api/v1/endpoints/:eid/export?format=curl\|ts\|python`, `GET …/openapi.json` |
 | `useTokens`, `addToken`, `revokeToken` | `GET`/`POST /api/v1/agents/:id/tokens` (secret shown once), `DELETE /api/v1/tokens/:id` |
 | `useProviderKeys`, `addProviderKey` (+rotate/revoke), `useMembers`/`useInvites`, `inviteMember`/`revokeInvite`/`removeMember`/`joinWorkspace` | `GET /api/v1/provider-keys?workspace=:id`, `POST /api/v1/provider-keys` (+`/rotate`,`/revoke`; admin), `GET /api/v1/members?workspace=:id` (app-managed roster), `POST`/`GET /api/v1/workspaces/:id/invites` + `DELETE …/invites/:id`, `DELETE /api/v1/members/:id` (`member.manage`), `POST /api/v1/workspaces/:id/join` (self-join open spaces) |
-| `setAccessPolicy`, `canUse`/`canManage` | `PUT /api/v1/{agents\|knowledge\|tools\|mcp\|channels}/:id/access-policy` (admin; server-enforced) |
+| `setAccessPolicy`, `canUse`/`canManage` | `PUT /api/v1/{agents\|knowledge\|tools\|mcp\|channels\|skills}/:id/access-policy` (admin; server-enforced) |
 | Guardrails tab, topbar/list search | `GET`/`PUT /api/v1/agents/:id/guardrails`, `GET /api/v1/search?q=` |
 | Playground `send()` / published invoke, run feedback | `POST /v1/agents/:id/invoke` (SSE; token or session; `run_source`), `POST /v1/runs/:id/feedback` |
 

@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Backend Design — Diagram Map",
+    "subtitle": "The 16 diagrams in this folder: four entry planes → one shared runtime core → governance gate, with operations and a platform + data-model foundation",
+    "output": "docs/diagrams/backend-design/system-map.html",
+    "quality_profile": "showcase"
+  },
+  "components": [
+    { "id": "published", "type": "backend", "label": "Published invoke", "sublabel": "sequence · 08 / 09", "pos": [40, 70], "size": [180, 54] },
+    { "id": "channel", "type": "backend", "label": "Channel ingress", "sublabel": "sequence · 12", "pos": [40, 146], "size": [180, 54] },
+    { "id": "mcp", "type": "backend", "label": "Per-user MCP connect", "sublabel": "sequence · 17 (P2)", "pos": [40, 222], "size": [180, 54] },
+
+    { "id": "rag", "type": "backend", "label": "RAG lineage", "sublabel": "dataflow · 04", "pos": [300, 52], "size": [185, 54] },
+    { "id": "runtime", "type": "backend", "label": "runtime.invoke core", "sublabel": "workflow · 00 / 03", "tag": "the one core", "pos": [300, 140], "size": [185, 62] },
+    { "id": "gateway", "type": "backend", "label": "Provider gateway", "sublabel": "workflow · 02 / 07", "pos": [300, 230], "size": [185, 54] },
+
+    { "id": "version", "type": "security", "label": "Version lifecycle", "sublabel": "lifecycle · 01 / 05", "pos": [560, 52], "size": [180, 54] },
+    { "id": "eval", "type": "security", "label": "Eval & drift gate", "sublabel": "workflow · 05", "pos": [560, 140], "size": [180, 54] },
+    { "id": "adoption", "type": "security", "label": "Adoption & enforcement", "sublabel": "workflow · 14", "pos": [560, 228], "size": [180, 54] },
+
+    { "id": "observability", "type": "cloud", "label": "Observability", "sublabel": "dataflow · 10", "pos": [820, 52], "size": [185, 54] },
+    { "id": "notifications", "type": "cloud", "label": "Owner notifications", "sublabel": "dataflow · 16", "pos": [820, 140], "size": [185, 54] },
+    { "id": "orggov", "type": "cloud", "label": "Org governance report", "sublabel": "sequence · 15", "pos": [820, 228], "size": [185, 54] },
+
+    { "id": "deploy", "type": "cloud", "label": "Deployment & data plane", "sublabel": "architecture · 11", "pos": [150, 352], "size": [185, 54] },
+    { "id": "branding", "type": "frontend", "label": "Branding & org config", "sublabel": "architecture · 13", "pos": [360, 352], "size": [180, 54] },
+    { "id": "schema1", "type": "database", "label": "Core schema", "sublabel": "ERD · 01 (part 1)", "pos": [585, 352], "size": [175, 54] },
+    { "id": "schema2", "type": "database", "label": "Runtime / gov schema", "sublabel": "ERD · 01 (part 2)", "pos": [785, 352], "size": [185, 54] }
+  ],
+  "boundaries": [
+    { "kind": "region", "label": "Entry planes — the thin callers", "wraps": ["published", "channel", "mcp"], "pad": 16 },
+    { "kind": "region", "label": "Shared runtime core", "wraps": ["rag", "runtime", "gateway"], "pad": 16 },
+    { "kind": "region", "label": "Governance — eval gate & adoption", "wraps": ["version", "eval", "adoption"], "pad": 16 },
+    { "kind": "region", "label": "Operations — telemetry · alerts · estate", "wraps": ["observability", "notifications", "orggov"], "pad": 16 },
+    { "kind": "region", "label": "Foundation — platform, branding & data model", "wraps": ["deploy", "branding", "schema1", "schema2"], "pad": 16 }
+  ],
+  "connections": [
+    { "id": "c-pub", "from": "published", "to": "runtime", "label": "invoke (api)", "variant": "emphasis" },
+    { "id": "c-chan", "from": "channel", "to": "runtime", "label": "invoke (worker)" },
+    { "id": "c-mcp", "from": "mcp", "to": "runtime", "label": "tool creds" },
+    { "id": "c-rag", "from": "runtime", "to": "rag", "label": "retrieval" },
+    { "id": "c-gw", "from": "runtime", "to": "gateway", "label": "model calls" },
+    { "id": "c-eval", "from": "eval", "to": "runtime", "label": "same core", "variant": "emphasis" },
+    { "id": "c-ver", "from": "version", "to": "eval", "label": "gated by" },
+    { "id": "c-adopt", "from": "adoption", "to": "eval", "label": "register-gate" },
+    { "id": "c-notif", "from": "observability", "to": "notifications", "label": "threshold signals", "variant": "dashed" }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "How to read this map", "items": ["Each box is a diagram file in this folder; open the matching .html. The sublabel gives its archify type + the backend doc(s) it draws from", "Arrows mean 'calls / drills into': the entry planes all funnel into the SAME runtime.invoke core — the load-bearing idea", "Operations (telemetry, notifications, estate reporting) is cross-cutting — it observes the whole system, not just the one edge drawn"] },
+    { "dot": "emerald", "title": "Suggested reading order", "items": ["1) Deployment & data plane → 2) runtime.invoke core → 3) Provider gateway (cost + resilience)", "4) Eval & drift gate + Version lifecycle (the publish guarantee) → 5) Published / Channel / MCP entry planes → 6) RAG lineage", "Then governance+ops: Adoption, Org-governance report, Observability, Owner notifications; the two ERDs are the data model underneath"] },
+    { "dot": "amber", "title": "Coverage — now complete", "items": ["Every backend doc has a diagram: 00–05, 07, 08, 09, 10, 11, 12, 13, 14, 15, 16, 17 (+ data model 01 as the 2 ERDs)", "06 guardrails is shown inline in the runtime core (no standalone diagram); 13 branding → branding-org-config", "Per-user MCP (17) is PROPOSED/P2+; everything else reflects the locked design"] },
+    { "dot": "slate", "title": "Source", "items": ["Index of docs/diagrams/backend-design/ — regenerate any node with: archify finalize <type> <json> <html> --quality <profile> (fresh --out-dir per rerun)", "Backing docs: docs/backend/00–17 · design-intent chain: docs/scope.md → spec.md → backend/"] }
+  ]
+}

@@ -33,7 +33,7 @@ Legend: **Auth** = console session (signed-in user, RBAC) vs caller token (runti
 | `lib/org.ts:ORG` | GET /v1/branding (or deploy env/config) | - | - | - | **Per-deployment org branding** (orgName, productName, idpName, email/docs domain, logo). One deployment per org; branding resolved at deploy/build time. Sits **above** workspace tenancy (not tenant-scoped). Color/radius/font tokens live in `app/brand.css`; default tenant is seed-derived (`iam.ts:DEFAULT_WORKSPACE_ID`), not branding. See `docs/backend/13-branding.md`. |
 | `lib/auth.tsx:MOCK_PROFILE` | OIDC session | session | - | - | Replace mock profile with Auth.js + Trellix IAM OIDC; `useAuth`/`useWorkspace`/`usePrincipal` surface unchanged. |
 | `lib/iam.ts:WORKSPACES/TEAMS/MOCK_PROFILE` | GET (org Okta + app roster) | session | - | - | Identity + teams (Okta `groups` claim); workspaces carry `access` (open/restricted); role-per-workspace is the **app-managed** membership roster (invite / join-open). |
-| `lib/store.ts:setActiveWorkspace` · `joinWorkspace` | session / persist · POST /v1/workspaces/:id/join | session | yes | - | Active workspace from session; member list from the app roster. `joinWorkspace` self-joins an open space (default role). |
+| `lib/store.ts:setActiveWorkspace` | session / persist | session | yes | - | Active workspace from session; visible list = the user's Okta group memberships (platform-admins see all). No self-join — membership is group-driven. |
 | `lib/store.ts:setRoleOverride/setTeamOverride` | remove | - | - | - | Dev-only preview switches; delete with real IAM (also the switcher UI in `app-shell.tsx`). |
 | `app/(app)/layout.tsx`, `components/app-boundary.tsx` | gate | session | yes | - | No-access / space-picker screens driven by the Okta session + app roster; picker offers **Join** on open spaces (no member *and* no open space → no access). |
 
@@ -80,6 +80,24 @@ hook + an inline `@backend` marker when the FE surface is built (follow-up, not 
 | `lib/store.ts:reingest` | POST /v1/knowledge-bases/:id/reingest | session | yes | yes | Re-run ingestion. |
 | `lib/store.ts:useIngestionJobs` | GET /v1/ingestion-jobs (poll/SSE) | session | yes | yes | Job status stream. |
 | `components/source-picker.tsx` | GET /v1/connectors · POST /v1/connectors/credentials · upload | session | yes | - | GET returns the connector registry (field specs per connector); credential capture POSTs secret/file → vault → `{masked,vaultPath}` (FE masks as a mock stand-in); file upload needs presign. |
+
+## Skills
+
+> A **skill** is a reusable, versioned capability package = instruction fragment (injected into the prompt
+> like the system prompt) + bundled reference files. **Peer to Knowledge Bases, not a tool: it does NOT
+> execute code** — no sandbox/egress/approval, so no test-invoke/risk-tier here. Signed at publish; only
+> signed skills are bindable; a bound skill's content folds into the version `snapshot_hash` (05 §6). These
+> rows are **mocked** (the FE Skills mock exists), not net-new FE. See `backend/01 §4.4`, `backend/08 Skills`.
+
+| Source (`file:symbol`) | Method / Path | Auth | Tenant | Async | Notes |
+|---|---|---|---|---|---|
+| `lib/store.ts:useSkills` | GET /v1/skills?workspace=:id | session | yes | - | List skills (instruction+resource packages). **Mocked.** |
+| `lib/store.ts:useSkill` | GET /v1/skills/:id | session | yes | - | Single skill (instructions, resources, signing/provenance, access). **Mocked.** |
+| `lib/store.ts:addSkill` | POST /v1/skills | session (builder+ `skill.manage`) | yes | - | Create a draft skill (instruction + bundled resources). No credential capture. **Mocked.** |
+| `lib/store.ts:updateSkill` | PUT /v1/skills/:id | session (builder+ `skill.manage`) | yes | - | Edit; a content change re-freezes `content_hash` → bound agents `needsReEval` (05 §5). **Mocked.** |
+| `lib/store.ts:publishSkill` | POST /v1/skills/:id/publish | session (builder+ `skill.manage`) | yes | - | Sign + publish so the skill becomes bindable (stamps signature/signed_by/signed_at). Audited `skill.publish`. **Mocked.** |
+| `lib/store.ts:deleteSkill` | DELETE /v1/skills/:id | session (builder+ `skill.manage`) | yes | - | Delete a skill. **Mocked.** |
+| bind via `updateAgent({skills})` | POST /v1/versions/:vid/skills | session | yes | - | Bind skills to a version (bind→freeze, mirrors `.../tools`); verifies each is published+signed, pins `skill_content_hash` into `snapshot_hash`. FE binds through `AgentPatch.skills`. **Mocked** (via `updateAgent`). |
 
 ## Tools & MCP
 
@@ -150,7 +168,7 @@ hook + an inline `@backend` marker when the FE surface is built (follow-up, not 
 
 | Source (`file:symbol`) | Method / Path | Auth | Tenant | Async | Notes |
 |---|---|---|---|---|---|
-| `lib/store.ts:setAccessPolicy` | PUT /v1/{agents\|knowledge\|tools\|mcp\|channels}/:id/access-policy | session (admin) | yes | - | Persist policy; server enforces on read/manage and at invoke. |
+| `lib/store.ts:setAccessPolicy` | PUT /v1/{agents\|knowledge\|tools\|mcp\|channels\|skills}/:id/access-policy | session (admin) | yes | - | Persist policy; server enforces on read/manage and at invoke. |
 | `lib/access-policy.ts:canUse/canManage` | (server-enforced) | both | yes | - | Mirror the checks server-side; client use is UI gating only. |
 
 ## Runtime / invoke
@@ -172,9 +190,13 @@ hook + an inline `@backend` marker when the FE surface is built (follow-up, not 
 
 | Source (`file:symbol`) | Method / Path | Auth | Tenant | Async | Notes |
 |---|---|---|---|---|---|
-| `lib/store.ts:useWorkspaceSettings` | GET /v1/workspaces/:id | session | yes | - | Name/slug read-only identity; default provider/model editable. |
+| `lib/store.ts:useWorkspaces` | GET /v1/workspaces (user's Okta group memberships) | session | yes | - | Store-backed registry (mutable in the mock); real list = workspaces whose backing Okta group the user is in (platform-admins see all). |
+| `lib/store.ts:useWorkspaceSettings` | GET /v1/workspaces/:id | session | yes | - | Slug read-only identity; name / backing okta_group / member_role / default provider+model editable. |
+| `lib/store.ts:updateWorkspace` | PATCH /v1/workspaces/:id | session (**platform-admin**) | yes | - | Saves identity (name, `okta_group`, `member_role`); slug/id immutable. No more `access_mode`. |
 | `lib/store.ts:updateWorkspaceSettings` | PATCH /v1/workspaces/:id | session (admin) | yes | - | Saves default provider/model; slug immutable. |
-| `lib/store.ts:archiveWorkspace` | POST /v1/workspaces/:id/archive | session (admin) | yes | - | Sets `archived_at`; unpublishes the workspace's endpoints. |
+| `lib/store.ts:addWorkspace` | **no endpoint** (org-provisioned) | session (**platform-admin**) | **no** | - | **Mock-only** self-serve create: binds an Okta group + member role, seeds config + a starter kit. A real deploy adds `POST /v1/workspaces` (platform-admin) or keeps provisioning out-of-band. |
+| `lib/store.ts:setWorkspaceActive` | POST /v1/workspaces/:id/archive (deactivate) **+ NEW reactivate endpoint** | session (**platform-admin**) | partial | - | Reversible Inactive toggle via `archived_at`; deactivate exists (unpublishes endpoints), reactivate needs a new endpoint. Drives the FE read-only freeze. |
+| `lib/store.ts:deleteWorkspace` | **no endpoint** (backend archives) | session (**platform-admin**) | **no** | - | **Mock-only** hard-delete cascade: removes the space + every scoped resource. A real deploy would add a guarded platform-admin cascade or disallow it in favor of archive. |
 | `lib/store.ts:useLimits` / `updateLimits` | GET/PUT /v1/workspaces/:id/limits | session (admin) | yes | - | Per-workspace spend + max-concurrency + timeout. **Stored P1, enforced P2** (backend/07). |
 | `lib/store.ts:useTokens` | GET /v1/agents/:id/tokens | session | yes | - | Prefixes only, never the secret. |
 | `lib/store.ts:addToken` | POST /v1/agents/:id/tokens | session (publisher) | yes | - | Caller token bound to a published endpoint, shown once. |
@@ -182,9 +204,8 @@ hook + an inline `@backend` marker when the FE surface is built (follow-up, not 
 | `lib/store.ts:useProviderKeys` | GET /v1/provider-keys?workspace=:id | session | yes | - | Masked. |
 | `lib/store.ts:addProviderKey` | POST /v1/provider-keys | session (admin) | yes | - | Stored in vault; value never returned. |
 | `lib/store.ts:rotateProviderKey` / `revokeProviderKey` | POST /v1/provider-keys/:id/rotate\|revoke | session (admin) | yes | - | Rotate replaces the vaulted secret + mask; revoke tombstones (status=revoked). Audited (09 §12). |
-| `lib/store.ts:useMembers` · `useInvites` | GET /v1/members · GET /v1/workspaces/:id/invites | session | yes | - | Space roster + pending invites (app-managed). Identity from org Okta. |
-| `lib/store.ts:inviteMember` · `revokeInvite` · `removeMember` | POST /v1/workspaces/:id/invites · DELETE …/invites/:id · DELETE /v1/members/:id | session (admin) | yes | - | Space admin (`member.manage`) manages the roster — replaces the old IAM deep-link. |
-| `settings/page.tsx:RolesAccess` → `lib/store.ts:setAccessPolicy` | PUT /v1/{agents\|knowledge\|tools\|mcp\|channels}/:id/access-policy | session (admin) | yes | - | Roles & access tab now EDITS per-resource policies across all 5 kinds (incl. channels) via `AccessPolicyEditor`. |
+| `lib/store.ts:useMembers` | GET /v1/members?workspace=:id | session | yes | - | **READ-ONLY** roster projected from the workspace's backing Okta group (role = the workspace's `member_role`). No in-app invite/remove — membership is managed in Okta. |
+| `settings/page.tsx:RolesAccess` → `lib/store.ts:setAccessPolicy` | PUT /v1/{agents\|knowledge\|tools\|mcp\|channels\|skills}/:id/access-policy | session (admin) | yes | - | Roles & access tab EDITS per-resource policies across all kinds (agents/knowledge/tools/mcp/channels/skills) via `AccessPolicyEditor`. |
 
 ## Guardrails & search
 

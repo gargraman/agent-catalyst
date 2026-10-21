@@ -12,7 +12,7 @@ import { Button } from "@/components/ui";
 /** Lowest role that grants a permission, for the tooltip copy. */
 const REQUIRED_ROLE: Partial<Record<Permission, Role>> = {
   "agent.create": "builder", "agent.edit": "builder", "eval.run": "builder", "eval.author": "builder",
-  "knowledge.manage": "builder", "tool.manage": "builder", "mcp.manage": "builder", "channel.manage": "builder",
+  "knowledge.manage": "builder", "tool.manage": "builder", "mcp.manage": "builder", "skill.manage": "builder", "channel.manage": "builder",
   "agent.publish": "publisher", "tool.approve": "publisher",
   "agent.delete": "admin", "key.manage": "admin", "member.manage": "admin", "access.manage": "admin",
   "settings.manage": "admin", "eval.govern": "admin",
@@ -42,14 +42,16 @@ type GateButtonProps = React.ComponentProps<typeof Button> & { permission: Permi
 /** A Button that disables itself (with a reason title) when the role lacks `permission`.
    When blocked, any `href` is dropped so it renders a real disabled <button>, not a live link. */
 export function GateButton({ permission, disabled, title, href, ...rest }: GateButtonProps) {
-  const { can } = useAuth();
+  const { can, frozen } = useAuth();
   const allowed = can(permission);
+  // When the workspace is Inactive the block is the read-only freeze, not a missing role — say so.
+  const reason = frozen && permission !== "view" ? "Workspace is inactive — read-only" : requirementText(permission);
   return (
     <Button
       {...rest}
       href={allowed ? href : undefined}
       disabled={disabled || !allowed}
-      title={allowed ? title : requirementText(permission)}
+      title={allowed ? title : reason}
     />
   );
 }

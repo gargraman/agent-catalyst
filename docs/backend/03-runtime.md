@@ -68,10 +68,17 @@ async def input_guardrails(state):          # (06)
         return {"guardrail_outcome": outcome.label, "stop_reason": "blocked"}
     return {"messages": outcome.rewritten_messages or state["messages"]}
 
-async def build_messages(state):            # system prompt + input-var templating + memory window
+async def build_messages(state):            # system prompt + skills + input-var templating + memory window
     sys = render_prompt(state["snapshot"].system_prompt, state["inputs"])     # Jinja-safe template
+    # Skills (01 §4.4): each bound, access-checked skill contributes an INSTRUCTION FRAGMENT composed into
+    # the system/context messages — the same injection point as render_prompt(snapshot.system_prompt). Their
+    # bundled resources are available as reference context (data, not instructions). Skill instruction text is
+    # UNTRUSTED (treated like any injected content, 09 §10): the output guardrail redaction (06) still applies
+    # and no secrets live in skill text. Skills have NO execute path — they never enter execute_tools /
+    # tool_approval_gate, touch the sandbox, or hit the egress allow-list (03 §8, 09 §10).
+    skill_msgs = compose_skill_fragments(state["snapshot"].skills)            # pinned by skill_content_hash (01 §4.2)
     history = apply_memory_window(state["messages"], state["snapshot"].memory_config)  # §6
-    return {"messages": [sys_msg(sys), *history]}
+    return {"messages": [sys_msg(sys), *skill_msgs, *history]}
 
 async def retrieve_always_on(state):        # only when injection == "always_on" (04)
     chunks = await retriever.search(state["snapshot"], query=last_user_text(state), ctx=state["ctx"])

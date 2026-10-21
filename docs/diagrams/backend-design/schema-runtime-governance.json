@@ -1,0 +1,1419 @@
+{
+  "schema_version": 1,
+  "diagram_type": "erd",
+  "meta": {
+    "title": "Runtime & Governance Schema — Tools/MCP, Publish, Runs, Ops, Adoption",
+    "subtitle": "Postgres+pgvector (docs/backend/01). Part 2 of 2 — anchors re-shown from Part 1. Includes PROPOSED mcp_user_connections / auth_mode (doc 17).",
+    "quality_profile": "standard",
+    "output": "docs/diagrams/backend-design/schema-runtime-governance.html",
+    "views": [
+      {
+        "id": "approval",
+        "label": "Tool approval path",
+        "focus": [
+          "tool_bindings",
+          "tool_approvals",
+          "runs",
+          "subagent_configs",
+          "agent_versions"
+        ],
+        "note": "a frozen tool_binding with requires_approval parks the run; a publisher decides on tool_approvals."
+      },
+      {
+        "id": "record",
+        "label": "Run → spans → cost",
+        "focus": [
+          "runs",
+          "spans",
+          "api_tokens",
+          "published_endpoints",
+          "agent_versions"
+        ],
+        "note": "a published endpoint pins one version; a caller token drives a run; every model/tool/retrieval step is a span with cost_usd."
+      },
+      {
+        "id": "adoption",
+        "label": "Adoption & drift notify",
+        "focus": [
+          "agent_signatures",
+          "agents",
+          "agent_versions",
+          "notifications"
+        ],
+        "note": "agent_signatures is the pgvector dedup fingerprint at registration; notifications fan drift/eval/budget to the owner."
+      }
+    ]
+  },
+  "layout": {
+    "mode": "grid",
+    "gapX": 58,
+    "gapY": 24
+  },
+  "entities": [
+    {
+      "id": "jobs",
+      "label": "jobs",
+      "tag": "ops / jobs / quotas",
+      "row": 0,
+      "col": 0,
+      "width": 220,
+      "attributes": [
+        {
+          "name": "id",
+          "type": "uuid",
+          "key": "pk"
+        },
+        {
+          "name": "workspace_id",
+          "type": "uuid",
+          "key": "fk",
+          "references": "workspaces.id"
+        },
+        {
+          "name": "kind",
+          "type": "job_kind"
+        },
+        {
+          "name": "status",
+          "type": "job_status"
+        },
+        {
+          "name": "ref_id",
+          "type": "uuid"
+        },
+        {
+          "name": "progress",
+          "type": "jsonb"
+        },
+        {
+          "name": "error",
+          "type": "text"
+        },
+        {
+          "name": "created_at",
+          "type": "timestamptz"
+        },
+        {
+          "name": "updated_at",
+          "type": "timestamptz"
+        }
+      ]
+    },
+    {
+      "id": "audit_logs",
+      "label": "audit_logs",
+      "tag": "ops / jobs / quotas",
+      "row": 1,
+      "col": 0,
+      "width": 220,
+      "attributes": [
+        {
+          "name": "id",
+          "type": "uuid",
+          "key": "pk"
+        },
+        {
+          "name": "workspace_id",
+          "type": "uuid",
+          "key": "fk",
+          "references": "workspaces.id"
+        },
+        {
+          "name": "actor",
+          "type": "text"
+        },
+        {
+          "name": "action",
+          "type": "text"
+        },
+        {
+          "name": "target",
+          "type": "text"
+        },
+        {
+          "name": "meta",
+          "type": "jsonb"
+        },
+        {
+          "name": "created_at",
+          "type": "timestamptz"
+        }
+      ]
+    },
+    {
+      "id": "spend_limits",
+      "label": "spend_limits",
+      "tag": "ops / jobs / quotas",
+      "row": 2,
+      "col": 0,
+      "width": 268,
+      "attributes": [
+        {
+          "name": "id",
+          "type": "uuid",
+          "key": "pk"
+        },
+        {
+          "name": "workspace_id",
+          "type": "uuid",
+          "key": "fk",
+          "references": "workspaces.id"
+        },
+        {
+          "name": "scope",
+          "type": "text"
+        },
+        {
+          "name": "scope_id",
+          "type": "uuid"
+        },
+        {
+          "name": "monthly_budget_usd",
+          "type": "numeric(12,2)"
+        },
+        {
+          "name": "hard_cap",
+          "type": "boolean"
+        }
+      ]
+    },
+    {
+      "id": "concurrency_limits",
+      "label": "concurrency_limits",
+      "tag": "ops / jobs / quotas",
+      "row": 3,
+      "col": 0,
+      "width": 240,
+      "attributes": [
+        {
+          "name": "id",
+          "type": "uuid",
+          "key": "pk"
+        },
+        {
+          "name": "workspace_id",
+          "type": "uuid",
+          "key": "fk",
+          "references": "workspaces.id"
+        },
+        {
+          "name": "scope",
+          "type": "text"
+        },
+        {
+          "name": "scope_id",
+          "type": "uuid"
+        },
+        {
+          "name": "max_concurrent",
+          "type": "int"
+        }
+      ]
+    },
+    {
+      "id": "provider_keys",
+      "label": "provider_keys",
+      "tag": "publish / runtime",
+      "row": 0,
+      "col": 1,
+      "width": 230,
+      "attributes": [
+        {
+          "name": "id",
+          "type": "uuid",
+          "key": "pk"
+        },
+        {
+          "name": "workspace_id",
+          "type": "uuid",
+          "key": "fk",
+          "references": "workspaces.id"
+        },
+        {
+          "name": "provider",
+          "type": "provider_name"
+        },
+        {
+          "name": "label",
+          "type": "text"
+        },
+        {
+          "name": "region",
+          "type": "text"
+        },
+        {
+          "name": "masked",
+          "type": "text"
+        },
+        {
+          "name": "vault_path",
+          "type": "text"
+        },
+        {
+          "name": "status",
+          "type": "text"
+        },
+        {
+          "name": "created_at",
+          "type": "timestamptz"
+        },
+        {
+          "name": "rotated_at",
+          "type": "timestamptz"
+        }
+      ]
+    },
+    {
+      "id": "published_endpoints",
+      "label": "published_endpoints",
+      "tag": "publish / runtime",
+      "row": 1,
+      "col": 1,
+      "width": 245,
+      "attributes": [
+        {
+          "name": "id",
+          "type": "uuid",
+          "key": "pk"
+        },
+        {
+          "name": "workspace_id",
+          "type": "uuid",
+          "key": "fk",
+          "references": "workspaces.id"
+        },
+        {
+          "name": "agent_id",
+          "type": "uuid",
+          "key": "fk",
+          "references": "agents.id"
+        },
+        {
+          "name": "slug",
+          "type": "text",
+          "key": "uk"
+        },
+        {
+          "name": "pinned_version_id",
+          "type": "uuid",
+          "key": "fk",
+          "references": "agent_versions.id"
+        },
+        {
+          "name": "created_at",
+          "type": "timestamptz"
+        }
+      ]
+    },
+    {
+      "id": "api_tokens",
+      "label": "api_tokens",
+      "tag": "publish / runtime",
+      "row": 2,
+      "col": 1,
+      "width": 240,
+      "attributes": [
+        {
+          "name": "id",
+          "type": "uuid",
+          "key": "pk"
+        },
+        {
+          "name": "workspace_id",
+          "type": "uuid",
+          "key": "fk",
+          "references": "workspaces.id"
+        },
+        {
+          "name": "endpoint_id",
+          "type": "uuid",
+          "key": "fk",
+          "references": "published_endpoints.id"
+        },
+        {
+          "name": "name",
+          "type": "text"
+        },
+        {
+          "name": "prefix",
+          "type": "text"
+        },
+        {
+          "name": "token_hash",
+          "type": "text",
+          "key": "uk"
+        },
+        {
+          "name": "scopes",
+          "type": "jsonb"
+        },
+        {
+          "name": "created_at",
+          "type": "timestamptz"
+        },
+        {
+          "name": "last_used_at",
+          "type": "timestamptz"
+        },
+        {
+          "name": "expires_at",
+          "type": "timestamptz"
+        },
+        {
+          "name": "revoked_at",
+          "type": "timestamptz"
+        }
+      ]
+    },
+    {
+      "id": "runs",
+      "label": "runs",
+      "tag": "publish / runtime",
+      "row": 3,
+      "col": 1,
+      "width": 250,
+      "attributes": [
+        {
+          "name": "id",
+          "type": "uuid",
+          "key": "pk"
+        },
+        {
+          "name": "workspace_id",
+          "type": "uuid",
+          "key": "fk",
+          "references": "workspaces.id"
+        },
+        {
+          "name": "agent_id",
+          "type": "uuid",
+          "key": "fk",
+          "references": "agents.id"
+        },
+        {
+          "name": "version_id",
+          "type": "uuid",
+          "key": "fk",
+          "references": "agent_versions.id"
+        },
+        {
+          "name": "parent_run_id",
+          "type": "uuid",
+          "key": "fk",
+          "references": "runs.id"
+        },
+        {
+          "name": "source",
+          "type": "run_source"
+        },
+        {
+          "name": "status",
+          "type": "run_status"
+        },
+        {
+          "name": "caller",
+          "type": "text"
+        },
+        {
+          "name": "subject_type",
+          "type": "text"
+        },
+        {
+          "name": "caller_token_id",
+          "type": "uuid",
+          "key": "fk",
+          "references": "api_tokens.id"
+        },
+        {
+          "name": "latency_ms",
+          "type": "int"
+        },
+        {
+          "name": "input_tokens",
+          "type": "int"
+        },
+        {
+          "name": "output_tokens",
+          "type": "int"
+        },
+        {
+          "name": "cost_usd",
+          "type": "numeric(12,6)"
+        },
+        {
+          "name": "guardrail",
+          "type": "text"
+        },
+        {
+          "name": "idempotency_key",
+          "type": "text"
+        },
+        {
+          "name": "trace_id",
+          "type": "text"
+        },
+        {
+          "name": "created_at",
+          "type": "timestamptz"
+        }
+      ]
+    },
+    {
+      "id": "spans",
+      "label": "spans",
+      "tag": "publish / runtime",
+      "row": 4,
+      "col": 1,
+      "width": 230,
+      "attributes": [
+        {
+          "name": "id",
+          "type": "uuid",
+          "key": "pk"
+        },
+        {
+          "name": "workspace_id",
+          "type": "uuid",
+          "key": "fk",
+          "references": "workspaces.id"
+        },
+        {
+          "name": "run_id",
+          "type": "uuid",
+          "key": "fk",
+          "references": "runs.id"
+        },
+        {
+          "name": "kind",
+          "type": "text"
+        },
+        {
+          "name": "name",
+          "type": "text"
+        },
+        {
+          "name": "input_tokens",
+          "type": "int"
+        },
+        {
+          "name": "output_tokens",
+          "type": "int"
+        },
+        {
+          "name": "cost_usd",
+          "type": "numeric(12,6)"
+        },
+        {
+          "name": "latency_ms",
+          "type": "int"
+        },
+        {
+          "name": "attrs",
+          "type": "jsonb"
+        },
+        {
+          "name": "started_at",
+          "type": "timestamptz"
+        },
+        {
+          "name": "finished_at",
+          "type": "timestamptz"
+        }
+      ]
+    },
+    {
+      "id": "agents",
+      "label": "agents",
+      "tag": "anchor · see Part 1",
+      "row": 0,
+      "col": 2,
+      "width": 210,
+      "attributes": [
+        {
+          "name": "id",
+          "type": "uuid",
+          "key": "pk"
+        },
+        {
+          "name": "workspace_id",
+          "type": "uuid",
+          "key": "fk",
+          "references": "workspaces.id"
+        },
+        {
+          "name": "slug",
+          "type": "text",
+          "key": "uk"
+        },
+        {
+          "name": "status",
+          "type": "agent_status"
+        },
+        {
+          "name": "active_version_id",
+          "type": "uuid",
+          "key": "fk",
+          "references": "agent_versions.id"
+        }
+      ]
+    },
+    {
+      "id": "agent_versions",
+      "label": "agent_versions",
+      "tag": "anchor · see Part 1",
+      "row": 1,
+      "col": 2,
+      "width": 210,
+      "attributes": [
+        {
+          "name": "id",
+          "type": "uuid",
+          "key": "pk"
+        },
+        {
+          "name": "agent_id",
+          "type": "uuid",
+          "key": "fk",
+          "references": "agents.id"
+        },
+        {
+          "name": "label",
+          "type": "text",
+          "key": "uk"
+        },
+        {
+          "name": "snapshot_hash",
+          "type": "text"
+        },
+        {
+          "name": "publishable",
+          "type": "boolean"
+        }
+      ]
+    },
+    {
+      "id": "workspaces",
+      "label": "workspaces",
+      "tag": "anchor · see Part 1",
+      "row": 2,
+      "col": 2,
+      "width": 210,
+      "attributes": [
+        {
+          "name": "id",
+          "type": "uuid",
+          "key": "pk"
+        },
+        {
+          "name": "slug",
+          "type": "text",
+          "key": "uk"
+        }
+      ]
+    },
+    {
+      "id": "tools",
+      "label": "tools",
+      "tag": "tools / MCP",
+      "row": 0,
+      "col": 3,
+      "width": 220,
+      "attributes": [
+        {
+          "name": "id",
+          "type": "uuid",
+          "key": "pk"
+        },
+        {
+          "name": "workspace_id",
+          "type": "uuid",
+          "key": "fk",
+          "references": "workspaces.id"
+        },
+        {
+          "name": "name",
+          "type": "text"
+        },
+        {
+          "name": "kind",
+          "type": "tool_kind"
+        },
+        {
+          "name": "description",
+          "type": "text"
+        },
+        {
+          "name": "risk_tier",
+          "type": "tool_risk_tier"
+        },
+        {
+          "name": "schema",
+          "type": "jsonb"
+        },
+        {
+          "name": "config",
+          "type": "jsonb"
+        },
+        {
+          "name": "access_policy",
+          "type": "jsonb"
+        },
+        {
+          "name": "created_at",
+          "type": "timestamptz"
+        }
+      ]
+    },
+    {
+      "id": "mcp_servers",
+      "label": "mcp_servers",
+      "tag": "tools / MCP",
+      "row": 1,
+      "col": 3,
+      "width": 248,
+      "attributes": [
+        {
+          "name": "id",
+          "type": "uuid",
+          "key": "pk"
+        },
+        {
+          "name": "workspace_id",
+          "type": "uuid",
+          "key": "fk",
+          "references": "workspaces.id"
+        },
+        {
+          "name": "name",
+          "type": "text"
+        },
+        {
+          "name": "transport",
+          "type": "text"
+        },
+        {
+          "name": "auth_mode",
+          "type": "mcp_auth_mode"
+        },
+        {
+          "name": "config",
+          "type": "jsonb"
+        },
+        {
+          "name": "last_discovery_at",
+          "type": "timestamptz"
+        },
+        {
+          "name": "health",
+          "type": "text"
+        },
+        {
+          "name": "access_policy",
+          "type": "jsonb"
+        },
+        {
+          "name": "created_at",
+          "type": "timestamptz"
+        }
+      ]
+    },
+    {
+      "id": "mcp_tools",
+      "label": "mcp_tools",
+      "tag": "tools / MCP",
+      "row": 2,
+      "col": 3,
+      "width": 220,
+      "attributes": [
+        {
+          "name": "id",
+          "type": "uuid",
+          "key": "pk"
+        },
+        {
+          "name": "workspace_id",
+          "type": "uuid",
+          "key": "fk",
+          "references": "workspaces.id"
+        },
+        {
+          "name": "server_id",
+          "type": "uuid",
+          "key": "fk",
+          "references": "mcp_servers.id"
+        },
+        {
+          "name": "name",
+          "type": "text"
+        },
+        {
+          "name": "description",
+          "type": "text"
+        },
+        {
+          "name": "input_schema",
+          "type": "jsonb"
+        },
+        {
+          "name": "risk_tier",
+          "type": "tool_risk_tier"
+        },
+        {
+          "name": "enabled",
+          "type": "boolean"
+        }
+      ]
+    },
+    {
+      "id": "subagent_configs",
+      "label": "subagent_configs",
+      "tag": "tools / MCP",
+      "row": 3,
+      "col": 3,
+      "width": 245,
+      "attributes": [
+        {
+          "name": "id",
+          "type": "uuid",
+          "key": "pk"
+        },
+        {
+          "name": "workspace_id",
+          "type": "uuid",
+          "key": "fk",
+          "references": "workspaces.id"
+        },
+        {
+          "name": "tool_id",
+          "type": "uuid",
+          "key": [
+            "fk",
+            "uk"
+          ],
+          "references": "tools.id"
+        },
+        {
+          "name": "target_agent_id",
+          "type": "uuid",
+          "key": "fk",
+          "references": "agents.id"
+        },
+        {
+          "name": "target_version_id",
+          "type": "uuid",
+          "key": "fk",
+          "references": "agent_versions.id"
+        },
+        {
+          "name": "max_depth",
+          "type": "int"
+        },
+        {
+          "name": "max_fanout",
+          "type": "int"
+        },
+        {
+          "name": "input_mapping",
+          "type": "jsonb"
+        },
+        {
+          "name": "created_at",
+          "type": "timestamptz"
+        }
+      ]
+    },
+    {
+      "id": "tool_bindings",
+      "label": "tool_bindings",
+      "tag": "tools / MCP",
+      "row": 4,
+      "col": 3,
+      "width": 250,
+      "attributes": [
+        {
+          "name": "id",
+          "type": "uuid",
+          "key": "pk"
+        },
+        {
+          "name": "workspace_id",
+          "type": "uuid",
+          "key": "fk",
+          "references": "workspaces.id"
+        },
+        {
+          "name": "version_id",
+          "type": "uuid",
+          "key": "fk",
+          "references": "agent_versions.id"
+        },
+        {
+          "name": "kind",
+          "type": "tool_kind"
+        },
+        {
+          "name": "tool_id",
+          "type": "uuid",
+          "key": "fk",
+          "references": "tools.id"
+        },
+        {
+          "name": "mcp_tool_id",
+          "type": "uuid",
+          "key": "fk",
+          "references": "mcp_tools.id"
+        },
+        {
+          "name": "schema_snapshot",
+          "type": "jsonb"
+        },
+        {
+          "name": "config_snapshot",
+          "type": "jsonb"
+        },
+        {
+          "name": "risk_tier",
+          "type": "tool_risk_tier"
+        },
+        {
+          "name": "requires_approval",
+          "type": "boolean"
+        },
+        {
+          "name": "subagent_config_id",
+          "type": "uuid",
+          "key": "fk",
+          "references": "subagent_configs.id"
+        }
+      ]
+    },
+    {
+      "id": "tool_approvals",
+      "label": "tool_approvals",
+      "tag": "tools / MCP",
+      "row": 5,
+      "col": 3,
+      "width": 250,
+      "attributes": [
+        {
+          "name": "id",
+          "type": "uuid",
+          "key": "pk"
+        },
+        {
+          "name": "workspace_id",
+          "type": "uuid",
+          "key": "fk",
+          "references": "workspaces.id"
+        },
+        {
+          "name": "run_id",
+          "type": "uuid",
+          "key": "fk",
+          "references": "runs.id"
+        },
+        {
+          "name": "version_id",
+          "type": "uuid",
+          "key": "fk",
+          "references": "agent_versions.id"
+        },
+        {
+          "name": "tool_binding_id",
+          "type": "uuid",
+          "key": "fk",
+          "references": "tool_bindings.id"
+        },
+        {
+          "name": "tool_call_id",
+          "type": "text"
+        },
+        {
+          "name": "args_redacted",
+          "type": "jsonb"
+        },
+        {
+          "name": "status",
+          "type": "approval_status"
+        },
+        {
+          "name": "requested_at",
+          "type": "timestamptz"
+        },
+        {
+          "name": "decided_at",
+          "type": "timestamptz"
+        },
+        {
+          "name": "decided_by",
+          "type": "text"
+        },
+        {
+          "name": "decision_reason",
+          "type": "text"
+        },
+        {
+          "name": "expires_at",
+          "type": "timestamptz"
+        }
+      ]
+    },
+    {
+      "id": "agent_signatures",
+      "label": "agent_signatures",
+      "tag": "adoption / notifications",
+      "row": 0,
+      "col": 4,
+      "width": 235,
+      "attributes": [
+        {
+          "name": "id",
+          "type": "uuid",
+          "key": "pk"
+        },
+        {
+          "name": "workspace_id",
+          "type": "uuid",
+          "key": "fk",
+          "references": "workspaces.id"
+        },
+        {
+          "name": "agent_id",
+          "type": "uuid",
+          "key": "fk",
+          "references": "agents.id"
+        },
+        {
+          "name": "version_id",
+          "type": "uuid",
+          "key": [
+            "fk",
+            "uk"
+          ],
+          "references": "agent_versions.id"
+        },
+        {
+          "name": "embedding",
+          "type": "vector(1024)"
+        },
+        {
+          "name": "embed_model",
+          "type": "text"
+        },
+        {
+          "name": "created_at",
+          "type": "timestamptz"
+        }
+      ]
+    },
+    {
+      "id": "notifications",
+      "label": "notifications",
+      "tag": "adoption / notifications",
+      "row": 1,
+      "col": 4,
+      "width": 235,
+      "attributes": [
+        {
+          "name": "id",
+          "type": "uuid",
+          "key": "pk"
+        },
+        {
+          "name": "workspace_id",
+          "type": "uuid",
+          "key": "fk",
+          "references": "workspaces.id"
+        },
+        {
+          "name": "agent_id",
+          "type": "uuid",
+          "key": "fk",
+          "references": "agents.id"
+        },
+        {
+          "name": "recipient_subject",
+          "type": "text"
+        },
+        {
+          "name": "kind",
+          "type": "notification_kind"
+        },
+        {
+          "name": "severity",
+          "type": "text"
+        },
+        {
+          "name": "title",
+          "type": "text"
+        },
+        {
+          "name": "payload",
+          "type": "jsonb"
+        },
+        {
+          "name": "dedupe_key",
+          "type": "text"
+        },
+        {
+          "name": "created_at",
+          "type": "timestamptz"
+        },
+        {
+          "name": "read_at",
+          "type": "timestamptz"
+        }
+      ]
+    },
+    {
+      "id": "platform_admins",
+      "label": "platform_admins",
+      "tag": "adoption / notifications",
+      "row": 2,
+      "col": 4,
+      "width": 235,
+      "attributes": [
+        {
+          "name": "subject",
+          "type": "text",
+          "key": "pk"
+        },
+        {
+          "name": "granted_at",
+          "type": "timestamptz"
+        },
+        {
+          "name": "granted_by",
+          "type": "text"
+        }
+      ]
+    },
+    {
+      "id": "memberships",
+      "label": "memberships",
+      "tag": "adoption / notifications",
+      "row": 3,
+      "col": 4,
+      "width": 235,
+      "attributes": [
+        {
+          "name": "id",
+          "type": "uuid",
+          "key": "pk"
+        },
+        {
+          "name": "workspace_id",
+          "type": "uuid",
+          "key": "fk",
+          "references": "workspaces.id"
+        },
+        {
+          "name": "subject_id",
+          "type": "text"
+        },
+        {
+          "name": "email",
+          "type": "text"
+        },
+        {
+          "name": "display_name",
+          "type": "text"
+        },
+        {
+          "name": "role",
+          "type": "member_role"
+        },
+        {
+          "name": "invited_by",
+          "type": "text"
+        },
+        {
+          "name": "joined_at",
+          "type": "timestamptz"
+        },
+        {
+          "name": "last_active_at",
+          "type": "timestamptz"
+        }
+      ]
+    },
+    {
+      "id": "mcp_user_connections",
+      "label": "mcp_user_connections",
+      "tag": "tools / MCP",
+      "row": 6,
+      "col": 3,
+      "width": 262,
+      "attributes": [
+        {
+          "name": "id",
+          "type": "uuid",
+          "key": "pk"
+        },
+        {
+          "name": "workspace_id",
+          "type": "uuid",
+          "key": "fk",
+          "references": "workspaces.id"
+        },
+        {
+          "name": "mcp_server_id",
+          "type": "uuid",
+          "key": [
+            "fk",
+            "uk"
+          ],
+          "references": "mcp_servers.id"
+        },
+        {
+          "name": "user_subject",
+          "type": "text",
+          "key": "uk"
+        },
+        {
+          "name": "vault_path",
+          "type": "text"
+        },
+        {
+          "name": "scopes",
+          "type": "jsonb"
+        },
+        {
+          "name": "status",
+          "type": "text"
+        },
+        {
+          "name": "connected_at",
+          "type": "timestamptz"
+        },
+        {
+          "name": "expires_at",
+          "type": "timestamptz"
+        }
+      ]
+    }
+  ],
+  "relationships": [
+    {
+      "id": "av_agent",
+      "from": "agent_versions",
+      "to": "agents",
+      "fromCardinality": "many",
+      "toCardinality": "one",
+      "identifying": true
+    },
+    {
+      "id": "mt_ms",
+      "from": "mcp_tools",
+      "to": "mcp_servers",
+      "fromCardinality": "many",
+      "toCardinality": "one",
+      "identifying": true
+    },
+    {
+      "id": "sc_tool",
+      "from": "subagent_configs",
+      "to": "tools",
+      "fromCardinality": "one",
+      "toCardinality": "one"
+    },
+    {
+      "id": "sc_agent",
+      "from": "subagent_configs",
+      "to": "agents",
+      "fromCardinality": "many",
+      "toCardinality": "one"
+    },
+    {
+      "id": "sc_av",
+      "from": "subagent_configs",
+      "to": "agent_versions",
+      "fromCardinality": "many",
+      "toCardinality": "one",
+      "toOptional": true,
+      "variant": "dashed",
+      "identifying": false
+    },
+    {
+      "id": "tb_av",
+      "from": "tool_bindings",
+      "to": "agent_versions",
+      "fromCardinality": "many",
+      "toCardinality": "one",
+      "identifying": true
+    },
+    {
+      "id": "tb_tool",
+      "from": "tool_bindings",
+      "to": "tools",
+      "fromCardinality": "many",
+      "toCardinality": "one",
+      "toOptional": true,
+      "variant": "dashed",
+      "identifying": false
+    },
+    {
+      "id": "tb_mt",
+      "from": "tool_bindings",
+      "to": "mcp_tools",
+      "fromCardinality": "many",
+      "toCardinality": "one",
+      "toOptional": true,
+      "variant": "dashed",
+      "identifying": false
+    },
+    {
+      "id": "tb_sc",
+      "from": "tool_bindings",
+      "to": "subagent_configs",
+      "fromCardinality": "one",
+      "toCardinality": "one",
+      "toOptional": true,
+      "variant": "dashed",
+      "identifying": false
+    },
+    {
+      "id": "ta_run",
+      "from": "tool_approvals",
+      "to": "runs",
+      "fromCardinality": "many",
+      "toCardinality": "one"
+    },
+    {
+      "id": "ta_tb",
+      "from": "tool_approvals",
+      "to": "tool_bindings",
+      "fromCardinality": "many",
+      "toCardinality": "one"
+    },
+    {
+      "id": "pe_agent",
+      "from": "published_endpoints",
+      "to": "agents",
+      "fromCardinality": "one",
+      "toCardinality": "one",
+      "toOptional": true
+    },
+    {
+      "id": "pe_av",
+      "from": "published_endpoints",
+      "to": "agent_versions",
+      "fromCardinality": "many",
+      "toCardinality": "one",
+      "label": "pinned"
+    },
+    {
+      "id": "at_pe",
+      "from": "api_tokens",
+      "to": "published_endpoints",
+      "fromCardinality": "many",
+      "toCardinality": "one",
+      "identifying": true
+    },
+    {
+      "id": "run_agent",
+      "from": "runs",
+      "to": "agents",
+      "fromCardinality": "many",
+      "toCardinality": "one"
+    },
+    {
+      "id": "run_av",
+      "from": "runs",
+      "to": "agent_versions",
+      "fromCardinality": "many",
+      "toCardinality": "one"
+    },
+    {
+      "id": "run_tok",
+      "from": "runs",
+      "to": "api_tokens",
+      "fromCardinality": "many",
+      "toCardinality": "one",
+      "toOptional": true,
+      "variant": "dashed",
+      "identifying": false
+    },
+    {
+      "id": "span_run",
+      "from": "spans",
+      "to": "runs",
+      "fromCardinality": "many",
+      "toCardinality": "one",
+      "identifying": true
+    },
+    {
+      "id": "sig_agent",
+      "from": "agent_signatures",
+      "to": "agents",
+      "fromCardinality": "many",
+      "toCardinality": "one"
+    },
+    {
+      "id": "sig_av",
+      "from": "agent_signatures",
+      "to": "agent_versions",
+      "fromCardinality": "one",
+      "toCardinality": "one"
+    },
+    {
+      "id": "notif_agent",
+      "from": "notifications",
+      "to": "agents",
+      "fromCardinality": "many",
+      "toCardinality": "one",
+      "toOptional": true,
+      "variant": "dashed",
+      "identifying": false
+    },
+    {
+      "id": "muc_srv",
+      "from": "mcp_user_connections",
+      "to": "mcp_servers",
+      "fromCardinality": "many",
+      "toCardinality": "one",
+      "identifying": true
+    }
+  ],
+  "cards": [
+    {
+      "dot": "rose",
+      "title": "Runtime record & cost",
+      "items": [
+        "Every invoke writes one runs row (partitioned by month) + N spans (model / tool / retrieval / guardrail / judge)",
+        "runs.cost_usd & spans.cost_usd are numeric(12,6), computed from our capability profiles — the same figure dashboards and quotas read",
+        "runs.idempotency_key is partial-unique per workspace so a retried published call can't double-bill",
+        "parent_run_id builds the sub-agent run tree; caller_token_id attributes cost to an endpoint"
+      ]
+    },
+    {
+      "dot": "cyan",
+      "title": "Frontend features → tables",
+      "items": [
+        "tools page ↔ tools · mcp_servers · mcp_tools · subagent_configs (RepoTool, McpServer)",
+        "approvals page ↔ tool_approvals (ToolApproval); agents/[id] version bindings ↔ tool_bindings",
+        "runs page ↔ runs · spans (Run); settings ↔ provider_keys · spend_limits · api_tokens",
+        "published tokens/export ↔ published_endpoints · api_tokens; notifications bell ↔ notifications"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Governance & isolation",
+      "items": [
+        "tool_bindings freeze schema_snapshot + config_snapshot per version — changing a server's tools can't alter a published agent (drift trigger)",
+        "tool_approvals gate high-risk tool calls: run parks via interrupt, publisher+ decides, 409 tool.approval.denied on deny",
+        "provider_keys hold only {masked, vault_path} — platform-custodied pool; the secret never lands in Postgres",
+        "agent_signatures (pgvector vector(1024)) powers registration-time dedup / reuse-first"
+      ]
+    },
+    {
+      "dot": "slate",
+      "title": "Source & scope",
+      "items": [
+        "docs/backend/01-data-model.md §4 (DDL) · 09 (tokens, Vault, audit) · 10 (runs/spans) · 14 (adoption) · 16 (notifications)",
+        "Part 2 of 2 — anchors agents/agent_versions shown compact; full columns in Part 1 (schema-core-authoring)",
+        "memberships is a read-only roster projected from the workspace Okta group (not the system of record)"
+      ]
+    }
+  ]
+}

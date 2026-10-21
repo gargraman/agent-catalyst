@@ -25,7 +25,7 @@ import {
   type InputVariable, type InputVariableType,
 } from "@/lib/data";
 import {
-  useAgent, useTokens, useTools, useKnowledgeBases, useMcpServers, useEvalRunsForAgent,
+  useAgent, useTokens, useTools, useKnowledgeBases, useMcpServers, useSkills, useEvalRunsForAgent,
   useChannelsForAgent, useSuitesForAgent, addEvalRun, simulateEvalRun, useEvalPolicyFor, addToken, revokeToken,
   addSuite, renameSuite, deleteSuite, upsertCase, deleteCase,
   updateAgent, updateAgentConfig, deleteAgent, duplicateAgent, toast, genId, nowIso,
@@ -184,6 +184,7 @@ export default function AgentDetailPage() {
           { key: "configure", label: "Configure", icon: <Settings2 className="size-4" />, content: <Configure agent={agent} model={model} /> },
           { key: "knowledge", label: "Knowledge", icon: <Database className="size-4" />, content: <Knowledge agent={agent} /> },
           { key: "tools", label: "Tools & MCP", icon: <Plug className="size-4" />, content: <ToolsTab agent={agent} /> },
+          { key: "skills", label: "Skills", icon: <Sparkles className="size-4" />, content: <SkillsTab agent={agent} /> },
           { key: "guardrails", label: "Guardrails", icon: <Shield className="size-4" />, content: <Guardrails agent={agent} /> },
           { key: "access", label: "Access", icon: <Lock className="size-4" />, content: <AccessTab agent={agent} canManage={can("access.manage")} /> },
           { key: "versions", label: "Versions", icon: <History className="size-4" />, content: <Versions agent={agent} versions={versions} /> },
@@ -573,6 +574,102 @@ function AttachKbDialog({ agent, open, onClose }: { agent: Agent; open: boolean;
             <Toggle on={selected.includes(kb.id)} />
           </button>
         ))}
+      </div>
+    </Dialog>
+  );
+}
+
+/* ================================================================= Skills */
+function SkillsTab({ agent }: { agent: ReturnType<typeof getAgent> & {} }) {
+  const { can } = useAuth();
+  const principal = usePrincipal();
+  const manage = canManage(agent.accessPolicy, principal);
+  const canEdit = can("agent.edit") && manage;
+  const [attachOpen, setAttachOpen] = React.useState(false);
+  const allSkills = useSkills();
+  const boundIds = agent.skills ?? [];
+  // Resolve bound ids to live skill objects; a deleted skill stays listed as a dangling ref (removable).
+  const bound = boundIds.map((id) => ({ id, skill: allSkills.find((s) => s.id === id) }));
+  function detach(id: string) {
+    updateAgent(agent.id, { skills: boundIds.filter((s) => s !== id) }, false);
+    toast("Skill detached", "neutral");
+  }
+  return (
+    <div className="space-y-6">
+      <SectionCard
+        title="Bound skills"
+        desc="Instruction playbooks injected into this agent. Editing a bound skill triggers a re-eval."
+        action={<GateButton permission="agent.edit" disabled={!manage} title={manage ? undefined : "Restricted by this agent's access policy"} variant="outline" size="sm" onClick={() => setAttachOpen(true)}><Plus className="size-4" /> Attach skill</GateButton>}
+      >
+        {bound.length === 0 ? (
+          <EmptyState icon={<Sparkles className="size-6" />} title="No skills bound" hint="Attach a skill to give this agent a reusable instruction playbook." />
+        ) : (
+          <div className="grid gap-4 md:grid-cols-2">
+            {bound.map(({ id, skill }) => (
+              <div key={id} className="relative rounded-xl border border-border bg-elevated p-4 transition-colors hover:border-border-strong">
+                {canEdit && <button onClick={() => detach(id)} aria-label="Detach" className="absolute right-3 top-3 text-muted hover:text-critical"><X className="size-4" /></button>}
+                {skill ? (
+                  <Link href={`/skills/${skill.id}`} className="block pr-6">
+                    <span className="flex items-center gap-2 font-medium text-ink"><Sparkles className="size-4 text-muted" />{skill.name}</span>
+                    <p className="mt-2 line-clamp-2 text-xs text-muted">{skill.description}</p>
+                    <div className="mt-3 flex items-center gap-2">
+                      <Badge tone="neutral">{skill.version}</Badge>
+                      {skill.signature && <Badge tone="good"><ShieldCheck className="size-3" /> signed</Badge>}
+                      {skill.status === "deprecated" && <Badge tone="warning">deprecated</Badge>}
+                    </div>
+                  </Link>
+                ) : (
+                  <div className="pr-6">
+                    <span className="flex items-center gap-2 font-medium text-ink"><Sparkles className="size-4 text-muted" />{id}</span>
+                    <p className="mt-2 text-xs text-critical">Skill no longer available — remove this binding.</p>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </SectionCard>
+      {/* key-remount so the dialog initializes `selected` from the current bindings without a setState effect */}
+      <AttachSkillDialog key={String(attachOpen)} agent={agent} open={attachOpen} onClose={() => setAttachOpen(false)} />
+    </div>
+  );
+}
+
+function AttachSkillDialog({ agent, open, onClose }: { agent: Agent; open: boolean; onClose: () => void }) {
+  const principal = usePrincipal();
+  const skills = useSkills().filter((s) => canUse(s.accessPolicy, principal));
+  // Initialized from props; the parent key-remounts this dialog on open, so no setState-in-effect sync.
+  const [selected, setSelected] = React.useState<string[]>(agent.skills ?? []);
+  function toggle(id: string) { setSelected((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id])); }
+  function submit() { updateAgent(agent.id, { skills: selected }, false); toast("Skills updated"); onClose(); }
+  return (
+    <Dialog
+      open={open} onClose={onClose} title="Attach skills"
+      description="Only published (signed) skills can be bound; drafts are shown disabled."
+      footer={<><Button variant="ghost" onClick={onClose}>Cancel</Button><Button variant="primary" onClick={submit}>Update</Button></>}
+    >
+      <div className="divide-y divide-border">
+        {skills.length === 0 && <p className="py-6 text-center text-xs text-muted">No skills you can use in this workspace.</p>}
+        {skills.map((sk) => {
+          const isSelected = selected.includes(sk.id);
+          // Only published skills are bindable, but an already-bound skill that was later deprecated/unpublished
+          // must still be removable here — so only block toggling ON an unpublished, not-yet-bound skill.
+          const blockBind = sk.status !== "published" && !isSelected;
+          return (
+            <button key={sk.id} type="button" disabled={blockBind} onClick={() => toggle(sk.id)}
+              title={blockBind ? "Publish to bind — drafts can't be attached" : undefined}
+              className="flex w-full items-center justify-between gap-3 py-3 text-left disabled:cursor-not-allowed disabled:opacity-55">
+              <div className="flex items-center gap-3">
+                <Sparkles className="size-4 text-muted" />
+                <div>
+                  <p className="text-sm font-medium text-ink">{sk.name}</p>
+                  <p className="text-xs text-muted">{sk.status !== "published" ? (isSelected ? `${sk.status} — toggle off to unbind` : "Draft — publish to bind") : `${sk.version} · signed · updated ${relative(sk.lastUpdated)}`}</p>
+                </div>
+              </div>
+              <Toggle on={isSelected} />
+            </button>
+          );
+        })}
       </div>
     </Dialog>
   );

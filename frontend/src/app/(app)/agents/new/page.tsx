@@ -8,7 +8,7 @@ import {
 } from "@/components/ui";
 import { Term } from "@/components/term";
 import { MODELS, type Agent, type ReasoningEffort } from "@/lib/data";
-import { addAgent, genId, nowIso, useKnowledgeBases, useTools, useMcpServers } from "@/lib/store";
+import { addAgent, genId, nowIso, useKnowledgeBases, useTools, useMcpServers, useSkills } from "@/lib/store";
 import { mcpRef } from "@/lib/tools";
 import { usePrincipal, useAuth } from "@/lib/auth";
 import { requirementText } from "@/components/gate";
@@ -25,8 +25,10 @@ type Preset = {
   tags: string[];
   showKnowledge: boolean;
   showTools: boolean;
+  showSkills: boolean;
   knowledgeBases: string[];
   tools: string[];
+  skills: string[];
 };
 
 const TEMPLATES: { key: string; name: string; desc: string; icon: React.ComponentType<{ className?: string }>; preset: Preset }[] = [
@@ -35,7 +37,7 @@ const TEMPLATES: { key: string; name: string; desc: string; icon: React.Componen
     preset: {
       description: "", provider: "Anthropic", model: "claude-opus-5-5", reasoning: "medium",
       systemPrompt: "You are a helpful internal assistant. Be concise and accurate. If you are unsure, say so.",
-      outputFormat: "Free text", tags: [], showKnowledge: false, showTools: false, knowledgeBases: [], tools: [],
+      outputFormat: "Free text", tags: [], showKnowledge: false, showTools: false, showSkills: false, knowledgeBases: [], tools: [], skills: [],
     },
   },
   {
@@ -44,8 +46,8 @@ const TEMPLATES: { key: string; name: string; desc: string; icon: React.Componen
       description: "Answers questions grounded in your documents, with citations.",
       provider: "Anthropic", model: "claude-sonnet-5-5", reasoning: "high",
       systemPrompt: "You are a knowledge assistant. Ground every answer in the retrieved context and cite sources. If the context is insufficient, say so plainly. Do not fabricate.",
-      outputFormat: "Structured JSON + citations", tags: ["rag", "q&a"], showKnowledge: true, showTools: false,
-      knowledgeBases: ["product-docs"], tools: [],
+      outputFormat: "Structured JSON + citations", tags: ["rag", "q&a"], showKnowledge: true, showTools: false, showSkills: true,
+      knowledgeBases: ["product-docs"], tools: [], skills: ["citation-discipline"],
     },
   },
   {
@@ -54,8 +56,8 @@ const TEMPLATES: { key: string; name: string; desc: string; icon: React.Componen
       description: "Resolves customer questions grounded in the help center and policy docs, and escalates when it is unsure.",
       provider: "Anthropic", model: "claude-sonnet-5-5", reasoning: "medium",
       systemPrompt: "You are a customer support assistant. Answer using the help center and policy documents, in a warm, concise tone. If a question is outside the docs or needs an account change, say so and offer to hand off to a human. Never invent policies, prices, or account details.",
-      outputFormat: "Free text", tags: ["support", "helpdesk"], showKnowledge: true, showTools: false,
-      knowledgeBases: ["product-docs"], tools: [],
+      outputFormat: "Free text", tags: ["support", "helpdesk"], showKnowledge: true, showTools: false, showSkills: true,
+      knowledgeBases: ["product-docs"], tools: [], skills: ["citation-discipline"],
     },
   },
   {
@@ -64,8 +66,8 @@ const TEMPLATES: { key: string; name: string; desc: string; icon: React.Componen
       description: "Triages inbound alerts, correlates signals, and drafts an analyst-ready verdict.",
       provider: "Anthropic", model: "claude-opus-5-5", reasoning: "high",
       systemPrompt: "You are a security triage assistant. Classify and correlate inbound signals, then draft an analyst-ready verdict with severity and next steps. Never fabricate identifiers or CVEs.",
-      outputFormat: "Structured JSON", tags: ["security", "triage"], showKnowledge: false, showTools: true,
-      knowledgeBases: [], tools: ["http-enrich-ip", "subagent-log-query"],
+      outputFormat: "Structured JSON", tags: ["security", "triage"], showKnowledge: false, showTools: true, showSkills: true,
+      knowledgeBases: [], tools: ["http-enrich-ip", "subagent-log-query"], skills: ["soc-triage-playbook"],
     },
   },
 ];
@@ -91,6 +93,9 @@ export default function NewAgentPage() {
     .filter((s) => s.status === "connected" && canUse(s.accessPolicy, principal))
     .flatMap((s) => s.tools.filter((t) => t.enabled).map((t) => ({ ref: mcpRef(s.id, t.name), label: t.name, description: t.description, serverName: s.name })));
   const isValidToolRef = (ref: string) => toolOptions.some((t) => t.name === ref) || mcpToolOptions.some((m) => m.ref === ref);
+  // Skills the builder can use; only `published` skills are bindable (drafts are shown disabled below).
+  const skillOptions = useSkills().filter((s) => canUse(s.accessPolicy, principal));
+  const bindableSkill = (skId: string) => skillOptions.some((s) => s.id === skId && s.status === "published");
   const [tplKey, setTplKey] = React.useState("rag");
   const initial = TEMPLATES.find((t) => t.key === "rag")!.preset;
 
@@ -107,6 +112,9 @@ export default function NewAgentPage() {
   );
   const [tools, setTools] = React.useState<string[]>(
     initial.tools.filter((n) => toolOptions.some((t) => t.name === n)),
+  );
+  const [skills, setSkills] = React.useState<string[]>(
+    initial.skills.filter((skId) => skillOptions.some((s) => s.id === skId && s.status === "published")),
   );
   const touched = React.useRef<Record<string, boolean>>({});
 
@@ -129,6 +137,7 @@ export default function NewAgentPage() {
     // resources that exist in the active workspace (presets hardcode example ids).
     setKnowledgeBases(p.knowledgeBases.filter((id) => kbOptions.some((kb) => kb.id === id)));
     setTools(p.tools.filter((n) => toolOptions.some((t) => t.name === n)));
+    setSkills(p.skills.filter((skId) => skillOptions.some((s) => s.id === skId && s.status === "published")));
   }
 
   function toggle(list: string[], v: string): string[] {
@@ -147,6 +156,7 @@ export default function NewAgentPage() {
       callsSpark: [0, 0, 0, 0, 0, 0, 0],
       knowledgeBases: current.preset.showKnowledge ? knowledgeBases.filter((id) => kbOptions.some((kb) => kb.id === id)) : [],
       tools: current.preset.showTools ? tools.filter(isValidToolRef) : [],
+      skills: current.preset.showSkills ? skills.filter(bindableSkill) : [],
       // Persist the config the form actually collects so it survives to the Configure tab
       // (resolveConfig fills the rest from DEFAULT_AGENT_CONFIG). Map the form's output-format
       // vocabulary to the config's { outputFormat, includeCitations } pair.
@@ -301,6 +311,31 @@ export default function NewAgentPage() {
             </Card>
           )}
 
+          {current.preset.showSkills && (
+            <Card>
+              <CardHeader>
+                <div><CardTitle className="flex items-center gap-2"><Sparkles className="size-4 text-muted" /> Skills</CardTitle>
+                  <CardDescription>Reusable instruction playbooks. Only published (signed) skills can be bound.</CardDescription></div>
+              </CardHeader>
+              <CardContent className="grid gap-2 sm:grid-cols-2">
+                {skillOptions.length === 0 && <p className="text-xs text-muted">No skills in this workspace yet.</p>}
+                {skillOptions.map((sk) => {
+                  const draft = sk.status !== "published";
+                  const on = skills.includes(sk.id);
+                  return (
+                    <button key={sk.id} disabled={draft} onClick={() => setSkills((l) => toggle(l, sk.id))}
+                      title={draft ? "Publish to bind — drafts can't be attached" : undefined}
+                      className={`flex items-center justify-between rounded-lg border px-3 py-2.5 text-left text-sm disabled:cursor-not-allowed disabled:opacity-55 ${on ? "border-accent bg-accent-soft" : "border-border bg-elevated enabled:hover:border-border-strong"}`}>
+                      <span className="min-w-0"><span className="block truncate font-medium text-ink">{sk.name}</span>
+                        <span className="block truncate text-xs text-muted">{draft ? "Draft — publish to bind" : `${sk.version} · signed`}</span></span>
+                      {on ? <Check className="size-4 text-accent" /> : <span className="size-4 rounded border border-border" />}
+                    </button>
+                  );
+                })}
+              </CardContent>
+            </Card>
+          )}
+
           <Card>
             <CardHeader><CardTitle><Term id="system-prompt">System prompt</Term></CardTitle><CardDescription>Prefilled for the chosen template. Edit freely.</CardDescription></CardHeader>
             <CardContent>
@@ -336,6 +371,7 @@ export default function NewAgentPage() {
               <Row k="Output" v={outputFormat} />
               {current.preset.showKnowledge && <Row k="Knowledge" v={`${knowledgeBases.length} base${knowledgeBases.length === 1 ? "" : "s"}`} />}
               {current.preset.showTools && <Row k="Tools" v={`${tools.length} tool${tools.length === 1 ? "" : "s"}`} />}
+              {current.preset.showSkills && <Row k="Skills" v={`${skills.length} skill${skills.length === 1 ? "" : "s"}`} />}
               <Row k="Modality" v="Chat" />
               {selectedModel && <Row k="Pricing" v={<span className="tnum">{usd(selectedModel.inUsd)} / {usd(selectedModel.outUsd)} per 1M</span>} />}
               <div className="pt-2">

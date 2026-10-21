@@ -1,0 +1,35 @@
+{
+  "schema_version": 3,
+  "diagram_type": "lifecycle",
+  "meta": {
+    "title": "Agent Version Lifecycle — the publishable pivot",
+    "subtitle": "version_status draft→evaluated→published→deprecated, gated by the publishable flag (05 / 01)",
+    "output": "docs/diagrams/backend-design/version-lifecycle.html",
+    "quality_profile": "showcase"
+  },
+  "mainPath": ["draft", "eval_running", "publishable", "published"],
+  "states": [
+    { "id": "draft", "type": "start", "label": "Draft", "sublabel": "frozen snapshot built", "tag": "publishable = false", "step": "01" },
+    { "id": "eval_running", "type": "active", "label": "Eval running", "sublabel": "batch · same runtime.invoke", "tag": "run_source=eval", "step": "02" },
+    { "id": "publishable", "type": "waiting", "label": "Publishable", "sublabel": "eval PASS, newer than last trigger", "tag": "publishable = true", "step": "03" },
+    { "id": "published", "type": "success", "label": "Published", "sublabel": "endpoint pins this snapshot · serving live", "tag": "version_status=published", "step": "04" },
+    { "id": "reeval", "type": "neutral", "label": "Needs re-eval", "sublabel": "eval FAIL, or a drift trigger fired", "tag": "gate blocks publish → 409" },
+    { "id": "deprecated", "type": "neutral", "label": "Deprecated", "sublabel": "superseded, or model retired", "tag": "terminal" }
+  ],
+  "transitions": [
+    { "id": "t-enq", "from": "draft", "to": "eval_running", "label": "enqueue eval-run" },
+    { "id": "t-pass", "from": "eval_running", "to": "publishable", "label": "PASS", "variant": "emphasis" },
+    { "id": "t-fail", "from": "eval_running", "to": "reeval", "label": "FAIL / low-conf", "variant": "security" },
+    { "id": "t-fix", "from": "reeval", "to": "eval_running", "label": "fix · re-enqueue" },
+    { "id": "t-promote", "from": "publishable", "to": "published", "label": "promote / re-point", "variant": "emphasis" },
+    { "id": "t-inval", "from": "publishable", "to": "reeval", "label": "drift trigger", "variant": "dashed" },
+    { "id": "t-drift", "from": "published", "to": "reeval", "label": "drift trigger", "variant": "dashed", "note": "live snapshot keeps serving until re-point" },
+    { "id": "t-dep", "from": "published", "to": "deprecated", "label": "superseded / model retired" }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "publishable is the real control", "items": ["version_status moves draft → evaluated → published → deprecated, but the pivot is the boolean publishable flag on the frozen version", "publishable is set TRUE only by a PASS eval that is NEWER than the last drift trigger; any trigger clears it back to false", "So a version isn't a mutable object — each edit mints a NEW draft version; the old one keeps serving until re-point"] },
+    { "dot": "rose", "title": "The gate (enforced at publish AND re-point)", "items": ["assert_publishable() rejects publishing/re-pointing a version whose behavior changed since its last PASS → 409 publish.eval_gate", "The live published snapshot is immutable and keeps serving during re-eval — editing an agent changes nothing live", "snapshot_hash must fold prompt+params+retrieval_config+kb_index+skills, or a stale PASS would bypass the gate"] },
+    { "dot": "amber", "title": "Drift triggers (any → Needs re-eval)", "items": ["model · provider · params · prompt · guardrails · tools · skills · embedding · kb · retrieval_config · capability_substitution", "Re-ingesting a BOUND knowledge base raises a stale-index warning + drift trigger even with no config edit", "A drift on a PUBLISHED version flips drift_state (watch/regressed) and notifies the owner (16) — it does NOT unpublish the live snapshot" ] },
+    { "dot": "slate", "title": "Source", "items": ["docs/backend/01-data-model.md (version_status, publishable, drift_state enums) · 05-eval-drift.md §5 (gate, 409, DRIFT_TRIGGERS) · §6 (snapshot_hash) · 16 (owner notify)", "Companion: eval-drift-gate.html (the eval process) · runtime-invoke-pipeline.html (the frozen snapshot it reads)"] }
+  ]
+}

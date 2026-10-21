@@ -101,6 +101,20 @@ Faithful to `backend-integration-map.md`. `Auth`: **S**=session, **T**=caller to
 | `POST /api/v1/connectors/credentials` | S | — | capture a connector secret/file → vault; returns `{masked, vaultPath}`. FE masks client-side as a mock stand-in (never persists raw). Shared by tool auth secrets. |
 | `POST /api/v1/versions/:vid/retrieval-bindings` | S | — | server-side **version-create artifact** (04 §9): materialized when a version is snapshotted — one row per bound KB, `kb_index_version` pinned, the draft `retrieval_config` broadcast. **No direct FE caller by design** — the FE edits bindings as the flat `knowledge_bases` + single `retrieval_config` on the agent draft (see `AgentPatch`); per-KB config is P2. |
 
+### Skills (P2 — modelled on Knowledge/RAG)
+A skill is a reusable instruction+resource capability package that **does not execute code** (01 §4.4) — so
+there is deliberately **no test-invoke, no risk-tier, and no approval route** here (contrast Tools/MCP below).
+| Method · Path | Auth | Async | Backs |
+|---|---|---|---|
+| `GET /api/v1/skills?workspace=:id` | S | — | `useSkills` / `SKILLS` (list; server applies access-policy visibility) |
+| `GET /api/v1/skills/:id` | S | — | `useSkill` (instructions, resources, signing/provenance, access) |
+| `POST /api/v1/skills` | S(`skill.manage`) | — | `addSkill` → `SkillCreate` (create a draft; instruction + bundled resources) |
+| `PUT /api/v1/skills/:id` | S(`skill.manage`) | — | `updateSkill` — edit; a content change re-freezes `content_hash` → bound agents need re-eval (05 §5) |
+| `DELETE /api/v1/skills/:id` | S(`skill.manage`) | — | `deleteSkill` |
+| `POST /api/v1/skills/:id/resources` | S(`skill.manage`) | **yes** | add bundled reference files → MinIO via ingestion presign (reuses the connector upload presign + `ingestion/`); recomputes `content_hash` |
+| `POST /api/v1/skills/:id/publish` | S(`skill.manage`) | — | `publishSkill` — **sign** the package (stamps `signature`/`signed_by`/`signed_at`, `status=published`) so it becomes bindable; audited `skill.publish` (09 §12) |
+| `POST /api/v1/versions/:vid/skills` | S | — | bind skills to a version (**bind → freeze**; mirrors `.../tools`). Verifies each skill is `published` + signature valid, pins `skill_content_hash`, folds it into `snapshot_hash` (01 §4.2, 05 §6). No direct FE caller — the FE binds via `updateAgent({skills})` (see `AgentPatch.skills`). |
+
 ### Evaluations
 | Method · Path | Auth | Async | Backs |
 |---|---|---|---|
@@ -131,19 +145,18 @@ Faithful to `backend-integration-map.md`. `Auth`: **S**=session, **T**=caller to
 | `GET /api/v1/runs?workspace=:id` | S | — | `useRuns` / `RUNS` |
 | `GET /api/v1/runs/:id` | S | — | run detail + spans |
 | `GET /api/v1/metrics/{spend,volume,latency,activity}` | S | — | dashboard/runs charts (§7) |
-| `GET /api/v1/workspaces/:id` | S | — | `useWorkspaceSettings` (name/slug read-only; default provider/model) |
-| `PATCH /api/v1/workspaces/:id` | S(admin) | — | `updateWorkspaceSettings` (default provider/model, `access_mode`; slug immutable) |
-| `POST /api/v1/workspaces/:id/archive` | S(admin) | — | `archiveWorkspace` (sets `archived_at`, unpublishes endpoints) |
+| `GET /api/v1/workspaces/:id` | S | — | `useWorkspaceSettings` (slug read-only; name/access/provider/model) |
+| `PATCH /api/v1/workspaces/:id` | S(**platform-admin**) | — | `updateWorkspace` (name, backing `okta_group`, `member_role`; slug immutable) + `updateWorkspaceSettings` (default provider/model). **No `access_mode`** — removed (2026-10-20 group-driven pivot) |
+| `POST /api/v1/workspaces/:id/archive` (deactivate) **· NEW reactivate endpoint** | S(admin) | — | `setWorkspaceActive` — reversible Inactive toggle via `archived_at`; deactivate unpublishes endpoints, reactivate (net-new) clears it. FE enforces a read-only freeze while inactive |
+| **`POST /api/v1/workspaces`** *(net-new, not in base design)* | S | — | `addWorkspace` — **FE mock-only** self-serve create (creator → admin, seeds baseline + starter kit). Base design has **no create** (workspaces are org-provisioned); a real deploy adds this or keeps provisioning out-of-band |
+| **`DELETE /api/v1/workspaces/:id`** *(net-new, not in base design)* | S(admin) | — | `deleteWorkspace` — **FE mock-only** hard-delete cascade over every scoped resource. Base design **archives (soft)** instead; a real deploy would add a guarded admin cascade or disallow it |
 | `GET /api/v1/workspaces/:id/limits` · `PUT …` | S(admin) | — | `useLimits` / `updateLimits` — per-workspace spend + concurrency + timeout. **Monthly spend cap enforced P1; concurrency P2** (07 §3) |
 | `GET /api/v1/provider-keys?workspace=:id` | S | — | `useProviderKeys` (masked) |
 | `POST /api/v1/provider-keys` | S(admin) | — | `addProviderKey` (vaulted; 09) |
 | `POST /api/v1/provider-keys/:id/rotate` · `…/revoke` | S(admin) | — | `rotateProviderKey` / `revokeProviderKey` (audited; 09 §12) |
-| `GET /api/v1/members?workspace=:id` | S | — | `useMembers` — space roster (app-managed; identity from org Okta) |
-| `POST /api/v1/workspaces/:id/invites` · `GET …` | S(admin) | — | `inviteMember` / `useInvites` — invite a member (`member.manage`); `workspace_invites` (01) |
-| `DELETE /api/v1/workspaces/:id/invites/:id` | S(admin) | — | `revokeInvite` (`member.manage`) |
-| `DELETE /api/v1/members/:id` | S(admin) | — | `removeMember` — remove from the space roster (`member.manage`) |
-| `POST /api/v1/workspaces/:id/join` | S | — | `joinWorkspace` — self-join an `access_mode = 'open'` space; assigns the default join role (09 §3) |
-| `PUT /api/v1/{agents\|knowledge\|tools\|mcp\|channels}/:id/access-policy` | S(admin) | — | `setAccessPolicy` (09 §5); body is the unified `AccessPolicy` (`visibility: workspace\|restricted\|private`, role/team lists, `owner?`); each target table carries an `access_policy jsonb` column (01; channels in 12) |
+| `GET /api/v1/members?workspace=:id` | S | — | `useMembers` — **READ-ONLY** roster projected from the workspace's backing Okta group (role = the workspace's `member_role`). Identity + membership from Okta |
+| ~~`POST/DELETE …/invites`, `DELETE /members/:id`, `POST …/join`~~ | — | — | **REMOVED (2026-10-20 group-driven pivot).** No invites, no self-join, no in-app remove — membership = Okta group. Add/remove happens in Okta (optionally auto-upsert `platform_admins` from a group, 15). |
+| `PUT /api/v1/{agents\|knowledge\|tools\|mcp\|channels\|skills}/:id/access-policy` | S(admin) | — | `setAccessPolicy` (09 §5); body is the unified `AccessPolicy` (`visibility: workspace\|restricted\|private`, role/team lists, `owner?`); each target table carries an `access_policy jsonb` column (01; channels in 12) |
 | `GET /api/v1/agents/:id/guardrails` · `PUT …` | S | — | Guardrails tab (per-version config; 06) |
 | `GET /api/v1/search?q=` | S | — | topbar + list search |
 | `GET /v1/branding` | public | — | `lib/org.ts:ORG` → `OrgBrand` (name/product/idp/domains + token values). **Optional — multi-org deployments only.** The default one-deploy-per-org model bakes branding at build/deploy time (env / `org.config.json`), so there is **no per-request branding call** (13 §2). Unauthenticated, cacheable, not tenant-scoped; sits *above* the workspace planes. |
@@ -231,6 +244,7 @@ class AgentOut(BaseModel):               # mirrors TS Agent
     calls_spark: list[int] = Field(alias="callsSpark")
     knowledge_bases: list[str] = Field(alias="knowledgeBases")
     tools: list[str]
+    skills: list[str] = []               # bound skill ids (FE Agent.skills); mirrors knowledge_bases/tools
     endpoint: str | None = None
     workspace_id: str | None = Field(default=None, alias="workspaceId")
     access_policy: dict | None = Field(default=None, alias="accessPolicy")
@@ -254,6 +268,8 @@ class AgentPatch(BaseModel):             # updateAgent / updateAgentConfig (all 
     active_version: str | None = None    # rollback / re-point
     knowledge_bases: list[str] | None = None
     tools: list[str] | None = None
+    skills: list[str] | None = None      # bind/unbind skills (mirrors knowledge_bases/tools); a change is a
+                                         #   DRIFT_TRIGGER (05) → materializes skill_bindings + re-freezes snapshot_hash
     access_policy: dict | None = None
     # Draft config edits (updateAgentConfig). Frozen into the next version snapshot on publish (01 §4.2);
     # the io_contract carries the typed input variables (name/type/required/default, B2.5), editable via
@@ -289,13 +305,16 @@ class VersionCreate(BaseModel):          # "Save as new version" = clone the act
     guardrail_config: dict | None = None # (06)
     knowledge_bases: list[str] | None = Field(default=None, alias="knowledgeBases")  # bound KB ids frozen into the snapshot (04 §9). Omit = inherit from the cloned base.
     retrieval_config: dict | None = Field(default=None, alias="retrievalConfig")      # top_k/threshold/hybrid/reranker/max_ctx_tokens/injection — broadcast into one retrieval_binding per bound KB at snapshot time (01 retrieval_bindings)
+    skills: list[str] | None = None      # bound skill ids frozen into the snapshot → one skill_binding per skill (01 §4.4). Omit = inherit from the cloned base. Each must be `published` (signed); signature verified at bind.
     note: str = ""
     # Server freezes snapshot_hash + resolves profile_snapshot at create (01 §4.2), and materializes one
-    # retrieval_binding per bound KB with kb_index_version pinned. snapshot_hash MUST incorporate
-    # retrieval_config + each binding's kb_index_version — otherwise a retrieval change won't bust the
-    # verdict cache (05) and a stale PASS is served. Editing knowledge_bases/retrieval_config is a
-    # DRIFT_TRIGGER (05) → publishable=False until a fresh PASS. (VersionOut mirrors TS Version and does
-    # not inline the resolved bindings; read them via the version/retrieval-bindings detail.)
+    # retrieval_binding per bound KB with kb_index_version pinned + one skill_binding per bound skill with
+    # skill_content_hash pinned. snapshot_hash MUST incorporate retrieval_config + each binding's
+    # kb_index_version AND each bound skill's skill_content_hash (instruction hash + resource content hashes +
+    # skill version) — otherwise a retrieval OR skill-content change won't bust the verdict cache (05 §6) and a
+    # stale PASS is served. Editing knowledge_bases/retrieval_config/skills is a DRIFT_TRIGGER (05) →
+    # publishable=False until a fresh PASS. (VersionOut mirrors TS Version and does not inline the resolved
+    # bindings; read them via the version/retrieval-bindings detail.)
 ```
 
 ```python
@@ -340,6 +359,46 @@ class IngestionJobOut(BaseModel):        # mirrors TS IngestionJob — projectio
     started_at: datetime = Field(alias="startedAt")   # jobs.created_at
     duration: str                        # SERVER-FORMATTED "4m 12s" from created_at→updated_at
     # kind='ingestion' and kind='reingest' both project into this DTO.
+    class Config: populate_by_name = True
+```
+
+```python
+# services/api/schemas/skills.py — mirrors TS Skill / SkillResource (data.ts); modelled on schemas/knowledge.py
+class SkillResourceOut(BaseModel):       # mirrors TS SkillResource; bundled file (data, not instructions)
+    name: str
+    kind: str                            # skill_resource_kind: instruction | reference (01 §3)
+    size_kb: float | None = Field(default=None, alias="sizeKB")
+    content_hash: str | None = Field(default=None, alias="contentHash")   # folds into skills.content_hash (05 §6)
+    class Config: populate_by_name = True
+
+class SkillSignature(BaseModel):         # mirrors TS Skill.signature; masked provenance stamp (no secret)
+    signed_by: str = Field(alias="signedBy")
+    signed_at: datetime = Field(alias="signedAt")
+    masked: str                          # display-only masked signature
+    class Config: populate_by_name = True
+
+class SkillCreate(BaseModel):            # addSkill — create a draft skill
+    name: str
+    description: str = ""
+    instructions: str = ""               # the instruction fragment; untrusted content (06/09). NO secrets.
+    version: str = "v1"
+    class Config: populate_by_name = True
+
+class SkillOut(BaseModel):               # mirrors TS Skill; a capability package (instruction + resources)
+    id: str                              # slug
+    name: str
+    slug: str | None = None
+    description: str
+    instructions: str
+    resources: list[SkillResourceOut] = []
+    status: str                          # skill_status: draft|published|deprecated (01 §3); only published is bindable
+    version: str
+    content_hash: str | None = Field(default=None, alias="contentHash")   # frozen content identity; pinned into skill_bindings (01 §4.4)
+    signature: SkillSignature | None = None     # None until published/signed
+    bound_agents: int = Field(0, alias="boundAgents")   # count(skill_bindings via agents) — server rollup
+    last_updated: datetime = Field(alias="lastUpdated")
+    workspace_id: str | None = Field(default=None, alias="workspaceId")
+    access_policy: dict | None = Field(default=None, alias="accessPolicy")
     class Config: populate_by_name = True
 ```
 
@@ -425,7 +484,9 @@ class WorkspaceSettingsOut(BaseModel):   # mirrors TS WorkspaceSettings; name/sl
 class WorkspaceSettingsPatch(BaseModel): # PATCH /workspaces/:id — slug is NOT patchable
     default_provider: str | None = Field(default=None, alias="defaultProvider")
     default_model: str | None = Field(default=None, alias="defaultModel")
-    access_mode: str | None = Field(default=None, alias="accessMode")  # 'open' | 'restricted' (01 workspace_access)
+    okta_group: str | None = Field(default=None, alias="oktaGroup")   # backing Okta group (authoritative)
+    member_role: str | None = Field(default=None, alias="memberRole") # base role the group confers
+    # access_mode REMOVED (2026-10-20 group-driven pivot) — no open/restricted; membership = Okta group.
     class Config: populate_by_name = True
 class LimitsOut(BaseModel):              # mirrors TS Limits; composed from spend_limits+concurrency_limits+workspaces
     monthly_spend_usd: float = Field(alias="monthlySpendUsd")

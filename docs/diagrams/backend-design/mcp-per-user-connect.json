@@ -1,0 +1,267 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": {
+    "title": "Per-User MCP Access via In-Chat Connect  [PROPOSED]",
+    "subtitle": "Channel user hits a per_user MCP (Jira/GitHub/Workday) → reply with a signed connect link → OAuth → persist → act as the user. Not in current docs.",
+    "output": "docs/diagrams/backend-design/mcp-per-user-connect.html",
+    "quality_profile": "showcase"
+  },
+  "participants": [
+    {
+      "id": "user",
+      "type": "external",
+      "label": "User (in chat)",
+      "sublabel": "Slack / Google Chat"
+    },
+    {
+      "id": "api",
+      "type": "backend",
+      "label": "api",
+      "sublabel": "channel · OAuth callback"
+    },
+    {
+      "id": "worker",
+      "type": "backend",
+      "label": "worker · runtime",
+      "sublabel": "run_source=channel"
+    },
+    {
+      "id": "conn",
+      "type": "database",
+      "label": "connections",
+      "sublabel": "mcp_user_connections (vault)"
+    },
+    {
+      "id": "ext",
+      "type": "external",
+      "label": "Jira / GitHub / Workday",
+      "sublabel": "OAuth + MCP API"
+    }
+  ],
+  "segments": [
+    {
+      "from": 158,
+      "to": 334,
+      "label": "First ask — not connected"
+    },
+    {
+      "from": 340,
+      "to": 474,
+      "label": "Connect (browser OAuth)"
+    },
+    {
+      "from": 478,
+      "to": 700,
+      "label": "Now connected — act as the user"
+    }
+  ],
+  "messages": [
+    {
+      "id": "ask",
+      "from": "user",
+      "to": "api",
+      "y": 168,
+      "label": "message (needs Jira)"
+    },
+    {
+      "id": "inv1",
+      "from": "api",
+      "to": "worker",
+      "y": 198,
+      "label": "enqueue → invoke"
+    },
+    {
+      "id": "look1",
+      "from": "worker",
+      "to": "conn",
+      "y": 228,
+      "label": "lookup (subject, server)",
+      "variant": "security"
+    },
+    {
+      "id": "none",
+      "from": "conn",
+      "to": "worker",
+      "y": 258,
+      "label": "none",
+      "variant": "return",
+      "note": "fail-closed: tool unavailable"
+    },
+    {
+      "id": "link",
+      "from": "worker",
+      "to": "user",
+      "y": 290,
+      "label": "reply: 'Connect Jira →' (signed link)",
+      "variant": "emphasis",
+      "note": "short-lived state = subject + server + workspace"
+    },
+    {
+      "id": "open",
+      "from": "user",
+      "to": "api",
+      "y": 346,
+      "label": "open link → OAuth",
+      "variant": "security"
+    },
+    {
+      "id": "authz",
+      "from": "api",
+      "to": "ext",
+      "y": 376,
+      "label": "authorization-code"
+    },
+    {
+      "id": "token",
+      "from": "ext",
+      "to": "api",
+      "y": 406,
+      "label": "refresh token",
+      "variant": "return"
+    },
+    {
+      "id": "persist",
+      "from": "api",
+      "to": "conn",
+      "y": 436,
+      "label": "vault + persist (subject, server)",
+      "variant": "emphasis",
+      "note": "per-user DEK · reused across sessions + channels + console"
+    },
+    {
+      "id": "retry",
+      "from": "user",
+      "to": "api",
+      "y": 486,
+      "label": "retry (same or future session)"
+    },
+    {
+      "id": "inv2",
+      "from": "api",
+      "to": "worker",
+      "y": 516,
+      "label": "invoke"
+    },
+    {
+      "id": "look2",
+      "from": "worker",
+      "to": "conn",
+      "y": 546,
+      "label": "lookup → found",
+      "variant": "security"
+    },
+    {
+      "id": "tok",
+      "from": "conn",
+      "to": "worker",
+      "y": 576,
+      "label": "token (JIT decrypt)",
+      "variant": "return"
+    },
+    {
+      "id": "call",
+      "from": "worker",
+      "to": "ext",
+      "y": 606,
+      "label": "MCP call AS the user",
+      "variant": "security",
+      "note": "user's own permissions + audit trail"
+    },
+    {
+      "id": "result",
+      "from": "ext",
+      "to": "worker",
+      "y": 652,
+      "label": "result",
+      "variant": "return"
+    },
+    {
+      "id": "reply",
+      "from": "worker",
+      "to": "user",
+      "y": 682,
+      "label": "reply (grounded)",
+      "variant": "emphasis"
+    }
+  ],
+  "activations": [
+    {
+      "participant": "worker",
+      "from": 198,
+      "to": 290,
+      "type": "backend"
+    },
+    {
+      "participant": "api",
+      "from": 346,
+      "to": 436,
+      "type": "backend"
+    },
+    {
+      "participant": "ext",
+      "from": 376,
+      "to": 406,
+      "type": "external"
+    },
+    {
+      "participant": "worker",
+      "from": 516,
+      "to": 682,
+      "type": "backend"
+    },
+    {
+      "participant": "ext",
+      "from": 606,
+      "to": 652,
+      "type": "external"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "The idea — in-chat connect = login in-session",
+      "items": [
+        "A channel user hits a per_user MCP tool they haven't connected → the agent replies with a signed OAuth connect link",
+        "They authorize in the browser (a normal web OAuth to api — out-of-band from chat), like logging in within that session",
+        "The run fails closed until connected; v1 the user re-asks, v2 the paused run resumes (like the tool-approval interrupt)"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Persisted per user, reused everywhere",
+      "items": [
+        "mcp_user_connections keyed (workspace_id, user_subject, mcp_server_id) — connect once, reused across future sessions, other channels AND the console",
+        "The token is vaulted (per-user DEK), refreshed automatically, revoked on offboarding",
+        "This is the 'user-specific MCP json' persisted so later sessions skip the connect step"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Signed link = the trust boundary",
+      "items": [
+        "The connect link carries a short-lived signed state (subject + server + workspace) so the OAuth callback binds to the right identity (anti-CSRF / anti-mix-up)",
+        "OAuth runs browser → api, never through the chat transport",
+        "Shared_service mode stays the default for read-only / eval-safe tools; per_user is opt-in per MCP server"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Act as the user (least privilege)",
+      "items": [
+        "The MCP call runs in the sandbox with the user's own token → their downstream permissions + a real audit trail in Jira/GitHub/Workday",
+        "Egress allow-list still applies; the MCP server's declared scopes bound what the token can do",
+        "Channel federation already carries the Okta subject — where the IdP supports it (Entra OBO), the connect step can be skipped via true token exchange"
+      ]
+    },
+    {
+      "dot": "slate",
+      "title": "Status: PROPOSED — delta vs current design",
+      "items": [
+        "Not in docs/backend today: MCP creds are workspace-level + shared; access_policy only gates visibility",
+        "Needs: mcp_servers.auth_mode ∈ {shared_service, per_user} · mcp_user_connections table · an OAuth connect/callback route",
+        "Caveat: eval has no real user → per_user tools use a designated service connection or are excluded from scoring (not deterministically evaluable)"
+      ]
+    }
+  ]
+}

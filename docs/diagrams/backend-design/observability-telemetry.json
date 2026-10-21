@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "diagram_type": "dataflow",
+  "meta": {
+    "title": "Observability — the per-call log & telemetry",
+    "subtitle": "One span() helper in the shared runtime fans every call to three stores; two audiences read them (doc 10)",
+    "output": "docs/diagrams/backend-design/observability-telemetry.html",
+    "quality_profile": "showcase"
+  },
+  "stages": [
+    { "label": "Runtime (shared)" },
+    { "label": "Stores" },
+    { "label": "Consume" }
+  ],
+  "nodes": [
+    { "id": "span", "type": "backend", "label": "span()", "sublabel": "obs.py · one helper", "stage": 0, "row": 2, "tag": "6 span kinds" },
+    { "id": "pg", "type": "database", "label": "Postgres", "sublabel": "runs · spans · cost", "stage": 1, "row": 0, "tag": "money + tenancy" },
+    { "id": "langfuse", "type": "database", "label": "Langfuse", "sublabel": "trace · redacted", "stage": 1, "row": 2 },
+    { "id": "prom", "type": "messagebus", "label": "Prometheus", "sublabel": "counters · histos", "stage": 1, "row": 4 },
+    { "id": "metrics", "type": "backend", "label": "dashboards", "sublabel": "/v1/metrics/*", "stage": 2, "row": 0 },
+    { "id": "notif", "type": "backend", "label": "owner notifs", "sublabel": "in-product (16)", "stage": 2, "row": 2 },
+    { "id": "alerts", "type": "security", "label": "Alertmanager", "sublabel": "ops SLO page/warn", "stage": 2, "row": 4 }
+  ],
+  "flows": [
+    { "id": "f-runs", "from": "span", "to": "pg", "label": "runs+spans+cost", "variant": "emphasis" },
+    { "id": "f-trace", "from": "span", "to": "langfuse", "label": "trace", "variant": "dashed" },
+    { "id": "f-metrics", "from": "span", "to": "prom", "label": "metrics" },
+    { "id": "f-agg", "from": "pg", "to": "metrics", "label": "aggregate" },
+    { "id": "f-traces", "from": "langfuse", "to": "metrics", "label": "run traces", "variant": "dashed" },
+    { "id": "f-notif", "from": "pg", "to": "notif", "label": "drift / budget", "variant": "dashed" },
+    { "id": "f-slo", "from": "prom", "to": "alerts", "label": "SLO rules" }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "The one rule", "items": ["Every model call logs {model, prompt_version, input, output, latency, cost, success} — emitted from the shared runtime (obs.py), never from the three callers", "One span() context manager writes a spans row, mirrors a Langfuse generation, and increments Prometheus counters", "Span kinds: model · tool · retrieval · guardrail · judge · skill; finalize() rolls spans into one runs row"] },
+    { "dot": "amber", "title": "Three stores, three jobs", "items": ["Postgres (runs/spans): source of truth for money + tenancy; partitioned by month; cost from our profiles (02/07)", "Langfuse: full prompt/response I/O + nested traces, PII-redacted; the source of truth for 'what was said'", "Prometheus: numeric time-series labeled workspace/agent/source/model for SLOs + autoscaling"] },
+    { "dot": "rose", "title": "Two audiences (don't conflate)", "items": ["Ops alerts → Alertmanager/on-call: first-token p95<2s, e2e p99≤30s, provider errors, deadline-cut rate", "Owner notifications → in-product (doc 16): drift transitions, eval_failed, budget 80/90%, model_deprecated", "Spend appears on BOTH on purpose; both read the SAME runs.cost_usd figure the quota engine uses"] },
+    { "dot": "slate", "title": "Source", "items": ["docs/backend/10-observability-monitoring.md §per-call-log/§stores/§metrics/§SLOs/§cost · 07 (cost) · 16 (owner notifs)", "services/runtime/obs.py · tables runs · spans · trace_id → Langfuse"] }
+  ]
+}

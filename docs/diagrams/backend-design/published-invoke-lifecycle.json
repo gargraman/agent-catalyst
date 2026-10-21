@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": {
+    "title": "Published Invoke — the production request lifecycle",
+    "subtitle": "POST /v1/agents/:id/invoke: token auth → tenant pin (RLS) → spend + Vault key → runtime.invoke → Run record",
+    "output": "docs/diagrams/backend-design/published-invoke-lifecycle.html",
+    "quality_profile": "showcase"
+  },
+  "participants": [
+    { "id": "client", "type": "external", "label": "External caller", "sublabel": "bearer token" },
+    { "id": "api", "type": "backend", "label": "api · publish", "sublabel": "/v1/agents/:id/invoke" },
+    { "id": "redis", "type": "messagebus", "label": "Redis", "sublabel": "rate-limit · spend" },
+    { "id": "vault", "type": "security", "label": "Vault", "sublabel": "Transit decrypt" },
+    { "id": "runtime", "type": "backend", "label": "runtime.invoke", "sublabel": "shared core" },
+    { "id": "db", "type": "database", "label": "Postgres", "sublabel": "tokens · runs · RLS" }
+  ],
+  "segments": [
+    { "from": 158, "to": 330, "label": "Authenticate & admit" },
+    { "from": 338, "to": 470, "label": "Resolve snapshot & key" },
+    { "from": 476, "to": 648, "label": "Invoke & record" }
+  ],
+  "messages": [
+    { "id": "post", "from": "client", "to": "api", "y": 168, "label": "POST /v1/agents/:id/invoke · Bearer", "variant": "emphasis" },
+    { "id": "lookup", "from": "api", "to": "db", "y": 198, "label": "lookup api_tokens · sha256(token)", "variant": "security", "note": "reject if revoked / expired" },
+    { "id": "ctx", "from": "db", "to": "api", "y": 256, "label": "CallerCtx {tenant, role, teams, scopes}", "variant": "return" },
+    { "id": "admit", "from": "api", "to": "redis", "y": 286, "label": "rate-limit + spend reserve", "note": "429 / 402 · SET LOCAL pins RLS tenant" },
+    { "id": "load", "from": "api", "to": "db", "y": 344, "label": "load VersionSnapshot (pinned_version)" },
+    { "id": "snap", "from": "db", "to": "api", "y": 374, "label": "snapshot + access_policy", "variant": "return" },
+    { "id": "decrypt", "from": "api", "to": "vault", "y": 404, "label": "decrypt provider key (JIT)", "variant": "security", "note": "canUse first: config ∩ grants ∩ tenant ∩ policy" },
+    { "id": "key", "from": "vault", "to": "api", "y": 462, "label": "plaintext · memory-only", "variant": "return" },
+    { "id": "invoke", "from": "api", "to": "runtime", "y": 492, "label": "invoke(snapshot, inputs, ctx)", "variant": "emphasis", "note": "run_source=api · caller_token_id · idempotency" },
+    { "id": "events", "from": "runtime", "to": "api", "y": 550, "label": "NormalizedStreamEvents", "variant": "return" },
+    { "id": "sse", "from": "api", "to": "client", "y": 580, "label": "SSE: text_delta … usage … done", "variant": "emphasis" },
+    { "id": "record", "from": "api", "to": "db", "y": 610, "label": "record Run + spans + cost", "variant": "dashed", "note": "tagged token + workspace · reconcile spend" }
+  ],
+  "activations": [
+    { "participant": "api", "from": 168, "to": 610, "type": "backend" },
+    { "participant": "db", "from": 198, "to": 256, "type": "database" },
+    { "participant": "vault", "from": 404, "to": 462, "type": "security" },
+    { "participant": "runtime", "from": 492, "to": 550, "type": "backend" }
+  ],
+  "cards": [
+    { "dot": "rose", "title": "Caller-token auth", "items": ["Strip 'Bearer ', sha256 the secret → lookup api_tokens.token_hash (only the hash is ever stored)", "Reject on revoked_at or expires_at; per-token rate-limit via a Redis sliding window", "CallerCtx carries {workspace_id, token_id, role, teams, scopes} — the FE runtime-access decode, now server-authoritative"] },
+    { "dot": "amber", "title": "Admit & isolate", "items": ["SET LOCAL app.workspace_id pins the tenant for the request — PgBouncer MUST be transaction-pool mode or it leaks across callers", "BudgetGuard reserves spend up-front, reconciles against actual after the run (402 if over cap)", "[P2] concurrency slot; idempotency_key dedupe so a retried call can't double-run or double-bill"] },
+    { "dot": "cyan", "title": "Effective access (fail-closed)", "items": ["canUse runs BEFORE any provider call: access = agent config ∩ caller grants ∩ tenant ∩ resource policy", "A token/channel caller carries no owner subject → private resources deny for everyone but an admin token", "Denied tools / KBs / skills are dropped from the run, not errored"] },
+    { "dot": "emerald", "title": "Same core, fully recorded", "items": ["runtime.invoke(run_source=api) is the SAME code playground + eval run — the drift guarantee holds in prod", "Provider key is Vault-decrypted just-in-time into memory and discarded after the call", "The Run is tagged caller_token_id + workspace_id so cost attributes to the endpoint; events re-encode 1:1 to SSE"] },
+    { "dot": "slate", "title": "Source", "items": ["docs/backend/00-overview §5B · 09-security-tenancy (tokens, Vault, RLS, access) · 08-api-surface (invoke) · 02 (gateway)", "services/api/publish/endpoint.py · services/runtime/invoke.py · tables api_tokens · published_endpoints · runs"] }
+  ]
+}

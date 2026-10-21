@@ -193,6 +193,7 @@ DRIFT_TRIGGERS = {
     "prompt_hash",                           # system prompt text (01)
     "guardrail_config",                      # guardrails change behavior (06)
     "tool_bindings",                         # tool set / schema snapshot (01, spec B7)
+    "skill_bindings", "skill_content_hash",  # bound skills: instruction fragment + resources injected into the prompt (03 §4); editing a skill = a prompt change (01 §4.4)
     "embedding_model", "kb_binding",         # RAG affects quality — a hidden lever (04)
     "retrieval_config",                      # top_k/threshold/injection/reranker/hybrid also move retrieval (04)
     "capability_substitution",               # a provider downgrade changed behavior (02)
@@ -261,6 +262,18 @@ def judge_cache_key(case, baseline_snap, candidate_snap) -> str:
 > `kb_index_version`, or a `top_k`/`threshold` edit — leaves the hash unchanged, so a stale PASS is served
 > from the cache and the publish gate is bypassed silently. This is the hashing counterpart to adding
 > `retrieval_config` to `DRIFT_TRIGGERS` above.
+
+> **Snapshot-hash coverage (Skills).** Identically, `snapshot_hash` MUST incorporate each bound skill's
+> frozen content — the **instruction-text hash + every bundled-resource content hash + the skill version**
+> (pinned in `skill_bindings.skill_content_hash`, 01 §4.2/§4.4). A skill is an instruction fragment injected
+> into the prompt (03 §4), so editing its instructions or resources is a behavior change exactly like editing
+> `system_prompt`. If the skill content hash did not fold into `snapshot_hash`, the verdict cache would serve
+> a **stale PASS** on a skill edit and the publish re-eval gate would be silently bypassed — the same failure
+> mode as `kb_index_version`. This is the hashing counterpart to adding `skill_bindings` to `DRIFT_TRIGGERS`
+> above. Because a skill lives entirely in the snapshot and **does not execute code** (no sandbox, egress, or
+> tool-call side effects — 01 §4.4, 03 §4), it is exercised in eval identically to production: the eval worker
+> runs the same `runtime.invoke` over the same frozen skill content, so there is nothing non-reproducible to
+> account for — the only requirement is that the content is in the hash.
 
 ## 7. Execution flow (the async job)
 

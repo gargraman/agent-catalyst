@@ -11,6 +11,7 @@ export type Permission =
   | "knowledge.manage"
   | "tool.manage"
   | "mcp.manage"
+  | "skill.manage"
   | "channel.manage"
   | "agent.publish"
   | "tool.approve"
@@ -22,7 +23,7 @@ export type Permission =
 
 const BUILDER: Permission[] = [
   "view", "playground.use", "agent.create", "agent.edit", "eval.run", "eval.author",
-  "knowledge.manage", "tool.manage", "mcp.manage", "channel.manage",
+  "knowledge.manage", "tool.manage", "mcp.manage", "skill.manage", "channel.manage",
 ];
 // `tool.approve` — decide pending high-risk/destructive tool-call approvals (runtime gate). Publisher+
 // per backend/09 §4. The approval inbox UI is a follow-up; the permission lands now for FE/BE alignment.

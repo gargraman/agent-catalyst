@@ -1,0 +1,46 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "Adoption & Enforcement — register → dedup → gate",
+    "subtitle": "Force every new/imported agent through one funnel; reuse-first; the key-custody spine makes it enforceable (doc 14)",
+    "output": "docs/diagrams/backend-design/adoption-enforcement.html",
+    "quality_profile": "showcase"
+  },
+  "lanes": [
+    { "id": "builder", "label": "Builder" },
+    { "id": "enforce", "label": "Enforcement (P0)", "variant": "exception" },
+    { "id": "store", "label": "Store / eval" }
+  ],
+  "phases": [
+    { "id": "intake", "label": "Intake + register", "fromCol": 0, "toCol": 1 },
+    { "id": "dedup", "label": "Dedup", "fromCol": 2, "toCol": 3, "variant": "emphasis" },
+    { "id": "ship", "label": "Eval + publish", "fromCol": 4, "toCol": 5 }
+  ],
+  "mainPath": ["entry", "register", "scan", "funnel", "eval", "publish"],
+  "nodes": [
+    { "id": "entry", "lane": "builder", "col": 0, "type": "frontend", "label": "create / import", "sublabel": "POST /agents · /agents/import" },
+    { "id": "register", "lane": "enforce", "col": 1, "type": "security", "label": "registration gate", "sublabel": "owner_subject + intended model", "tag": "registered_at · 409" },
+    { "id": "scan", "lane": "enforce", "col": 2, "type": "security", "label": "similarity scan", "sublabel": "agent_signatures · pgvector KNN" },
+    { "id": "dedup", "lane": "enforce", "col": 3, "type": "messagebus", "label": "dedup hit", "sublabel": "reuse OR audited override" },
+    { "id": "funnel", "lane": "builder", "col": 3, "type": "frontend", "label": "draft · v1", "sublabel": "one funnel for all agents" },
+    { "id": "eval", "lane": "store", "col": 4, "type": "backend", "label": "eval gate", "sublabel": "needs PASS (05)" },
+    { "id": "publish", "lane": "store", "col": 5, "type": "backend", "label": "publish · endpoint", "sublabel": "runs only via runtime.invoke" }
+  ],
+  "edges": [
+    { "id": "e-reg", "from": "entry", "to": "register", "label": "register first", "variant": "emphasis" },
+    { "id": "e-scan", "from": "register", "to": "scan", "label": "embed signature" },
+    { "id": "e-cont", "from": "scan", "to": "funnel", "label": "unique → continue", "variant": "emphasis" },
+    { "id": "e-hit", "from": "scan", "to": "dedup", "label": "overlap > threshold", "variant": "security", "role": "branch" },
+    { "id": "e-reuse", "from": "dedup", "to": "funnel", "label": "reuse / override", "variant": "dashed", "role": "return" },
+    { "id": "e-eval", "from": "funnel", "to": "eval" },
+    { "id": "e-pub", "from": "eval", "to": "publish", "label": "PASS", "variant": "emphasis" }
+  ],
+  "cards": [
+    { "dot": "rose", "title": "Create-time registration gate", "items": ["An agent MUST be registered before any version is built or published → 409 registration.gate otherwise", "Captures owner_subject (routable OIDC sub — the notification recipient) + intended model validated vs a capability profile", "Implemented as an additive agents.registered_at column (NULL = unregistered), NOT a new agent_status", "agent.register is audited; builder+ may register"] },
+    { "dot": "amber", "title": "Reuse-first dedup", "items": ["Embed {name, description, system_prompt, io_contract} with a pinned model → agent_signatures (pgvector vector(1024))", "Workspace-namespaced cosine KNN; hits above SIG_OVERLAP_THRESHOLD surface to the builder", "Resolution: reuse an existing agent OR an audited dedup.override; signature recomputed per new version", "Console / registration-time only — token & channel callers never hit the scanner"] },
+    { "dot": "emerald", "title": "Import & one funnel", "items": ["POST /agents/import imports ONE agent; a thin batch driver loops it to migrate the ~40 hand-wired agents; profile must exist or 400 input.invalid", "An imported agent is NOT special: import → gate → scan → eval → publish, landing a draft + first version", "MCP servers & skills are the inverse — OPEN registration (any builder+), governed after-the-fact: MCP by access_policy + egress + audit, skills by access_policy + signing + audit (no egress — skills don't execute code)"] },
+    { "dot": "cyan", "title": "The key-custody spine (what makes it real)", "items": ["Governance is only real if an agent CANNOT reach a model except via runtime.invoke", "The platform becomes the SOLE holder of provider credentials (platform-scope pool) — BYO workspace keys superseded", "Honest prereq: full enforcement needs cloud-model-IAM centralization + network egress control; without both it degrades to 'visibility + mandate'", "Per-tenant cost attribution survives (computed from our profiles per Run)"] },
+    { "dot": "slate", "title": "Source", "items": ["docs/backend/14-adoption-enforcement.md §1 key-custody /§2 register /§3 dedup /§4 import /§5 MCP /§6 skills", "tables: agents.registered_at · owner_subject · agent_signatures (schema-runtime-governance)"] }
+  ]
+}

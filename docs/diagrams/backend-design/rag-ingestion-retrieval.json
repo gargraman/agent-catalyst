@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "diagram_type": "dataflow",
+  "meta": {
+    "title": "RAG — Ingestion & Retrieval Lineage",
+    "subtitle": "Async worker writes pgvector chunks; invoke-time retrieval reads them under a frozen, access-checked binding (doc 04)",
+    "output": "docs/diagrams/backend-design/rag-ingestion-retrieval.html",
+    "quality_profile": "showcase"
+  },
+  "stages": [
+    { "label": "Source" },
+    { "label": "Extract (worker)" },
+    { "label": "Chunk + embed" },
+    { "label": "pgvector store" },
+    { "label": "Retrieve (invoke)" }
+  ],
+  "nodes": [
+    { "id": "source", "type": "external", "label": "data_source", "sublabel": "S3 · Confluence · Git · upload", "stage": 0, "row": 1, "tag": "MinIO presign" },
+    { "id": "extract", "type": "backend", "label": "extract + dedup", "sublabel": "loaders · content_hash", "stage": 1, "row": 1 },
+    { "id": "jobs", "type": "database", "label": "jobs", "sublabel": "kind=ingestion · progress", "stage": 1, "row": 3 },
+    { "id": "chunk", "type": "backend", "label": "chunk", "sublabel": "800 tok · structure-aware", "stage": 2, "row": 0 },
+    { "id": "embed", "type": "backend", "label": "embed_batch", "sublabel": "via gateway · embedding cache", "stage": 2, "row": 2 },
+    { "id": "chunks", "type": "database", "label": "chunks (pgvector)", "sublabel": "vector(3072) · HNSW · per (ws,kb)", "stage": 3, "row": 1, "tag": "namespaced" },
+    { "id": "retriever", "type": "backend", "label": "retriever", "sublabel": "ACL · KNN · trim · inject", "stage": 4, "row": 0 },
+    { "id": "model", "type": "backend", "label": "model_call", "sublabel": "grounded answer + citations", "stage": 4, "row": 2 }
+  ],
+  "flows": [
+    { "id": "f-raw", "from": "source", "to": "extract", "label": "raw docs", "variant": "default" },
+    { "id": "f-doc", "from": "extract", "to": "chunk", "label": "docs (deduped)", "variant": "default" },
+    { "id": "f-job", "from": "extract", "to": "jobs", "label": "job status", "variant": "dashed" },
+    { "id": "f-chunks", "from": "chunk", "to": "embed", "label": "chunks", "variant": "default" },
+    { "id": "f-vec", "from": "embed", "to": "chunks", "label": "vectors", "variant": "emphasis" },
+    { "id": "f-knn", "from": "chunks", "to": "retriever", "label": "KNN top_k", "variant": "security" },
+    { "id": "f-ctx", "from": "retriever", "to": "model", "label": "context + cites", "variant": "emphasis" },
+    { "id": "f-query", "from": "model", "to": "retriever", "label": "query", "variant": "dashed" }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "Ingestion pipeline (async worker)", "items": ["load_source → extract (LangChain loaders) → dedup on documents.content_hash (unchanged → skip)", "chunk (800 tok, overlap 120, structure-aware) → embed_batch via the gateway (embedding cache: sha256(text+model)→vector)", "write chunks with pgvector embeddings → bump knowledge_bases.index_version → job done", "Tracked by a generic jobs row (kind=ingestion) the UI polls — there is no ingestion_jobs table"] },
+    { "dot": "rose", "title": "Retrieval at invoke", "items": ["Reads the frozen retrieval_binding: pinned KB + kb_index_version + retrieval_config (top_k, threshold, injection)", "ACL: non-eval callers must can_use the KB; eval honors the snapshot but bypasses the per-caller ACL (policy_denied → [])", "pgvector KNN is namespaced per (workspace_id, kb_id), threshold + metadata filters, then trimmed to max_ctx_tokens", "Injection: always-on stuffing OR retriever-as-tool (model issues the query, 0..n times)"] },
+    { "dot": "amber", "title": "Reproducibility & drift", "items": ["embedding_model + kb_index_version are pinned into the version snapshot (RAG is reproducible)", "Re-ingesting a bound KB after publish → stale-index warning + drift trigger; the live version keeps its pinned index until an eval-gated re-point", "Changing the embedding model = re-ingest + new version + re-eval", "snapshot_hash MUST fold retrieval_config + kb_index_version, or a re-ingest bypasses the eval cache/gate"] },
+    { "dot": "slate", "title": "Source", "items": ["docs/backend/04-rag.md §ingestion/§chunking/§embedding/§retrieval/§reproducibility", "tables: knowledge_bases · data_sources · documents · chunks · retrieval_bindings (schema-core-authoring)"] }
+  ]
+}

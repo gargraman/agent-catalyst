@@ -1,0 +1,47 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "Evaluation & Drift Publish Gate",
+    "subtitle": "Change → re-eval needed → run vs frozen baseline → read-model → gate",
+    "output": "docs/diagrams/frontend-flows/eval-drift-gate.html",
+    "quality_profile": "showcase"
+  },
+  "lanes": [
+    { "id": "change", "label": "Change source" },
+    { "id": "ui", "label": "Eval run (UI)" },
+    { "id": "engine", "label": "Engine (store)" },
+    { "id": "gate", "label": "Publish gate", "variant": "exception" }
+  ],
+  "phases": [
+    { "id": "trigger", "label": "Trigger", "fromCol": 0, "toCol": 1 },
+    { "id": "run", "label": "Run", "fromCol": 2, "toCol": 3, "variant": "emphasis" },
+    { "id": "apply", "label": "Apply + gate", "fromCol": 4, "toCol": 5 }
+  ],
+  "mainPath": ["change", "flag", "newRun", "sim", "verdict", "apply", "gate"],
+  "nodes": [
+    { "id": "change", "lane": "change", "col": 0, "type": "frontend", "label": "Model / prompt / KB edit", "sublabel": "TRIGGER_FIELDS (+ bound skill)" },
+    { "id": "flag", "lane": "engine", "col": 1, "type": "backend", "label": "needsReEval = true", "sublabel": "drift pending" },
+    { "id": "newRun", "lane": "ui", "col": 2, "type": "frontend", "label": "New eval run", "sublabel": "candidate · baseline · suite" },
+    { "id": "sim", "lane": "engine", "col": 3, "type": "backend", "label": "simulateEvalRun", "sublabel": "quality · cost · latency (mock)" },
+    { "id": "verdict", "lane": "engine", "col": 4, "type": "database", "label": "computeVerdict", "sublabel": "vs frozen baseline + policy" },
+    { "id": "apply", "lane": "engine", "col": 5, "type": "backend", "label": "addEvalRun read-model", "sublabel": "drift · evalPass · clear needsReEval on pass" },
+    { "id": "failing", "lane": "gate", "col": 4, "type": "security", "label": "eval_failing", "sublabel": "draft blocked" },
+    { "id": "gate", "lane": "gate", "col": 5, "type": "security", "label": "Publish allowed", "sublabel": "passing eval newer than last change" }
+  ],
+  "edges": [
+    { "id": "e-flag", "from": "change", "to": "flag", "label": "edit sets flag" },
+    { "id": "e-run", "from": "flag", "to": "newRun", "label": "run fresh eval" },
+    { "id": "e-sim", "from": "newRun", "to": "sim", "label": "candidate vs baseline", "variant": "emphasis" },
+    { "id": "e-score", "from": "sim", "to": "verdict", "label": "scores" },
+    { "id": "e-verdict", "from": "verdict", "to": "apply", "label": "verdict" },
+    { "id": "e-pass", "from": "apply", "to": "gate", "label": "pass → clears gate", "variant": "emphasis", "role": "main" },
+    { "id": "e-fail", "from": "apply", "to": "failing", "label": "fail → eval_failing", "variant": "security", "role": "error" }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "Baseline & judge", "items": ["Every eval is candidate version vs a frozen baseline version", "Fixed judge (claude-haiku + judge-v1) so the judge can't drift", "Per-dimension scores drive the 'vs baseline' regression deltas", "Suites < minCases are flagged low-confidence (widen threshold)"] },
+    { "dot": "amber", "title": "Drift model", "items": ["Agent.drift: pass→stable · fail→regressed · low-confidence→watch", "Published/archived agents never auto-transition — drift surfaces as a badge", "needsReEval is cleared only on a passing run"] },
+    { "dot": "rose", "title": "Gate (hard block)", "items": ["publishAgent blocks until a passing eval newer than the last model/prompt/knowledge change", "computeVerdict: cases<min → low_confidence; quality<threshold or costΔ>budget → fail", "Shared by page + dialog so UI guidance can't diverge from the store block"] },
+    { "dot": "orange", "title": "Mock seams vs real contract", "items": ["simulateEvalRun scores are Math.random; assertions never execute", "Real job: POST /api/v1/agents/:id/evals → 202 {job_id}; worker runs each case through runtime.invoke(run_source=eval, allow_cache=False)", "UI polls GET /api/v1/jobs/:id; publish gate is POST /api/v1/versions/:vid/publish → 409 until a PASS newer than the last trigger", "Source: app/(app)/evaluations · components/eval-explainer.tsx · lib/store.ts"] }
+  ]
+}

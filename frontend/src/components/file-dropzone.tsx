@@ -5,25 +5,30 @@ import { FileText, UploadCloud, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export function FileDropzone({
-  onChange, hint = "PDF, DOCX, TXT, MD or HTML up to 25 MB each",
+  value, onChange, hint = "PDF, DOCX, TXT, MD or HTML up to 25 MB each",
 }: {
+  // Optional controlled list. When provided, the parent owns the files (survives unmount/remount, e.g. a
+  // wizard step); when omitted, the component keeps its own internal state (the original uncontrolled usage).
+  value?: File[];
   onChange?: (files: File[]) => void;
   hint?: string;
 }) {
-  const [files, setFiles] = React.useState<File[]>([]);
+  const [internal, setInternal] = React.useState<File[]>([]);
+  const controlled = value !== undefined;
+  const files = controlled ? value : internal;
   const [over, setOver] = React.useState(false);
   const inputRef = React.useRef<HTMLInputElement>(null);
 
-  function add(list: FileList | null) {
-    if (!list) return;
-    const next = [...files, ...Array.from(list)];
-    setFiles(next);
+  function commit(next: File[]) {
+    if (!controlled) setInternal(next);
     onChange?.(next);
   }
+  function add(list: FileList | null) {
+    if (!list) return;
+    commit([...files, ...Array.from(list)]);
+  }
   function remove(i: number) {
-    const next = files.filter((_, idx) => idx !== i);
-    setFiles(next);
-    onChange?.(next);
+    commit(files.filter((_, idx) => idx !== i));
   }
 
   return (

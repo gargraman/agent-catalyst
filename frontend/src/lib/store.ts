@@ -2,16 +2,16 @@
 
 import { useRef, useSyncExternalStore } from "react";
 import {
-  AGENTS, KNOWLEDGE_BASES, INGESTION_JOBS, MCP_SERVERS, TOOLS_REPO, EVAL_RUNS, EVAL_SUITES, RUNS, TOOL_APPROVALS,
-  API_TOKENS, PROVIDER_KEYS, MEMBERS, INVITES, CHANNELS_SEED, resolveConfig, getVersions,
+  AGENTS, KNOWLEDGE_BASES, INGESTION_JOBS, MCP_SERVERS, TOOLS_REPO, SKILLS, EVAL_RUNS, EVAL_SUITES, RUNS, TOOL_APPROVALS,
+  API_TOKENS, PROVIDER_KEYS, MEMBERS, CHANNELS_SEED, resolveConfig, getVersions,
   WORKSPACE_SETTINGS, LIMITS, defaultWorkspaceSettings, defaultLimits, defaultEvalPolicy,
   type Agent, type AgentConfig, type KnowledgeBase, type DataSource, type IngestionJob, type McpServer,
-  type RepoTool, type EvalRun, type EvalSuite, type EvalCaseDef, type Run, type ToolApproval, type ApiToken, type ProviderKey, type Member, type Invite, type Channel,
+  type RepoTool, type Skill, type EvalRun, type EvalSuite, type EvalCaseDef, type Run, type ToolApproval, type ApiToken, type ProviderKey, type Member, type Channel,
   type WorkspaceSettings, type Limits, type EvalPolicy, type Verdict,
 } from "./data";
 import { type AccessPolicy, defaultPolicy } from "./access-policy";
 import type { Role } from "./permissions";
-import { DEFAULT_WORKSPACE_ID, MOCK_PROFILE } from "./iam";
+import { DEFAULT_WORKSPACE_ID, MOCK_PROFILE, WORKSPACES, slugify, shortOf, type Workspace } from "./iam";
 import { maskSecret } from "./secrets";
 import { MCP_REF_PREFIX } from "./tools";
 
@@ -74,11 +74,27 @@ function withBoundToolCounts(
   return { tools: nextTools, mcpServers: nextServers };
 }
 
+// Recompute Skill.boundAgents (agents binding the skill by id) after a bind/unbind, mirroring
+// withBoundAgentCounts. [ref: backend/08-api-surface.md §3 SkillOut.bound_agents]
+function withBoundSkillCounts(agents: Agent[], skills: Skill[]): Skill[] {
+  return skills.map((sk) => {
+    const count = agents.filter((a) => (a.skills ?? []).includes(sk.id)).length;
+    return sk.boundAgents === count ? sk : { ...sk, boundAgents: count };
+  });
+}
+
 /* ----------------------------------------------------------------- state */
 export type Toast = { id: string; tone: "good" | "critical" | "neutral"; message: string };
 
 type State = {
   activeWorkspaceId: string;
+  // @backend remove - the workspace registry is store-backed so the mock can create/edit/delete spaces.
+  //   Real workspaces come from IAM (the user's Okta group memberships, session); this seeds from WORKSPACES.
+  workspaces: Workspace[];
+  // @backend remove - dev-only preview toggle for the platform-admin dimension (null = use MOCK_PROFILE's
+  //   groups). Lets the demo drop platform-admin to preview the member experience. Real value = whether the
+  //   OIDC `groups` claim contains PLATFORM_ADMIN_GROUP.
+  platformAdminOverride: boolean | null;
   roleOverride: Role | null;
   teamOverride: string[] | null;
   agents: Agent[];
@@ -86,17 +102,16 @@ type State = {
   ingestionJobs: IngestionJob[];
   mcpServers: McpServer[];
   tools: RepoTool[];
+  skills: Skill[];
   evalRuns: EvalRun[];
   evalSuites: EvalSuite[];
   evalPolicy: Record<string, EvalPolicy>; // per-workspace; falls back to defaultEvalPolicy()
   runs: Run[];
   tokens: ApiToken[];
   providerKeys: ProviderKey[];
+  // @backend read-only in the mock - the roster is derived from the workspace's Okta group; shown read-only
+  //   (no invite/remove). Real source: GET /v1/members?workspace=:id (group membership projection).
   members: Member[];
-  invites: Invite[];
-  // @backend remove - spaces the mock user self-joined this session (open spaces). Real membership is the
-  //   session roster from the IAM/join endpoints; this shim merges into the effective profile in auth.tsx.
-  joinedWorkspaceIds: string[];
   channels: Channel[];
   toolApprovals: ToolApproval[];
   workspaceSettings: Record<string, WorkspaceSettings>;
@@ -111,6 +126,8 @@ type State = {
 const seedAgents = AGENTS.map(tagResource);
 let state: State = {
   activeWorkspaceId: DEFAULT_WS,
+  workspaces: WORKSPACES,
+  platformAdminOverride: null,
   roleOverride: null,
   teamOverride: null,
   agents: seedAgents,
@@ -118,6 +135,7 @@ let state: State = {
   ingestionJobs: INGESTION_JOBS,
   mcpServers: MCP_SERVERS.map(tagResource),
   tools: TOOLS_REPO.map(tagResource),
+  skills: withBoundSkillCounts(seedAgents, SKILLS.map(tagResource)),
   evalRuns: EVAL_RUNS.map((e) => ({ ...e, workspaceId: e.workspaceId ?? tenantOfAgent(e.agentId, seedAgents) })),
   evalSuites: EVAL_SUITES.map((s) => ({ ...s, workspaceId: s.workspaceId ?? tenantOfAgent(s.agentId, seedAgents) })),
   evalPolicy: {},
@@ -125,8 +143,6 @@ let state: State = {
   tokens: API_TOKENS,
   providerKeys: PROVIDER_KEYS,
   members: MEMBERS,
-  invites: INVITES,
-  joinedWorkspaceIds: [],
   channels: CHANNELS_SEED.map(tagResource),
   toolApprovals: TOOL_APPROVALS.map((a) => ({ ...a, workspaceId: a.workspaceId ?? tenantOfAgent(a.agentId, seedAgents) })),
   workspaceSettings: WORKSPACE_SETTINGS,
@@ -170,20 +186,16 @@ export function setActiveWorkspace(id: string) {
   if (id === state.activeWorkspaceId) return;
   set({ activeWorkspaceId: id });
 }
-// @backend POST /v1/workspaces/:id/join - self-join an `access: "open"` space; server assigns the
-//   default join role (DEFAULT_JOIN_ROLE, iam.ts) and returns the new membership. The joinedWorkspaceIds
-//   shim is merged into the effective profile in auth.tsx and goes away once membership is session-sourced.
-export function joinWorkspace(id: string) {
-  if (!state.joinedWorkspaceIds.includes(id)) {
-    set({ joinedWorkspaceIds: [...state.joinedWorkspaceIds, id] });
-  }
-  set({ activeWorkspaceId: id });
-  toast("Joined space");
-}
-// @backend remove - roleOverride/teamOverride are dev-only preview switches; delete once the real
-//   IAM session supplies role-per-workspace + teams. [ref: frontend-auth-access-plan.md#part-e]
+// @backend remove - roleOverride/teamOverride/platformAdminOverride are dev-only preview switches; delete
+//   once the real IAM session supplies role + teams + platform-admin from the OIDC `groups` claim.
+//   [ref: frontend-auth-access-plan.md#part-e]
 export function setRoleOverride(role: Role | null) {
   set({ roleOverride: role });
+}
+// Dev preview: force platform-admin on/off (null = use MOCK_PROFILE.groups). Lets the demo show the
+// member experience without a real Okta directory.
+export function setPlatformAdminOverride(v: boolean | null) {
+  set({ platformAdminOverride: v });
 }
 export function setTeamOverride(teams: string[] | null) {
   set({ teamOverride: teams });
@@ -196,11 +208,132 @@ export function updateWorkspaceSettings(wsId: string, patch: Partial<WorkspaceSe
   set({ workspaceSettings: { ...state.workspaceSettings, [wsId]: { ...cur, ...patch } } });
   toast("Workspace settings saved");
 }
-// @backend POST /v1/workspaces/:id/archive - archive a workspace (unpublishes its endpoints). Admin only.
-export function archiveWorkspace(wsId: string) {
+// @backend POST /v1/workspaces/:id/archive (deactivate, unpublishes endpoints) + a NEW reactivate endpoint
+//   (none exists today — flag). Reversible Inactive toggle; reuses the `archivedAt` marker. When inactive,
+//   auth.tsx's can() freezes all writes (workspace-level read-only gate); resources are never mutated so
+//   Activate restores everything instantly. Admin only (the Activate/Delete controls bypass the freeze).
+export function setWorkspaceActive(wsId: string, active: boolean) {
   const cur = state.workspaceSettings[wsId] ?? defaultWorkspaceSettings();
-  set({ workspaceSettings: { ...state.workspaceSettings, [wsId]: { ...cur, archivedAt: nowIso() } } });
-  toast("Workspace archived", "neutral");
+  set({ workspaceSettings: { ...state.workspaceSettings, [wsId]: { ...cur, archivedAt: active ? undefined : nowIso() } } });
+  toast(active ? "Workspace activated" : "Workspace deactivated — now read-only", "neutral");
+}
+// @backend NO create endpoint today — workspaces are org-provisioned (backend/08 has no POST /v1/workspaces).
+//   Mock-only convenience: provision a space, make the creator its admin, and scaffold baseline config +
+//   a starter kit so it's immediately usable. A real deploy would add POST /v1/workspaces or keep this out-of-band.
+export function addWorkspace(input: { name: string; oktaGroup: string; memberRole: Role }): string {
+  const name = input.name.trim();
+  let id = slugify(name) || genId("ws");
+  if (state.workspaces.some((w) => w.id === id)) id = `${id}-${genId("ws").split("-")[1]}`; // de-dupe
+  const ws: Workspace = { id, name, short: shortOf(name), oktaGroup: input.oktaGroup.trim(), memberRole: input.memberRole };
+
+  // Starter kit — explicit workspaceId so these land in the NEW space (not the active one). tagResource
+  // stamps the default access policy. Bound counts are unaffected (the starter agent binds nothing).
+  const starterAgent = tagResource<Agent>({
+    id: genId("agent"), name: `Starter Agent · ${name}`,
+    description: "An example draft agent. Configure it, test it in the playground, then publish.",
+    status: "draft", provider: "Anthropic", model: "claude-opus-5-5", owner: MOCK_PROFILE.name,
+    createdAt: nowIso(), updatedAt: nowIso(), activeVersion: "v1", versions: 1, tags: ["starter"],
+    calls30d: 0, cost30d: 0, p95ms: 0, evalPass: 0, drift: "none", callsSpark: [0, 0, 0, 0, 0, 0, 0],
+    knowledgeBases: [], tools: [], skills: [], workspaceId: id,
+  });
+  const starterKb = tagResource<KnowledgeBase>({
+    id: genId("kb"), name: `Starter Knowledge Base · ${name}`, embeddingModel: "text-embedding-3-large",
+    docs: 0, chunks: 0, sizeMB: 0, lastSync: nowIso(), status: "ready", boundAgents: 0, sources: [],
+    description: "An empty knowledge base. Add sources and ingest to ground your agents.", workspaceId: id,
+  });
+  const starterTool = tagResource<RepoTool>({
+    name: "http-example", kind: "HTTP", description: "An example HTTP tool. Point it at your API and bind it to an agent.",
+    usedBy: 0, riskTier: "read", workspaceId: id,
+  });
+
+  // No membership overlay needed: workspace CRUD is platform-admin-only, and platform-admins see all spaces.
+  set({
+    workspaces: [...state.workspaces, ws],
+    workspaceSettings: { ...state.workspaceSettings, [id]: defaultWorkspaceSettings() },
+    limits: { ...state.limits, [id]: defaultLimits() },
+    evalPolicy: { ...state.evalPolicy, [id]: defaultEvalPolicy() },
+    agents: [starterAgent, ...state.agents],
+    knowledgeBases: [starterKb, ...state.knowledgeBases],
+    tools: [starterTool, ...state.tools],
+  });
+  setActiveWorkspace(id);
+  toast(`Workspace "${name}" created`);
+  return id;
+}
+// @backend PATCH /v1/workspaces/:id - update workspace identity (name, backing Okta group, member base role;
+//   slug/id immutable — the endpoint URL segment). Platform-admin only. [ref: backend/01 §4.1, backend/08]
+export function updateWorkspace(wsId: string, patch: { name?: string; oktaGroup?: string; memberRole?: Role }) {
+  set({
+    workspaces: state.workspaces.map((w) => {
+      if (w.id !== wsId) return w;
+      const name = patch.name?.trim() || w.name;
+      return {
+        ...w,
+        name,
+        short: patch.name ? shortOf(name) : w.short,
+        oktaGroup: patch.oktaGroup?.trim() || w.oktaGroup,
+        memberRole: patch.memberRole ?? w.memberRole,
+      };
+    }),
+  });
+  toast("Workspace saved");
+}
+// @backend NO hard-delete endpoint — the backend archives (soft). Mock-only cascade that removes the space
+//   and EVERY resource scoped to it so no dangling references survive. providerKeys (org-level) and the
+//   members roster (group-derived in the mock) are intentionally left intact. Platform-admin only.
+export function deleteWorkspace(wsId: string) {
+  const remaining = state.workspaces.filter((w) => w.id !== wsId);
+  // Lockout guard: never delete the last workspace in the deployment.
+  if (remaining.length === 0) {
+    toast("Can't delete the last workspace", "neutral");
+    return;
+  }
+  const nextActive = wsId === state.activeWorkspaceId ? remaining[0].id : state.activeWorkspaceId;
+
+  // Name-string orphans (no workspaceId): collect the names of the KBs/agents being deleted so their
+  // ingestion jobs / tokens (linked by name, not id) can be scrubbed too.
+  const delKbNames = new Set(state.knowledgeBases.filter((k) => k.workspaceId === wsId).map((k) => k.name));
+  const delAgentNames = new Set(state.agents.filter((a) => a.workspaceId === wsId).map((a) => a.name));
+
+  const agents = state.agents.filter((a) => a.workspaceId !== wsId);
+  const knowledgeBases = state.knowledgeBases.filter((k) => k.workspaceId !== wsId);
+  const tools = state.tools.filter((t) => t.workspaceId !== wsId);
+  const mcpServers = state.mcpServers.filter((m) => m.workspaceId !== wsId);
+  const skills = state.skills.filter((s) => s.workspaceId !== wsId);
+  const toolCounts = withBoundToolCounts(agents, tools, mcpServers); // recompute ONCE over survivors
+
+  // tokens/ingestionJobs link by NAME (no workspaceId). A same-named resource (e.g. the "Starter Agent"
+  // every new space seeds) can survive in another workspace, so only scrub a token/job whose referenced
+  // name was deleted AND no longer exists among survivors — never one still backed by a surviving resource.
+  const survivingAgentNames = new Set(agents.map((a) => a.name));
+  const survivingKbNames = new Set(knowledgeBases.map((k) => k.name));
+  const orphanedToken = (t: ApiToken) => delAgentNames.has(t.agent) && !survivingAgentNames.has(t.agent);
+  const orphanedJob = (j: IngestionJob) => delKbNames.has(j.kb) && !survivingKbNames.has(j.kb);
+
+  const nextSettings = { ...state.workspaceSettings }; delete nextSettings[wsId];
+  const nextLimits = { ...state.limits }; delete nextLimits[wsId];
+  const nextEvalPolicy = { ...state.evalPolicy }; delete nextEvalPolicy[wsId];
+
+  set({
+    workspaces: remaining,
+    activeWorkspaceId: nextActive,
+    agents,
+    knowledgeBases: withBoundAgentCounts(agents, knowledgeBases),
+    tools: toolCounts.tools,
+    mcpServers: toolCounts.mcpServers,
+    skills: withBoundSkillCounts(agents, skills),
+    evalRuns: state.evalRuns.filter((e) => e.workspaceId !== wsId),
+    evalSuites: state.evalSuites.filter((s) => s.workspaceId !== wsId),
+    runs: state.runs.filter((r) => r.workspaceId !== wsId),
+    toolApprovals: state.toolApprovals.filter((a) => a.workspaceId !== wsId),
+    channels: state.channels.filter((c) => c.workspaceId !== wsId),
+    ingestionJobs: state.ingestionJobs.filter((j) => !orphanedJob(j)),
+    tokens: state.tokens.filter((t) => !orphanedToken(t)),
+    workspaceSettings: nextSettings,
+    limits: nextLimits,
+    evalPolicy: nextEvalPolicy,
+  });
+  toast("Workspace deleted", "neutral");
 }
 // @backend PUT /v1/workspaces/:id/limits - per-workspace spend ceiling + max concurrency + request
 //   timeout. Admin only. Stored in P1; ENFORCED at runtime in P2 (BudgetGuard + Redis semaphores).
@@ -261,11 +394,11 @@ export function upsertCase(suiteId: string, c: EvalCaseDef) {
 export function deleteCase(suiteId: string, caseId: string) {
   set({ evalSuites: state.evalSuites.map((s) => (s.id === suiteId ? { ...s, cases: s.cases.filter((c) => c.id !== caseId), updatedAt: nowIso() } : s)) });
 }
-// @backend PUT /v1/{agents|knowledge|tools|mcp|channels}/:id/access-policy - persist per-resource policy;
-//   server enforces it on read/manage and at invoke. [ref: frontend-auth-access-plan.md#part-b2]
+// @backend PUT /v1/{agents|knowledge|tools|mcp|channels|skills}/:id/access-policy - persist per-resource
+//   policy; server enforces it on read/manage and at invoke. [ref: frontend-auth-access-plan.md#part-b2]
 /** Admin-configurable per-resource access policy (Part B2). */
 export function setAccessPolicy(
-  kind: "agent" | "knowledge" | "tool" | "mcp" | "channel",
+  kind: "agent" | "knowledge" | "tool" | "mcp" | "channel" | "skill",
   id: string,
   policy: AccessPolicy,
 ) {
@@ -277,31 +410,14 @@ export function setAccessPolicy(
   else if (kind === "knowledge") set({ knowledgeBases: apply(state.knowledgeBases) });
   else if (kind === "tool") set({ tools: apply(state.tools) });
   else if (kind === "channel") set({ channels: apply(state.channels) });
+  else if (kind === "skill") set({ skills: apply(state.skills) });
   else set({ mcpServers: apply(state.mcpServers) });
   toast("Access policy updated");
 }
 
-/* ------------------------------------------------------------- members / invites */
-// @backend POST /v1/workspaces/:id/invites - invite a member to the space (space admin → `member.manage`).
-export function inviteMember(email: string, role: Member["role"]) {
-  if (state.invites.some((i) => i.email === email) || state.members.some((m) => m.email === email)) {
-    toast("Already a member or invited", "neutral");
-    return;
-  }
-  const invite: Invite = { email, role, invitedBy: MOCK_PROFILE.name, invitedAt: nowIso(), status: "pending" };
-  set({ invites: [invite, ...state.invites] });
-  toast("Invitation sent");
-}
-// @backend DELETE /v1/workspaces/:id/invites/:id - revoke a pending invite (space admin).
-export function revokeInvite(email: string) {
-  set({ invites: state.invites.filter((i) => i.email !== email) });
-  toast("Invitation revoked", "neutral");
-}
-// @backend DELETE /v1/members/:id - remove a member from the space (space admin).
-export function removeMember(email: string) {
-  set({ members: state.members.filter((m) => m.email !== email) });
-  toast("Member removed", "neutral");
-}
+/* ------------------------------------------------------------- members (read-only)
+   @backend membership is Okta-GROUP-driven — the roster is a read-only projection of the workspace's backing
+   group (GET /v1/members?workspace=:id). No invite/remove in-app: add/remove happens in Okta. */
 
 /* --------------------------------------------------------------- actions */
 // @backend POST /v1/agents - create a draft agent in the active workspace; returns the created id.
@@ -314,6 +430,7 @@ export function addAgent(a: Agent) {
     knowledgeBases: withBoundAgentCounts(agents, state.knowledgeBases),
     tools: toolCounts.tools,
     mcpServers: toolCounts.mcpServers,
+    skills: withBoundSkillCounts(agents, state.skills),
   });
   toast(`Agent "${stamped.name}" created as a draft`);
 }
@@ -324,7 +441,7 @@ export function addAgent(a: Agent) {
 export function updateAgent(id: string, patch: Partial<Agent>, notify = true) {
   // A behavior-changing (trigger) field edit flags the agent for re-eval (publishable proxy, backend/05 §5),
   // unless the caller set needsReEval explicitly (e.g. a rollback that clears it).
-  const TRIGGER_FIELDS: (keyof Agent)[] = ["provider", "model", "knowledgeBases", "tools"];
+  const TRIGGER_FIELDS: (keyof Agent)[] = ["provider", "model", "knowledgeBases", "tools", "skills"];
   const touchedTrigger = TRIGGER_FIELDS.some((k) => k in patch);
   const eff: Partial<Agent> = touchedTrigger && patch.needsReEval === undefined ? { ...patch, needsReEval: true } : patch;
   const agents = state.agents.map((a) => (a.id === id ? { ...a, ...eff, updatedAt: nowIso() } : a));
@@ -336,6 +453,7 @@ export function updateAgent(id: string, patch: Partial<Agent>, notify = true) {
     extra.tools = counts.tools;
     extra.mcpServers = counts.mcpServers;
   }
+  if ("skills" in patch) extra.skills = withBoundSkillCounts(agents, state.skills);
   set({ agents, ...extra });
   if (notify) toast("Changes saved");
 }
@@ -432,6 +550,7 @@ export function deleteAgent(id: string) {
     knowledgeBases: withBoundAgentCounts(agents, state.knowledgeBases),
     tools: toolCounts.tools,
     mcpServers: toolCounts.mcpServers,
+    skills: withBoundSkillCounts(agents, state.skills),
     evalRuns: state.evalRuns.filter((e) => e.agentId !== id),
     runs: state.runs.filter((r) => r.agentId !== id),
     tokens: a ? state.tokens.filter((t) => t.agent !== a.name) : state.tokens,
@@ -459,7 +578,7 @@ export function duplicateAgent(id: string): string | null {
   const agents = [copy, ...state.agents];
   // The copy inherits the original's KB + tool/MCP bindings → increment affected counts.
   const toolCounts = withBoundToolCounts(agents, state.tools, state.mcpServers);
-  set({ agents, knowledgeBases: withBoundAgentCounts(agents, state.knowledgeBases), tools: toolCounts.tools, mcpServers: toolCounts.mcpServers });
+  set({ agents, knowledgeBases: withBoundAgentCounts(agents, state.knowledgeBases), tools: toolCounts.tools, mcpServers: toolCounts.mcpServers, skills: withBoundSkillCounts(agents, state.skills) });
   toast(`Duplicated as "${copy.name}"`);
   return newId;
 }
@@ -591,6 +710,58 @@ export function deleteTool(name: string) {
   set({ tools: state.tools.filter((t) => t.name !== name) });
   toast(`Tool "${name}" removed`, "neutral");
 }
+/* ------------------------------------------------------------------ skills */
+// @backend POST /v1/skills - create a draft skill (instruction + bundled resources) in active workspace.
+//   Skills do not execute code; no sandbox/credential capture. [ref: backend/08 Skills, backend/01 §4.4]
+export function addSkill(sk: Skill, notify = true) {
+  const stamped = tagResource({ ...sk, workspaceId: sk.workspaceId ?? state.activeWorkspaceId });
+  set({ skills: [stamped, ...state.skills] });
+  // notify=false lets a create-then-publish flow suppress the transient "created as a draft" toast.
+  if (notify) toast(`Skill "${stamped.name}" created as a draft`);
+}
+// @backend PUT /v1/skills/:id - edit a skill. A content change (instructions/resources/version) freezes a
+//   new content hash into the version snapshot_hash of every bound agent → drift trigger, so flag those
+//   agents for re-eval, mirroring a KB re-ingest. [ref: backend/05 §5 DRIFT_TRIGGERS.skill_bindings, §6]
+export function updateSkill(id: string, patch: Partial<Skill>, notify = true) {
+  const contentChanged = "instructions" in patch || "resources" in patch || "version" in patch || "contentHash" in patch;
+  const skills = state.skills.map((s) => (s.id === id ? { ...s, ...patch, lastUpdated: nowIso() } : s));
+  set({
+    skills,
+    ...(contentChanged
+      ? { agents: state.agents.map((a) => ((a.skills ?? []).includes(id) ? { ...a, needsReEval: true } : a)) }
+      : {}),
+  });
+  if (notify) toast("Skill updated");
+}
+// @backend POST /v1/skills/:id/publish - sign + publish a skill so it becomes bindable. Signing stamps
+//   provenance (signed_by/at + masked signature). Re-publishing edited content re-freezes the hash, so
+//   bound agents are flagged for re-eval. [ref: backend/09 §10 provenance/signing, backend/05 §6]
+export function publishSkill(id: string) {
+  const skills = state.skills.map((s) =>
+    s.id === id
+      ? {
+          ...s,
+          status: "published" as const,
+          signature: { signedBy: MOCK_PROFILE.name, signedAt: nowIso(), masked: `sig:${genId("sig").slice(-8)}` },
+          lastUpdated: nowIso(),
+        }
+      : s,
+  );
+  set({
+    skills,
+    // A (re)publish re-freezes the skill's content identity → bound agents need re-eval.
+    agents: state.agents.map((a) => ((a.skills ?? []).includes(id) ? { ...a, needsReEval: true } : a)),
+  });
+  toast("Skill published & signed");
+}
+// @backend DELETE /v1/skills/:id - delete a skill. Agent bindings by this id become dangling refs
+//   (the detail/picker render them as removable, like a deleted tool).
+export function deleteSkill(id: string) {
+  const sk = state.skills.find((s) => s.id === id);
+  set({ skills: state.skills.filter((s) => s.id !== id) });
+  toast(`Skill "${sk?.name ?? id}" deleted`, "neutral");
+}
+
 // @backend POST /v1/approvals/:id/decide - approve/deny a paused high-risk tool call; the server resumes
 //   (Command(resume=…)) or terminates the run. Publisher+ (tool.approve). [backend/08, backend/03 §2]
 export function decideApproval(id: string, decision: "approve" | "deny", reason?: string) {
@@ -786,6 +957,8 @@ const inWs = <T extends { workspaceId?: string }>(arr: T[], ws: string) => arr.f
 export const useActiveWorkspaceId = () => useSelector((s) => s.activeWorkspaceId);
 export const useRoleOverride = () => useSelector((s) => s.roleOverride);
 export const useTeamOverride = () => useSelector((s) => s.teamOverride);
+// @backend remove - dev-only preview of the platform-admin dimension (null = use the OIDC `groups` claim).
+export const usePlatformAdminOverride = () => useSelector((s) => s.platformAdminOverride);
 
 /* workspace-scoped lists
    @backend reads - every selector below replaces its mock store slice with a workspace-scoped API
@@ -810,6 +983,10 @@ export const useMcpServer = (id: string) => useSelector((s) => s.mcpServers.find
 export const useTools = () => useSelector((s) => inWs(s.tools, s.activeWorkspaceId));
 // @backend GET /v1/tools/:id - single repository tool (by name identity).
 export const useTool = (name: string) => useSelector((s) => s.tools.find((t) => t.name === name));
+// @backend GET /v1/skills?workspace=:id - list skills (instruction+resource capability packages).
+export const useSkills = () => useSelector((s) => inWs(s.skills, s.activeWorkspaceId));
+// @backend GET /v1/skills/:id - single skill (instructions, resources, signing/provenance, access).
+export const useSkill = (id: string) => useSelector((s) => s.skills.find((sk) => sk.id === id));
 // @backend GET /v1/evals?workspace=:id - list eval runs.
 export const useEvalRuns = () => useSelector((s) => inWs(s.evalRuns, s.activeWorkspaceId));
 // @backend GET /v1/runs?workspace=:id - list observability runs (caller/tenant attributed).
@@ -837,13 +1014,13 @@ export const useSuitesForAgent = (agentId: string) => useSelector((s) => s.evalS
 export const useTokens = () => useSelector((s) => s.tokens);
 // @backend GET /v1/provider-keys?workspace=:id - list vaulted provider keys (masked).
 export const useProviderKeys = () => useSelector((s) => s.providerKeys);
-// @backend GET /v1/members?workspace=:id - space roster + role-per-workspace (app-managed: invite/join,
-//   space admins can remove — see inviteMember/removeMember). Identity still comes from org Okta.
+// @backend GET /v1/members?workspace=:id - READ-ONLY roster projected from the workspace's Okta group.
+//   Identity + membership come from Okta; no in-app invite/remove.
 export const useMembers = () => useSelector((s) => s.members);
-// @backend GET /v1/workspaces/:id/invites - pending invites for the active space (space admin view).
-export const useInvites = () => useSelector((s) => s.invites);
-// @backend remove - session-local record of open spaces the user joined this session (merged in auth.tsx).
-export const useJoinedWorkspaceIds = () => useSelector((s) => s.joinedWorkspaceIds);
+// @backend GET /v1/workspaces (the user's Okta group memberships) - store-backed registry (mutable in the mock).
+export const useWorkspaces = () => useSelector((s) => s.workspaces);
+// Active (vs. Inactive/read-only) flag for a workspace — drives the read-only freeze gate (auth.tsx can()).
+export const useWorkspaceActiveFor = (wsId: string) => useSelector((s) => !s.workspaceSettings[wsId]?.archivedAt);
 // Stable fallbacks: useSelector caches by reference, so returning a fresh default object each call
 // would loop. All workspaces are seeded, so these only guard an unseeded tenant.
 const FALLBACK_WS_SETTINGS = defaultWorkspaceSettings();

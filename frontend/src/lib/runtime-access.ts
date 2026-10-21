@@ -1,4 +1,4 @@
-import type { Agent, McpServer } from "./data";
+import type { Agent, McpServer, Skill } from "./data";
 import type { ChannelPlatform } from "./channels";
 import type { Role } from "./permissions";
 import { canUse, type Principal } from "./access-policy";
@@ -32,6 +32,8 @@ export type RunResolution = {
   deniedTools: Denied[];
   grantedKbs: string[];
   deniedKbs: Denied[];
+  grantedSkills: string[];
+  deniedSkills: Denied[];
 };
 
 // @backend POST /v1/agents/:id/invoke (auth) - at real invoke time the server validates the caller's
@@ -40,7 +42,7 @@ export type RunResolution = {
 //   a Playground preview only; keep the RunResolution shape, replace decodeToken with a /resolve-run
 //   (or token-introspection) call. [ref: backend-integration-plan.md#runtime-request]
 /** Deterministic mock decode of a pasted token. Real IAM validates a JWT and reads claims. */
-function decodeToken(token: string, agent: Agent): Omit<RunResolution, "grantedTools" | "deniedTools" | "grantedKbs" | "deniedKbs"> {
+function decodeToken(token: string, agent: Agent): Omit<RunResolution, "grantedTools" | "deniedTools" | "grantedKbs" | "deniedKbs" | "grantedSkills" | "deniedSkills"> {
   const t = token.toLowerCase();
   const subjectType: "user" | "service" = t.includes("user") ? "user" : "service";
   const tenant = t.includes("grc") ? "trellix-grc" : t.includes("labs") ? "trellix-labs" : (agent.workspaceId ?? DEFAULT_WORKSPACE_ID);
@@ -55,7 +57,7 @@ function decodeToken(token: string, agent: Agent): Omit<RunResolution, "grantedT
   return { subjectType, tenant, role, teams, scopes, expiry, status };
 }
 
-export function resolveRun(ctx: RunCtx, agent: Agent, session: Session, mcpServers: McpServer[] = []): RunResolution {
+export function resolveRun(ctx: RunCtx, agent: Agent, session: Session, mcpServers: McpServer[] = [], skills: Skill[] = []): RunResolution {
   const agentTenant = agent.workspaceId ?? DEFAULT_WORKSPACE_ID;
   const base = ctx.mode === "session"
     ? {
@@ -81,6 +83,7 @@ export function resolveRun(ctx: RunCtx, agent: Agent, session: Session, mcpServe
   const principal: Principal = { role: base.role, teams: base.teams };
   const tools = agent.tools ?? [];
   const kbs = agent.knowledgeBases ?? [];
+  const boundSkills = agent.skills ?? [];
 
   // whole-run failures short-circuit resource grants
   let status = base.status;
@@ -94,6 +97,8 @@ export function resolveRun(ctx: RunCtx, agent: Agent, session: Session, mcpServe
   const deniedTools: Denied[] = [];
   const grantedKbs: string[] = [];
   const deniedKbs: Denied[] = [];
+  const grantedSkills: string[] = [];
+  const deniedSkills: Denied[] = [];
 
   // Display label for a bound tool ref: MCP refs (`mcp:<serverId>/<tool>`) show "tool · Server".
   const toolLabel = (ref: string) => {
@@ -112,6 +117,17 @@ export function resolveRun(ctx: RunCtx, agent: Agent, session: Session, mcpServe
     if (!canUse(s.accessPolicy, principal)) return "MCP server not accessible";
     return null;
   };
+  // A bound skill is denied when it was removed or is restricted by its own access policy for this caller.
+  // Skills never execute code, so this is a pure visibility check (no scope breadth like tools/KBs).
+  // No-op when no skill list is supplied (can't evaluate → don't spuriously deny; fall back to the id).
+  const skillLabel = (id: string) => skills.find((sk) => sk.id === id)?.name ?? id;
+  const skillBlockedReason = (id: string): string | null => {
+    if (skills.length === 0) return null;
+    const sk = skills.find((x) => x.id === id);
+    if (!sk) return "Skill removed";
+    if (!canUse(sk.accessPolicy, principal)) return "Skill not accessible";
+    return null;
+  };
 
   if (!blocked) {
     tools.forEach((ref, i) => {
@@ -128,15 +144,21 @@ export function resolveRun(ctx: RunCtx, agent: Agent, session: Session, mcpServe
       if (inScope) grantedKbs.push(id);
       else deniedKbs.push({ name: id, reason: "not in token scope" });
     });
+    boundSkills.forEach((id) => {
+      const reason = skillBlockedReason(id);
+      if (reason) deniedSkills.push({ name: skillLabel(id), reason });
+      else grantedSkills.push(skillLabel(id));
+    });
   } else {
     // Whole run is blocked: nothing executes, but surface what WOULD be used so the access
     // preview shows the agent's bound resources (struck through) instead of "No tools bound".
     const reason = statusLabel[status];
     tools.forEach((ref) => deniedTools.push({ name: toolLabel(ref), reason }));
     kbs.forEach((id) => deniedKbs.push({ name: id, reason }));
+    boundSkills.forEach((id) => deniedSkills.push({ name: skillLabel(id), reason }));
   }
 
-  return { ...base, status, grantedTools, deniedTools, grantedKbs, deniedKbs };
+  return { ...base, status, grantedTools, deniedTools, grantedKbs, deniedKbs, grantedSkills, deniedSkills };
 }
 
 export const statusLabel: Record<RunStatus, string> = {

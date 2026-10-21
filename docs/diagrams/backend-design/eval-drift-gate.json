@@ -1,0 +1,54 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "Eval & Drift Gate — the publish guard",
+    "subtitle": "Why editing an agent changes nothing live until an eval-gated re-point",
+    "output": "docs/diagrams/backend-design/eval-drift-gate.html",
+    "quality_profile": "showcase"
+  },
+  "lanes": [
+    { "id": "author", "label": "Author" },
+    { "id": "worker", "label": "Eval worker (batch)" },
+    { "id": "scoring", "label": "Two-layer scoring" },
+    { "id": "gate", "label": "Verdict & gate", "variant": "exception" }
+  ],
+  "phases": [
+    { "id": "auth", "label": "Author + queue", "fromCol": 0, "toCol": 1 },
+    { "id": "score", "label": "Run + score (same core)", "fromCol": 2, "toCol": 4, "variant": "emphasis" },
+    { "id": "gatep", "label": "Gate", "fromCol": 5, "toCol": 5, "variant": "dashed" }
+  ],
+  "groups": [
+    { "id": "two", "label": "deterministic + judge", "lane": "scoring", "fromCol": 3, "toCol": 4, "variant": "emphasis" },
+    { "id": "gg", "label": "drift verdict vs frozen baseline", "lane": "gate", "fromCol": 4, "toCol": 5, "variant": "security" }
+  ],
+  "mainPath": ["edit", "enqueue", "invoke", "determ", "judge", "verdict", "gate", "repoint"],
+  "nodes": [
+    { "id": "edit", "lane": "author", "col": 0, "type": "backend", "label": "edit agent → version", "sublabel": "snapshot built", "tag": "publishable = false" },
+    { "id": "triggers", "lane": "gate", "col": 0, "type": "security", "label": "drift triggers", "sublabel": "model · prompt · kb · retrieval …" },
+    { "id": "enqueue", "lane": "worker", "col": 1, "type": "messagebus", "label": "enqueue eval-run", "sublabel": "202 job_id · batch pool" },
+    { "id": "invoke", "lane": "worker", "col": 2, "type": "backend", "label": "runtime.invoke / case", "sublabel": "run_source=eval · cache OFF", "tag": "shared core (D2)" },
+    { "id": "determ", "lane": "scoring", "col": 3, "type": "backend", "label": "deterministic checks", "sublabel": "schema · regex · tool-call · refusal" },
+    { "id": "judge", "lane": "scoring", "col": 4, "type": "backend", "label": "LLM judge", "sublabel": "claude-haiku-4-5 · fixed · cached" },
+    { "id": "verdict", "lane": "gate", "col": 4, "type": "security", "label": "drift verdict", "sublabel": "PASS / FAIL → results · flip flag" },
+    { "id": "gate", "lane": "gate", "col": 5, "type": "security", "label": "eval gate", "sublabel": "409 if changed since last PASS", "tag": "snapshot_hash match" },
+    { "id": "repoint", "lane": "author", "col": 5, "type": "backend", "label": "publish / re-point", "sublabel": "pins the frozen VersionSnapshot" }
+  ],
+  "edges": [
+    { "id": "e-trig", "from": "triggers", "to": "edit", "label": "→ publishable=false", "variant": "security", "role": "branch" },
+    { "id": "e-edit-enq", "from": "edit", "to": "enqueue", "variant": "emphasis" },
+    { "id": "e-enq-inv", "from": "enqueue", "to": "invoke", "label": "per case", "variant": "emphasis" },
+    { "id": "e-inv-det", "from": "invoke", "to": "determ", "label": "candidate", "variant": "emphasis" },
+    { "id": "e-det-judge", "from": "determ", "to": "judge", "label": "pre-filter", "variant": "emphasis" },
+    { "id": "e-judge-verd", "from": "judge", "to": "verdict", "label": "rubric", "variant": "emphasis" },
+    { "id": "e-verd-gate", "from": "verdict", "to": "gate", "label": "PASS", "variant": "emphasis" },
+    { "id": "e-verd-edit", "from": "verdict", "to": "edit", "label": "FAIL / low-conf → fix & re-eval", "variant": "security", "role": "return" },
+    { "id": "e-gate-rep", "from": "gate", "to": "repoint", "label": "last PASS ✓", "variant": "emphasis" }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "The guarantee", "items": ["You cannot publish — or re-point a published agent to — a version whose behavior changed since its last PASS eval (409, enforced in code)", "So editing an agent changes NOTHING live until a fresh eval passes and you re-point; the endpoint keeps serving the old frozen snapshot", "snapshot_hash folds prompt + params + retrieval_config + kb_index + skills — a stale hash would serve a PASS and silently bypass the gate"] },
+    { "dot": "rose", "title": "Two-layer scoring", "items": ["Deterministic checks are the cheap backbone: schema / regex / tool-call / refusal — no model, run first as a pre-filter", "The LLM judge is the primary COGS risk, so it is FIXED + versioned (claude-haiku-4-5, judge-v1): a drifting judge would corrupt every verdict", "Judge cost is controlled with a verdict cache + Batch; verdict is computed vs a frozen baseline (PASS / FAIL / low-confidence)"] },
+    { "dot": "amber", "title": "Drift triggers (any → re-eval)", "items": ["model · provider · params · prompt · guardrails · tools · skills · embedding · kb · retrieval_config · capability_substitution all flip publishable=false", "Re-ingesting a BOUND knowledge base raises a stale-index warning + drift trigger — the index moved under a passing version", "The eval worker runs each case through the SAME runtime.invoke (run_source=eval, cache OFF) as playground/published — else the verdict scores code prod never runs"] },
+    { "dot": "slate", "title": "Source", "items": ["docs/backend/05-eval-drift.md §2 (fixed judge) · §5 (gate, 409, DRIFT_TRIGGERS) · §6 (snapshot_hash) · §7 (job flow) · 00-overview §6 (judge model)", "Companion: runtime-invoke-pipeline.html (the shared core) · backend-deployment-plane.html (where the batch worker runs)"] }
+  ]
+}

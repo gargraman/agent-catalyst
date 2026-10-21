@@ -66,8 +66,10 @@ Who gets a row is resolved at **emit time**, not read time:
   registration gate must capture `owner_subject` as a **routable** OIDC subject (a real, addressable
   identity, not a placeholder) at agent creation. If owners aren't routable, the whole surface
   silently no-ops — the founding problem again. (`14` owns that gate; this doc assumes it.)
-- **Plus workspace publishers + admins** — the `memberships` rows (01 §4.1) with `role in
-  ('publisher','admin')`, so an agent that outlives its original owner still has someone watching.
+- **Plus workspace publishers + admins** — ⚠️ **re-sourced (2026-10-20 group-driven pivot):** there is no
+  `memberships` roster anymore. The recipient set is now **platform-admins** (the `platform_admins` plane, 15)
+  **+ the members of the workspace's backing Okta group when its `member_role = 'publisher'`** (the group
+  confers one role to all). So an agent that outlives its original owner still has someone watching.
 
 One logical event therefore fans out to **N rows, one per recipient subject** (same `dedupe_key`,
 different `recipient_subject`). This keeps the read model trivial: "my inbox" is a single-table filter.
@@ -147,6 +149,11 @@ five (the dedupe index + transition guard both enforce this).
 with the run's `reason` and `failing_cases` ids so the inbox can deep-link to the eval detail. A
 `low_confidence` verdict is **not** an owner notification — it's a publish-gate condition (08 §6), not
 a regression the owner must act on.
+
+> **A skill-content change needs NO new `notification_kind`.** Editing or re-publishing a bound skill is a
+> `DRIFT_TRIGGER` (05 §5) that flips `publishable=false` and demands a fresh eval on every bound agent — so it
+> reuses **exactly** the existing re-eval → `drift` / `eval_failed` emit points above (§2.1, §2.2). The owner is
+> told through the same path as a prompt or KB change; no skill-specific kind, payload, or detector is added.
 
 ### 2.3 Budget threshold
 

@@ -1,0 +1,43 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "MCP Server Registration & Tool Binding",
+    "subtitle": "5-step wizard → register server → bind tools to an agent",
+    "output": "docs/diagrams/frontend-flows/mcp-registration-tool-binding.html",
+    "quality_profile": "showcase"
+  },
+  "lanes": [
+    { "id": "wizard", "label": "Builder (5-step wizard)" },
+    { "id": "vault", "label": "Credentials" },
+    { "id": "store", "label": "Store / mock API" },
+    { "id": "agent", "label": "Agent config" }
+  ],
+  "phases": [
+    { "id": "connect", "label": "Connect + auth", "fromCol": 0, "toCol": 1 },
+    { "id": "discover", "label": "Discover + select", "fromCol": 2, "toCol": 3, "variant": "emphasis" },
+    { "id": "register", "label": "Register + bind", "fromCol": 4, "toCol": 5 }
+  ],
+  "mainPath": ["conn", "auth", "discover", "select", "register", "bind"],
+  "nodes": [
+    { "id": "conn", "lane": "wizard", "col": 0, "type": "frontend", "label": "Step 1 · Connection", "sublabel": "transport http/stdio · endpoint" },
+    { "id": "auth", "lane": "vault", "col": 1, "type": "security", "label": "Step 2 · Auth + creds", "sublabel": "finalizeMcpCredentials", "tag": "multi-secret" },
+    { "id": "discover", "lane": "wizard", "col": 2, "type": "frontend", "label": "Step 3 · Discover", "sublabel": "SAMPLE_TOOLS (mock)", "tag": "server-side in prod" },
+    { "id": "select", "lane": "wizard", "col": 3, "type": "frontend", "label": "Step 4 · Select", "sublabel": "allow-list · egress · approval" },
+    { "id": "register", "lane": "store", "col": 4, "type": "backend", "label": "addMcpServer", "sublabel": "status: connected · tools[]", "tag": "POST /api/v1/mcp-servers" },
+    { "id": "bind", "lane": "agent", "col": 5, "type": "messagebus", "label": "Bind to agent", "sublabel": "mcp:<server>/<tool> ref" }
+  ],
+  "edges": [
+    { "id": "e-auth", "from": "conn", "to": "auth", "label": "credentials", "variant": "security" },
+    { "id": "e-discover", "from": "auth", "to": "discover", "label": "connect (simulated)" },
+    { "id": "e-select", "from": "discover", "to": "select", "label": "discovered tools" },
+    { "id": "e-register", "from": "select", "to": "register", "label": "Finish", "variant": "emphasis" },
+    { "id": "e-bind", "from": "register", "to": "bind", "label": "resolveToolRef" }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "How MCP works", "items": ["Register → Discover → Select → Bind", "Only connected servers' enabled tools are bindable to an agent", "Tool ref is mcp:<serverId>/<tool>; degrades to 'missing' when deleted"] },
+    { "dot": "rose", "title": "Auth & guardrails", "items": ["Auth methods: none · bearer · oauth · headers (multi-secret vaulting)", "Per-server egress allow-list + approval mode (auto / ask)", "Each secret → own vault://mcp/… ref (finalizeMcpCredentials)"] },
+    { "dot": "amber", "title": "Tool repository (sibling tab)", "items": ["RepoTool kinds: HTTP · Built-in · Sub-agent, each with a risk tier", "HTTP tools carry a single authRef + egress allow-list + args schema", "tool.approve is a publisher+ permission"] },
+    { "dot": "orange", "title": "Mock seams", "items": ["Discovery returns hardcoded SAMPLE_TOOLS (real: server-side discovery)", "OAuth and 'Test connection' are simulated no-ops", "Source: app/(app)/tools/* · lib/{mcp,mcp-credentials,tools,secrets}.ts"] }
+  ]
+}

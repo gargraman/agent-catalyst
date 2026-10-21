@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "diagram_type": "dataflow",
+  "meta": {
+    "title": "Owner Notifications — triggers → fan-out → inbox",
+    "subtitle": "Owner-facing in-product signals (distinct from ops alerts): deduped and addressed to the people who can act (doc 16)",
+    "output": "docs/diagrams/backend-design/owner-notifications.html",
+    "quality_profile": "showcase"
+  },
+  "stages": [
+    { "label": "Triggers" },
+    { "label": "Emit + dedupe" },
+    { "label": "Fan-out" },
+    { "label": "Inbox" }
+  ],
+  "nodes": [
+    { "id": "drift", "type": "backend", "label": "drift", "sublabel": "worse only (05)", "stage": 0, "row": 0 },
+    { "id": "evalfail", "type": "backend", "label": "eval_failed", "sublabel": "verdict=fail", "stage": 0, "row": 1 },
+    { "id": "budget", "type": "backend", "label": "budget", "sublabel": "80/90% cap", "stage": 0, "row": 2 },
+    { "id": "modeldep", "type": "backend", "label": "model_deprec", "sublabel": "scan job", "stage": 0, "row": 3 },
+    { "id": "approval", "type": "security", "label": "approval_req", "sublabel": "tool pause", "stage": 0, "row": 4 },
+    { "id": "emit", "type": "backend", "label": "emit + dedupe", "sublabel": "dedupe_key", "stage": 1, "row": 2, "tag": "severity" },
+    { "id": "fanout", "type": "messagebus", "label": "resolve N", "sublabel": "owner+admins", "stage": 2, "row": 2 },
+    { "id": "inbox", "type": "frontend", "label": "inbox", "sublabel": "bell · toast", "stage": 3, "row": 2 }
+  ],
+  "flows": [
+    { "id": "f-drift", "from": "drift", "to": "emit", "label": "drift", "variant": "emphasis" },
+    { "id": "f-ef", "from": "evalfail", "to": "emit", "label": "eval_failed" },
+    { "id": "f-b", "from": "budget", "to": "emit", "label": "budget" },
+    { "id": "f-md", "from": "modeldep", "to": "emit", "label": "deprecated" },
+    { "id": "f-ap", "from": "approval", "to": "emit", "label": "approval", "variant": "security" },
+    { "id": "f-fan", "from": "emit", "to": "fanout", "label": "insert rows", "variant": "emphasis" },
+    { "id": "f-inbox", "from": "fanout", "to": "inbox", "label": "unread" }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "Triggers (emit points)", "items": ["drift — on a WORSE state transition only (none→watch, watch→regressed), not every eval", "eval_failed — on verdict=fail (critical, with reason + failing cases); budget_threshold — spend crosses 80% / 90% of cap", "model_deprecated — detector worker when a published version's pinned model goes deprecated/retired", "approval_requested — a tool_approval pause; recipients OVERRIDE to publishers + admins (not the owner)"] },
+    { "dot": "amber", "title": "Dedupe", "items": ["dedupe_key = hash(agent_id, kind, trigger)", "A partial-unique index on OPEN rows (read_at IS NULL) collapses repeat signals into one", "Marking read releases the key, so a recurrence can reopen it", "Severity (info/warning/critical) is independent of kind — the emitter sets it"] },
+    { "dot": "rose", "title": "Recipients (fan-out)", "items": ["Default: the agent owner (agents.owner_subject — hard dependency on doc 14 for a routable subject)", "+ platform-admins + members of the workspace group whose member_role = publisher", "One event fans to N notification rows (one per recipient, same dedupe_key)", "Scoped by RLS (workspace) AND by recipient_subject = the signed-in principal"] },
+    { "dot": "emerald", "title": "Owner notifications ≠ ops alerts", "items": ["Audience: owner + publishers/admins, vs on-call operators (Alertmanager, doc 10 §5)", "Channel: in-product bell + inbox (+ toast for critical), vs a page / Slack", "Store: notifications (Postgres), vs Prometheus — spend appears on both on purpose", "Delivery: GET /api/v1/notifications · POST /:id/read · POST /read-all"] },
+    { "dot": "slate", "title": "Source", "items": ["docs/backend/16-notifications.md §entity/§triggers/§dedupe/§recipients/§vs-ops", "table: notifications (schema-runtime-governance) · owner_subject from 14"] }
+  ]
+}

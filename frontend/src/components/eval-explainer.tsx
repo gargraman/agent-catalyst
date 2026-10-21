@@ -307,7 +307,7 @@ export function NeedsReEvalBanner({ agent, onRunEval }: { agent: Agent; onRunEva
       <div className="min-w-0 flex-1 space-y-0.5">
         <p className="text-sm font-medium text-ink">Configuration changed since the last passing eval.</p>
         <p className="text-xs leading-relaxed text-ink-2">
-          A model, prompt, guardrail, retrieval, tool, or knowledge change invalidated the eval for {agent.activeVersion}.
+          A model, prompt, guardrail, retrieval, tool, knowledge, or bound-skill change invalidated the eval for {agent.activeVersion}.
           Run a fresh eval before publishing.
         </p>
       </div>

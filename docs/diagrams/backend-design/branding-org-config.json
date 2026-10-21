@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Branding & White-labeling — org ≠ workspace",
+    "subtitle": "Deploy-time org identity, resolved once above the auth/tenancy planes (doc 13)",
+    "output": "docs/diagrams/backend-design/branding-org-config.html",
+    "quality_profile": "showcase"
+  },
+  "components": [
+    { "id": "org", "type": "external", "label": "Organization", "sublabel": "deploying customer (Trellix)", "pos": [40, 180], "size": [160, 64] },
+    { "id": "deploy", "type": "cloud", "label": "deploy config", "sublabel": "env / org.config.json", "tag": "build/deploy-time", "pos": [260, 180], "size": [170, 64] },
+    { "id": "orgts", "type": "frontend", "label": "org.ts (OrgBrand)", "sublabel": "name · idp · domains · logo", "pos": [500, 80], "size": [180, 60] },
+    { "id": "brandcss", "type": "frontend", "label": "brand.css", "sublabel": "accent · radius · font tokens", "pos": [500, 180], "size": [180, 60] },
+    { "id": "assets", "type": "frontend", "label": "icon.svg / favicon", "sublabel": "brand marks", "pos": [500, 280], "size": [180, 60] },
+    { "id": "web", "type": "frontend", "label": "web (console)", "sublabel": "themed once at build/start", "pos": [760, 180], "size": [170, 64] },
+    { "id": "endpoint", "type": "backend", "label": "GET /v1/branding", "sublabel": "public · multi-org only", "tag": "out of scope", "pos": [760, 300], "size": [170, 62] }
+  ],
+  "boundaries": [
+    { "kind": "region", "label": "resolved once at deploy/build — above the auth/tenancy planes (not per-request, not tenant-scoped)", "wraps": ["deploy", "orgts", "brandcss", "assets", "web", "endpoint"], "pad": 24 }
+  ],
+  "connections": [
+    { "id": "c-dep", "from": "org", "to": "deploy", "label": "one deploy per org", "variant": "emphasis" },
+    { "id": "c-ts", "from": "deploy", "to": "orgts", "label": "populate OrgBrand", "fromSide": "right", "toSide": "left" },
+    { "id": "c-css", "from": "deploy", "to": "brandcss", "label": "visual tokens" },
+    { "id": "c-assets", "from": "deploy", "to": "assets", "fromSide": "bottom", "toSide": "left" },
+    { "id": "c-web-ts", "from": "orgts", "to": "web", "label": "identity strings", "fromSide": "right", "toSide": "top" },
+    { "id": "c-web-css", "from": "brandcss", "to": "web", "label": "@theme tokens" },
+    { "id": "c-endpoint", "from": "deploy", "to": "endpoint", "label": "or serve (multi-org)", "variant": "dashed", "fromSide": "bottom", "toSide": "left" }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "Organization ≠ workspace", "items": ["Organization = the deploying customer (Trellix); owns branding; ONE deployment per org; resolved once at build/deploy", "Workspace = a tenant within the org (trellix-xdr, …); owns agents/knowledge/members; resolved per request", "orgs is branding-only — it is NOT a tenant dimension (no org_id-scoped logic; see doc 15 §1)"] },
+    { "dot": "amber", "title": "Where org config lives (FE)", "items": ["src/lib/org.ts → the OrgBrand shape: orgName, productName, idpName, emailDomain, docsDomain, logo", "src/app/brand.css → visual tokens (accent for dark+light, --radius, --font-*) — one source of truth, merged by Tailwind @theme", "src/app/icon.svg + favicon.ico → the brand marks"] },
+    { "dot": "emerald", "title": "Backend shape (when services/ is built)", "items": ["1 (recommended, matches one-deploy-per-org): bake org config at build/deploy via env / org.config.json — no endpoint, no per-request cost", "2 (only if you go multi-tenant): GET /v1/branding — a small cacheable public endpoint returning OrgBrand + token values; explicitly out of scope today", "Either way the OrgBrand shape is unchanged — same drop-in mock→backend pattern"] },
+    { "dot": "slate", "title": "Not branding · caveat", "items": ["Workspaces, members, roles, metrics stay backend-owned (09, 01); the trellix-* seeds are demo content (@backend remove)", "Status colors + the dataviz s2–s8 series are brand-neutral — never themed per org", "Caveat: the typeface can't be pure config — next/font needs a static import, so a font change edits layout.tsx", "Source: docs/backend/13-branding.md · frontend/src/lib/org.ts · frontend/src/app/brand.css"] }
+  ]
+}

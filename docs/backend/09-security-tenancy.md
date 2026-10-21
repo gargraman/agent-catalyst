@@ -67,6 +67,16 @@ cookie-based. Pure bearer API clients (no cookie) are exempt.
 
 ### 2.1 Teams = Okta groups (the group dimension)
 
+> ⚠️ **REVERSED (2026-10-20 group-driven pivot; scope.md).** Workspace membership + role are **no longer an
+> app-managed roster**. Each workspace binds **ONE authoritative Okta group** (`workspaces.okta_group`) that
+> confers a single base role (`workspaces.member_role ∈ {viewer,builder,publisher}`); a deployment-wide
+> **platform-admin group** (→ `platform_admins`, §7/15) is admin everywhere and the only principal that can
+> create/delete/(de)activate/edit workspaces. **Removed:** `memberships` as SoR, `workspace_invites`,
+> self-join, and `access: open/restricted`. **Visibility = group membership** (platform-admins see all);
+> `Principal.memberships`/`role_in()` below are superseded by *group → member_role* resolution. `teams`
+> (functional Okta groups, this section) are a **separate** dimension and are unchanged. The paragraphs
+> below describing the invite/self-join roster are retained for history but no longer authoritative.
+
 `teams` is the group dimension of the access model, and it is sourced from **Okta groups** carried in the
 OIDC **`groups` claim** — not from the `memberships` table and not stored in Postgres. `groups_to_teams`
 normalizes the claim (e.g. maps each group's display name / id to a team slug) into `Principal.teams`.
@@ -142,6 +152,7 @@ Manager** — it owns member management, access policy, keys, and workspace sett
 | **Mint/revoke caller tokens** | | | ✓ | ✓ |
 | **Approve/deny high-risk tool calls** (`tool.approve`) | | | ✓ | ✓ |
 | **MCP servers, tools, connectors** (`mcp.manage` / `tool.manage`) | | ✓ | ✓ | ✓ |
+| **Skills** — author/edit/publish-sign (`skill.manage`) | | ✓ | ✓ | ✓ |
 | **Provider keys** (`key.manage`) | | | | ✓ |
 | Set access policy, retention | | | | ✓ |
 | **Invite / remove members, change member role, set `access_mode`** | | | | ✓ |
@@ -169,6 +180,13 @@ Manager** — it owns member management, access policy, keys, and workspace sett
 > gate (03 §2) is `tool.approve`, held by **publisher+** — the same bar as publishing, since both decide what
 > actually runs in production.
 
+> **Skills are a builder capability (`skill.manage`), mirroring `tool.manage`/`mcp.manage`.** Any **builder+**
+> may author, edit, add resources to, and **publish-sign** a skill (08). Governance is **open registration +
+> signing** (mirroring the MCP open-registration stance, 14 §5): trust comes from the eval gate + per-resource
+> access policy + the signed package + audit, **not** a pre-approval catalog. Unlike tools/MCP there is **no
+> risk tier and no approval gate** for a skill — it does not execute code (§10), so there is nothing to gate at
+> invoke beyond the access-policy `can_use` check. Skills carry **no credentials** (§9).
+
 **Above the per-workspace roles: the platform-admin plane (15).** `platform_admin` is **not** a fifth
 workspace role — it is a deployment-wide plane (§1) whose only permission is **`org.report.read`**: read the
 whole-estate governance report (15 §3) through the elevated path (§7). It grants **no** mutation anywhere and
@@ -191,7 +209,7 @@ def require_role(min_role: str):
 
 ## 5. Per-resource access policies
 
-Agents/KBs/tools/MCP/channels carry an `access_policy` jsonb (01) with the **same shape as the FE
+Agents/KBs/tools/MCP/channels/**skills** carry an `access_policy` jsonb (01) with the **same shape as the FE
 `AccessPolicy`** (`access-policy.ts`): `{ visibility, useRoles, useTeams, manageRoles, manageTeams, owner? }`.
 One shape, three sharing tiers (modelled on Google Chat / MS Teams / Splunk):
 
@@ -227,7 +245,10 @@ def can_manage(policy: dict, *, role: str, teams: set[str], subject: str | None)
 ```
 
 At invoke, the caller-token's resolved identity (role/teams) is fed to `can_use` before the runtime touches
-a provider — so access policy is enforced on the **runtime path**, not just the console. A token/channel
+a provider — so access policy is enforced on the **runtime path**, not just the console. A **bound skill** is
+`can_use`-checked at invoke exactly like a bound KB: a skill whose instruction fragment a caller may not use is
+not composed into the prompt (03 §4). (There is no execute path to gate for a skill — the only control is this
+read/`can_use` check; §10.) A token/channel
 caller carries **no owner subject**, so a `private` resource is denied to every run-time caller except an
 admin token (fail closed). On the **console** path the `teams` argument is `Principal.teams` (the Okta
 groups from the OIDC groups claim, §2.1) and `subject` is the signed-in user; on the **channel** path
@@ -290,6 +311,10 @@ A dedicated suite asserts tenant A can never read or act on tenant B, run in CI 
 - invoke: a B caller-token cannot invoke an A endpoint.
 - **notifications:** a recipient in A never sees B's notifications (workspace RLS + app-level
   `recipient_subject` filter, 16 §1).
+- **skills:** a list/detail in A never returns B's skills, and A cannot bind B's skill onto an A version
+  (`POST /versions/:vid/skills`) — `skills`/`skill_resources`/`skill_bindings` are `WorkspaceScoped` (01 §4.4),
+  so bindings inherit the version's `workspace_id` and RLS + the guard partition every query; a cross-tenant
+  bind is a 404, not a leak.
 - **tool dry-runs & sub-agents:** a `tool_test`/`mcp_test` dry-run (08) and a sub-agent **child** run (03 §8)
   stay within the caller's tenant — the child `runtime.invoke` inherits the parent `workspace_id` (never
   crosses), and the approvals inbox + `POST /approvals/:id/decide` are workspace-filtered so A can neither see
@@ -346,6 +371,10 @@ finally:
   every log record and every Langfuse payload (10) before it leaves the process.
 - Secrets never enter: agent config blobs, version snapshots, traces, exported cURL/SDK (08), error
   messages.
+- **Skills carry NO credentials.** A skill is an instruction fragment + bundled reference files (01 §4.4) —
+  it never holds a provider/tool/connector secret and never decrypts anything at invoke (it does not execute
+  code). Skill instruction text is treated as untrusted content, and the output-guardrail + log redaction
+  passes above catch any secret a skill author mistakenly pastes into it.
 
 ### 9.1 Key custody as the enforcement spine (14)
 
@@ -380,6 +409,14 @@ injection. Controls:
 | Secret leakage in output | model echoes an injected/known secret | output guardrail redaction (06) + log redaction (§9) | P1 |
 | Token theft/replay | leaked caller token | hashed-at-rest, expiry, revoke, rate limit, scopes (§6) | P1 |
 | Cross-tenant access | bug in scoping | guard + RLS + isolation suite (§3,7,8) | P1 |
+| Prompt-injection via skill instructions | a malicious/compromised skill instruction fragment steers the agent | skill instruction text is **untrusted content injected into the system prompt** (03 §4) — output-guardrail redaction (06) still applies, no secrets in skill text, bundled resources are **data, not instructions**; a skill has **no execute path**, so injection cannot drive a tool/egress action | P2 |
+| Malicious / tampered skill package | an unsigned or altered skill is bound onto a version | **package provenance/signing**: skills are **signed at publish** (`signature`/`signed_by`, 01 §4.4) and the signature is **verified at bind**; only `published` (signed) skills are bindable, and `skill_content_hash` is pinned into the version `snapshot_hash` so post-bind tampering changes the version identity (05 §6) | P2 |
+
+> **Skills are deliberately NOT an SSRF/exfiltration vector.** Unlike tools/MCP (the rows above), a skill
+> **does not execute code**: it never enters the sandbox, the egress allow-list, or the approval gate. That is a
+> deliberate scope reduction — a skill is an instruction fragment + reference data (01 §4.4), so its entire new
+> attack surface is the two rows just added (prompt-injection text + package provenance). There is intentionally
+> **no skill risk tier, no approval gate, no test-invoke, and no sandbox unit** for skills.
 
 > **Gate before external exposure:** no published endpoint faces outside the org until a written threat
 > model + a security review (and for Trellix, the internal registry/scanning path, `backend-integration
@@ -408,8 +445,9 @@ Every sensitive action writes an `audit_logs` row (01): `publish`, `repoint`, `u
 `baseline.freeze`, `provider_key.{create,rotate,revoke}`, `token.{mint,revoke}`, `mcp.{register,
 discover}`, `source.{create,rotate}`, `access_policy.set`, `eval.override` (small-set/low-confidence
 publish override, 05), the P0 actions `agent.{register,import}` + `dedup.override` (14), and the P2 tool
-actions `tool.bind` (incl. risk-tier set), `tool.approval.{request,approve,deny}` (03 §2), and
-`tool.test_invoke` / `mcp.test_invoke` (08). Fields:
+actions `tool.bind` (incl. risk-tier set), `tool.approval.{request,approve,deny}` (03 §2),
+`tool.test_invoke` / `mcp.test_invoke` (08), and the skill actions `skill.publish` (sign + publish a skill,
+08) and `skill.bind` (freeze a skill onto a version, 08). Fields:
 actor, action, target, meta, ts. Append-only; surfaced per workspace.
 
 **Org-level audit (15).** The platform-admin plane's reads write `org.report.read` (and, for the rare

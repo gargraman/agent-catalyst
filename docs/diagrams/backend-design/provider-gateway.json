@@ -1,0 +1,58 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "Provider Gateway — one IR, our cost, resilient transport",
+    "subtitle": "The other half of the defensible core (02): normalize → adapt → retry/fallback → cost from OUR profiles, never LiteLLM",
+    "output": "docs/diagrams/backend-design/provider-gateway.html",
+    "quality_profile": "standard"
+  },
+  "lanes": [
+    { "id": "runtime", "label": "Runtime (graph)" },
+    { "id": "gateway", "label": "Provider gateway" },
+    { "id": "resilience", "label": "Resilience & leaks", "variant": "exception" },
+    { "id": "provider", "label": "Adapter target · profiles" }
+  ],
+  "phases": [
+    { "id": "ir", "label": "IR + adapter", "fromCol": 0, "toCol": 1 },
+    { "id": "transport", "label": "Transport + resilience", "fromCol": 2, "toCol": 3, "variant": "emphasis" },
+    { "id": "cost", "label": "Cost + emit", "fromCol": 4, "toCol": 5, "variant": "dashed" }
+  ],
+  "groups": [
+    { "id": "retryloop", "label": "retry ≤ 3 · backoff + jitter", "lane": "resilience", "fromCol": 2, "toCol": 2, "variant": "security" }
+  ],
+  "mainPath": ["model_call", "supports", "stream", "provider", "cost", "emit"],
+  "nodes": [
+    { "id": "model_call", "lane": "runtime", "col": 0, "type": "backend", "label": "model_call", "sublabel": "builds NormalizedRequest (IR)" },
+    { "id": "supports", "lane": "gateway", "col": 1, "type": "backend", "label": "adapter_for · supports()", "sublabel": "pick adapter · plan substitution" },
+    { "id": "subst", "lane": "resilience", "col": 1, "type": "messagebus", "label": "substitution", "sublabel": "dropped · emulated · downgraded", "tag": "span attr · eval risk" },
+    { "id": "stream", "lane": "gateway", "col": 2, "type": "backend", "label": "adapter.stream()", "sublabel": "Anthropic/OpenAI SDK · LiteLLM catch-all" },
+    { "id": "retry", "lane": "resilience", "col": 2, "type": "messagebus", "label": "retry ≤ 3", "sublabel": "429 / 5xx / timeout · Retry-After" },
+    { "id": "raise", "lane": "resilience", "col": 3, "type": "security", "label": "NonRetryable → raise", "sublabel": "auth · bad-request · content-filter" },
+    { "id": "provider", "lane": "provider", "col": 3, "type": "external", "label": "LLM provider", "sublabel": "stream tokens + raw usage" },
+    { "id": "fallback", "lane": "resilience", "col": 4, "type": "messagebus", "label": "versioned fallback", "sublabel": "model_config.fallback · recorded" },
+    { "id": "cost", "lane": "gateway", "col": 4, "type": "backend", "label": "attach_cost()", "sublabel": "compute_cost(profile) — NOT LiteLLM", "tag": "single $ authority" },
+    { "id": "profiles", "lane": "provider", "col": 4, "type": "database", "label": "capability profiles", "sublabel": "per (provider,model,api_version) · snapshotted" },
+    { "id": "emit", "lane": "gateway", "col": 5, "type": "backend", "label": "NormalizedStreamEvents", "sublabel": "1:1 → graph / SSE" }
+  ],
+  "edges": [
+    { "id": "e-mc", "from": "model_call", "to": "supports", "label": "NormalizedRequest", "variant": "emphasis" },
+    { "id": "e-sub", "from": "supports", "to": "subst", "label": "downgrade → record", "variant": "security", "role": "branch" },
+    { "id": "e-ss", "from": "supports", "to": "stream", "variant": "emphasis" },
+    { "id": "e-sp", "from": "stream", "to": "provider", "variant": "emphasis" },
+    { "id": "e-retry", "from": "stream", "to": "retry", "label": "retryable · re-stream ≤3", "variant": "security", "role": "error" },
+    { "id": "e-raise", "from": "stream", "to": "raise", "label": "non-retryable → 4xx", "variant": "security", "role": "error" },
+    { "id": "e-fallback", "from": "retry", "to": "fallback", "label": "exhausted / breaker open", "variant": "dashed", "role": "branch" },
+    { "id": "e-fb-cost", "from": "fallback", "to": "cost", "variant": "dashed" },
+    { "id": "e-usage", "from": "provider", "to": "cost", "label": "USAGE: raw counts", "variant": "emphasis" },
+    { "id": "e-prof", "from": "profiles", "to": "cost", "label": "pricing + features" },
+    { "id": "e-emit", "from": "cost", "to": "emit", "label": "cost_usd attached", "variant": "emphasis" }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "The contract", "items": ["One NormalizedRequest / StreamEvent / Usage IR — nothing above the gateway imports a provider SDK type", "Events re-encode 1:1 to the graph and SSE; the graph is model-agnostic at the stream level", "LangGraph owns the loop; the gateway owns transport, cost, normalization — never the other way round"] },
+    { "dot": "rose", "title": "Cost is ours, not the vendor's", "items": ["attach_cost = compute_cost(profile, usage) from our versioned capability profiles — LiteLLM's cost field is never trusted", "Single authority for runs.cost_usd, spans.cost_usd, eval cost deltas, COGS dashboards", "The resolved profile is snapshotted into agent_versions.profile_snapshot, so a price/feature change is a drift trigger, not a silent shift", "Prices cached_input / cache_write / reasoning tokens at their own rates; batch=True (eval/ingest) applies the batch multiplier"] },
+    { "dot": "amber", "title": "Resilience", "items": ["retry ≤ 3 on 429 / 5xx / timeout only, backoff + jitter, respects Retry-After", "circuit breaker per (provider,model), state in Redis shared across api + worker", "on breaker-open or exhausted → the version's pinned fallback model (recorded like a substitution)", "idempotency dedupe on idempotency_key so a retry can't double-bill"] },
+    { "dot": "emerald", "title": "Substitution — the leak made visible", "items": ["supports() returns the downgrades a provider needs (dropped / emulated_via_prompt / downgraded) instead of silently dropping", "Each is emitted as a span attribute and attached to the Run", "At eval time a substitution counts against the verdict; on a published run it is a warning", "Opting into a provider-specific feature then switching provider → non-portable version → forced re-eval"] },
+    { "dot": "slate", "title": "Source", "items": ["docs/backend/02-provider-gateway.md §IR/§adapter/§profiles/§cost/§invoke-path · 07-cost-cogs.md · 01 (profile_snapshot)", "services/runtime/providers/{ir,gateway,cost,adapters,profiles}.py — companion: runtime-invoke-pipeline.html"] }
+  ]
+}

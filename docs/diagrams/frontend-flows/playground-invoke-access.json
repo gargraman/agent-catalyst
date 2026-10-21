@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": {
+    "title": "Playground Invoke & Runtime Access Resolution",
+    "subtitle": "send() → resolveRun → per-resource access → mock reply (no network)",
+    "output": "docs/diagrams/frontend-flows/playground-invoke-access.html",
+    "quality_profile": "showcase"
+  },
+  "participants": [
+    { "id": "user", "type": "external", "label": "User", "sublabel": "playground" },
+    { "id": "pg", "type": "frontend", "label": "Playground", "sublabel": "send()" },
+    { "id": "store", "type": "backend", "label": "Store", "sublabel": "agent · mcp · skills" },
+    { "id": "resolve", "type": "security", "label": "resolveRun", "sublabel": "runtime-access" },
+    { "id": "policy", "type": "security", "label": "Access Policy", "sublabel": "canUse" }
+  ],
+  "segments": [
+    { "from": 158, "to": 236, "label": "Build context" },
+    { "from": 246, "to": 418, "label": "Resolve access" },
+    { "from": 424, "to": 540, "label": "Answer" }
+  ],
+  "messages": [
+    { "id": "prompt", "from": "user", "to": "pg", "y": 168, "label": "type prompt + run mode" },
+    { "id": "read", "from": "pg", "to": "store", "y": 198, "label": "read agent + mcp + skills" },
+    { "id": "snapshot", "from": "store", "to": "pg", "y": 226, "label": "snapshot", "variant": "return" },
+    { "id": "resolveRun", "from": "pg", "to": "resolve", "y": 258, "label": "resolveRun(ctx, agent, …)", "variant": "security", "note": "session = full scope · token = decodeToken (string match) · channel = federated/service" },
+    { "id": "canUse", "from": "resolve", "to": "policy", "y": 316, "label": "canUse(agent.accessPolicy)", "variant": "security" },
+    { "id": "decision", "from": "policy", "to": "resolve", "y": 344, "label": "allow / deny", "variant": "return" },
+    { "id": "resolution", "from": "resolve", "to": "pg", "y": 374, "label": "RunResolution", "variant": "return", "note": "status ok | expired | revoked | tenant_mismatch | policy_denied · partial token grants even-indexed tools/KB" },
+    { "id": "blocked", "from": "pg", "to": "user", "y": 434, "label": "if blocked → 'Run blocked: …'", "variant": "security", "note": "no network call — mock reply" },
+    { "id": "grounded", "from": "pg", "to": "user", "y": 480, "label": "else → grounded reply (skips denied resources)", "variant": "return", "note": "hardcoded 1.8s · 9,120 tokens · $0.034 · guardrails passed; no run record persisted" }
+  ],
+  "activations": [
+    { "participant": "pg", "from": 168, "to": 500, "type": "frontend" },
+    { "participant": "store", "from": 198, "to": 226, "type": "backend" },
+    { "participant": "resolve", "from": 258, "to": 374, "type": "security" },
+    { "participant": "policy", "from": 316, "to": 344, "type": "security" }
+  ],
+  "cards": [
+    { "dot": "emerald", "title": "What the preview shows", "items": ["Run context: tenant · subject · role · scopes · expiry · status", "Bound resources split into granted vs denied for Tools / Knowledge / Skills", "Recomputed on every render as the run mode / token changes"] },
+    { "dot": "rose", "title": "Access resolution", "items": ["base scope by mode; then canUse(accessPolicy) can flip status to policy_denied", "principal carries no subject at invoke → private resources fail closed", "blocked short-circuits all grants; denied resources show struck-through"] },
+    { "dot": "orange", "title": "Mock seams vs real contract", "items": ["send() is synchronous state append — no model call, no streaming", "decodeToken is a deterministic substring decode (user/svc, grc/labs, admin/pub/view, full/partial)", "Real path: POST /v1/agents/:id/invoke (caller token, SSE) — playground preview & published invoke share one body + code path (runtime.invoke)", "Server resolves effective access = agent config ∩ caller grants ∩ tenant (RLS) ∩ resource policy", "Source: components/playground.tsx · lib/runtime-access.ts · lib/access-policy.ts"] }
+  ]
+}

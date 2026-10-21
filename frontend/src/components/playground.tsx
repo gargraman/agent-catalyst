@@ -6,14 +6,14 @@
    /v1/agents/:id/invoke (streaming). */
 
 import * as React from "react";
-import { CircleCheck, Database, KeyRound, Lock, Send, TriangleAlert, UserRound, Wrench } from "lucide-react";
+import { CircleCheck, Database, KeyRound, Lock, Send, Sparkles, TriangleAlert, UserRound, Wrench } from "lucide-react";
 import { Badge, Button, Card, CardContent, CardHeader, CardTitle, Field, Input } from "@/components/ui";
 import { Segmented } from "@/components/tabs";
 import { useAuth, useWorkspace } from "@/lib/auth";
 import { ORG } from "@/lib/org";
 import { DEFAULT_WORKSPACE_ID } from "@/lib/iam";
 import { resolveRun, statusLabel as runStatusLabel, type RunCtx } from "@/lib/runtime-access";
-import { useMcpServers } from "@/lib/store";
+import { useMcpServers, useSkills } from "@/lib/store";
 import { getKb, type Agent } from "@/lib/data";
 import { usd } from "@/lib/format";
 
@@ -33,7 +33,8 @@ function Section({ title, desc, children }: { title: string; desc?: string; chil
 
 export function Playground({ agent, version }: { agent: Agent; version?: string }) {
   const { role } = useAuth();
-  const { workspace, teams } = useWorkspace();
+  const { workspace, teams, active } = useWorkspace();
+  const suspended = !active; // inactive workspace = read-only freeze: endpoints suspended, no invoke
   const [messages, setMessages] = React.useState<Msg[]>([
     { role: "user", text: "Give me a one-paragraph summary of the latest changes, grounded in the knowledge base." },
     { role: "assistant", text: "Based on the retrieved context, the latest release focuses on performance and reliability: faster cold starts, clearer error states, and a handful of fixes to the ingestion pipeline. I cited the three source pages the retrieval returned. (Sample response in the playground.)" },
@@ -43,18 +44,19 @@ export function Playground({ agent, version }: { agent: Agent; version?: string 
   const [token, setToken] = React.useState("");
 
   const mcpServers = useMcpServers();
+  const skills = useSkills();
   const session = { tenant: workspace?.id ?? agent.workspaceId ?? DEFAULT_WORKSPACE_ID, role, teams };
   const ctx: RunCtx = runMode === "session" ? { mode: "session" } : { mode: "token", token };
   // resolveRun is pure and cheap; compute it per render (no memo deps to keep in sync).
-  const res = resolveRun(ctx, agent, session, mcpServers);
+  const res = resolveRun(ctx, agent, session, mcpServers, skills);
   const blocked = res.status !== "ok";
 
   function send() {
-    if (!input.trim()) return;
+    if (suspended || !input.trim()) return;
     const reply = blocked
       ? `Run blocked: ${runStatusLabel[res.status]}. The caller token does not satisfy this agent's access requirements, so nothing was executed.`
-      : res.deniedTools.length || res.deniedKbs.length
-        ? `Answered with the resources the caller token grants. Skipped for access: ${[...res.deniedTools, ...res.deniedKbs].map((d) => d.name).join(", ")}.`
+      : res.deniedTools.length || res.deniedKbs.length || res.deniedSkills.length
+        ? `Answered with the resources the caller token grants. Skipped for access: ${[...res.deniedTools, ...res.deniedKbs, ...res.deniedSkills].map((d) => d.name).join(", ")}.`
         : "Grounded in 3 sources and 1 tool call. (Sample response in the playground.)";
     setMessages((m) => [...m, { role: "user", text: input }, { role: "assistant", text: reply }]);
     setInput("");
@@ -67,6 +69,12 @@ export function Playground({ agent, version }: { agent: Agent; version?: string 
       <Card className="flex min-h-[520px] flex-col lg:col-span-2">
         <CardHeader><CardTitle>Playground</CardTitle><Badge tone="neutral">{version ?? agent.activeVersion} · {agent.model}</Badge></CardHeader>
         <CardContent className="flex-1 space-y-4 overflow-y-auto pt-2">
+          {suspended && (
+            <div className="flex items-start gap-2 rounded-lg border border-warning/40 bg-warning/10 px-3 py-2 text-xs text-warning">
+              <TriangleAlert className="mt-0.5 size-3.5 shrink-0" />
+              <span><span className="font-medium">Workspace inactive.</span> Endpoints are suspended — reactivate the workspace in Settings to run.</span>
+            </div>
+          )}
           {blocked && (
             <div className="flex items-start gap-2 rounded-lg border border-critical/40 bg-critical/10 px-3 py-2 text-xs text-critical">
               <TriangleAlert className="mt-0.5 size-3.5 shrink-0" />
@@ -84,8 +92,8 @@ export function Playground({ agent, version }: { agent: Agent; version?: string 
         </CardContent>
         <div className="border-t border-border p-3">
           <div className="flex items-center gap-2">
-            <Input value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => e.key === "Enter" && send()} placeholder="Send a test message" />
-            <Button variant="primary" onClick={send}><Send className="size-4" /></Button>
+            <Input value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => e.key === "Enter" && send()} placeholder={suspended ? "Workspace inactive — read-only" : "Send a test message"} disabled={suspended} />
+            <Button variant="primary" onClick={send} disabled={suspended}><Send className="size-4" /></Button>
           </div>
         </div>
       </Card>
@@ -130,6 +138,14 @@ export function Playground({ agent, version }: { agent: Agent; version?: string 
               granted={res.grantedKbs.map(kbName)}
               denied={res.deniedKbs.map((d) => ({ name: kbName(d.name), reason: d.reason }))}
               empty="No knowledge bound"
+              blocked={blocked}
+            />
+            <ResourceGroup
+              icon={<Sparkles className="size-3.5 text-s2" />}
+              title="Skills"
+              granted={res.grantedSkills}
+              denied={res.deniedSkills}
+              empty="No skills bound"
               blocked={blocked}
             />
           </div>

@@ -22,7 +22,7 @@ from .providers.ir import NormalizedUsage
 
 @dataclass
 class SpanRecord:
-    kind: str                 # model | tool | retrieval | guardrail | judge
+    kind: str                 # model | tool | retrieval | guardrail | judge | skill (instruction-assembly, 03 §4)
     name: str
     input_tokens: int = 0
     output_tokens: int = 0

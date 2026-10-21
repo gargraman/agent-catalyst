@@ -6,7 +6,7 @@
    ============================================================ */
 
 /* @backend remove - every exported seed array (AGENTS, KNOWLEDGE_BASES, INGESTION_JOBS, MCP_SERVERS,
-   TOOLS_REPO, EVAL_RUNS, RUNS, API_TOKENS, PROVIDER_KEYS, MEMBERS, MODELS) and the get* helpers plus
+   TOOLS_REPO, SKILLS, EVAL_RUNS, RUNS, API_TOKENS, PROVIDER_KEYS, MEMBERS, MODELS) and the get* helpers plus
    the chart series (ACTIVITY, RUNS_SERIES, SPEND_SERIES, LATENCY_SERIES) are mock fixtures. The
    server becomes the source of truth and the store reads the API (see @backend markers in store.ts);
    keep ONLY the exported TYPES, which define the API response shapes. Chart series become a metrics
@@ -41,6 +41,8 @@ export const MODELS: ModelRef[] = [
   { provider: "Meta", model: "llama-3.3-70b (self-host)", inUsd: 0, outUsd: 0, context: "128K" },
 ];
 
+// @backend GET /v1/members?workspace=:id — READ-ONLY roster projected from the workspace's backing Okta
+//   group. Membership + role come from Okta (role = the workspace's memberRole); no in-app invite/remove.
 export type Member = { name: string; email: string; role: "Admin" | "Publisher" | "Builder" | "Viewer"; lastActive: string };
 export const MEMBERS: Member[] = [
   { name: "Raman Garg", email: `raman.garg@${ORG.emailDomain}`, role: "Admin", lastActive: "2026-10-04T09:12:00Z" },
@@ -49,14 +51,6 @@ export const MEMBERS: Member[] = [
   { name: "Mei-Ling Chen", email: `meiling.chen@${ORG.emailDomain}`, role: "Builder", lastActive: "2026-10-03T14:05:00Z" },
   { name: "Omar Haddad", email: `omar.haddad@${ORG.emailDomain}`, role: "Viewer", lastActive: "2026-10-01T11:48:00Z" },
   { name: "Sofia Rossi", email: `sofia.rossi@${ORG.emailDomain}`, role: "Publisher", lastActive: "2026-10-02T16:30:00Z" },
-];
-
-// @backend workspace_invites (backend/01 §4.1) — a pending invite to join a space, issued by a space
-//   admin. GET/POST /v1/workspaces/:id/invites, DELETE …/invites/:id (backend/08). Membership is
-//   app-managed (invite / join-open), not an IAM-directory read.
-export type Invite = { email: string; role: Member["role"]; invitedBy: string; invitedAt: string; status: "pending" };
-export const INVITES: Invite[] = [
-  { email: `jordan.lee@${ORG.emailDomain}`, role: "Builder", invitedBy: "Raman Garg", invitedAt: "2026-10-13T10:00:00Z", status: "pending" },
 ];
 
 export type Version = {
@@ -92,11 +86,13 @@ export type Agent = {
   callsSpark: number[];
   knowledgeBases: string[];
   tools: string[];
+  // Bound skill ids (see Skill). Optional like a new field; consumers read `agent.skills ?? []`.
+  skills?: string[];
   endpoint?: string;
   workspaceId?: string;
   accessPolicy?: AccessPolicy;
   // @backend agent_versions.publishable proxy (FE versioning is cosmetic): a behavior-changing (trigger)
-  //   edit — model/provider/params/prompt/guardrails/retrieval/tools/kb — sets this true; a passing eval
+  //   edit — model/provider/params/prompt/guardrails/retrieval/tools/kb/skills — sets this true; a passing eval
   //   newer than that edit clears it. Gates publish alongside status==="eval_failing". [ref: backend/05 §5]
   needsReEval?: boolean;
   // Mutable draft config (model params, prompt, memory, retrieval, guardrails, spend).
@@ -248,6 +244,7 @@ export const AGENTS: Agent[] = [
     calls30d: 48213, cost30d: 1284.6, p95ms: 1840, evalPass: 96.2, drift: "stable",
     callsSpark: [820, 910, 1040, 980, 1120, 1210, 1180, 1340, 1290, 1410, 1380, 1520, 1600, 1680],
     knowledgeBases: ["xdr-playbooks", "mitre-attack"], tools: ["http-enrich-ip", "subagent-log-query"],
+    skills: ["soc-triage-playbook"],
     endpoint: "soc-triage-copilot",
   },
   {
@@ -284,6 +281,7 @@ export const AGENTS: Agent[] = [
     calls30d: 98760, cost30d: 642.18, p95ms: 980, evalPass: 97.8, drift: "stable",
     callsSpark: [2100, 2250, 2400, 2380, 2600, 2700, 2900, 3100, 3050, 3300, 3400, 3520, 3600, 3810],
     knowledgeBases: ["product-docs", "release-notes"], tools: ["http-search-docs"],
+    skills: ["citation-discipline"],
     endpoint: "product-docs-assistant",
   },
   {
@@ -562,6 +560,99 @@ export const INGESTION_JOBS: IngestionJob[] = [
   { id: "job-9e80", source: `${ORG.docsDomain} crawl`, kb: "Product Documentation", status: "completed", docs: 1860, chunks: 36120, startedAt: "2026-10-04T05:00:00Z", duration: "11m 40s" },
   { id: "job-9e42", source: "ir-templates.docx", kb: "IR Templates", status: "failed", docs: 0, chunks: 0, startedAt: "2026-09-25T10:00:00Z", duration: "0m 8s" },
   { id: "job-9d11", source: "playbooks/ (Git repo)", kb: "XDR Response Playbooks", status: "completed", docs: 320, chunks: 5720, startedAt: "2026-10-03T22:00:00Z", duration: "6m 02s" },
+];
+
+/* ---------------------------------------------------------------- Skills */
+/* @backend A skill is a reusable, versioned capability package: an instruction fragment (injected into
+   the prompt like system_prompt) + bundled reference files. It does NOT execute code — unlike tools/MCP
+   it never touches the sandbox, egress, or the approval gate, so it is not an SSRF/exfiltration primitive.
+   The only new security vectors are prompt-injection via the instruction text and package provenance, so
+   skills are signed at publish and only `published` (signed) skills are bindable. A bound skill's content
+   (instructions + resource hashes) freezes into the agent version snapshot_hash, so editing a skill forces
+   re-eval of every bound agent. [ref: backend/01 §4.4 (skills tables), backend/03 §4 (build_messages
+   injection), backend/05 §6 (snapshot_hash coverage), backend/09 §10 (injection + signing)] */
+export type SkillResource = {
+  name: string;                       // bundled file name
+  kind: "instruction" | "reference";  // the SKILL.md body vs. an attached reference file
+  sizeKB?: number;
+  contentHash?: string;               // folds into the version snapshot_hash (mock value)
+};
+// @backend skills row. `description` is the always-loaded summary the model uses to DECIDE to apply the
+// skill (progressive disclosure); `instructions` is the on-invoke body. `signature` is the masked
+// provenance stamp written by POST /v1/skills/:id/publish; `contentHash` is the frozen content identity.
+// WorkspaceScoped + access_policy like a KnowledgeBase. [ref: backend/01 §4.4, backend/08 Skills]
+export type Skill = {
+  id: string;
+  name: string;
+  slug?: string;
+  description: string;
+  instructions: string;
+  resources: SkillResource[];
+  status: "draft" | "published" | "deprecated";
+  version: string;
+  contentHash?: string;
+  signature?: { signedBy: string; signedAt: string; masked: string } | null;
+  boundAgents: number;
+  lastUpdated: string;
+  workspaceId?: string;
+  accessPolicy?: AccessPolicy;
+};
+
+export const SKILLS: Skill[] = [
+  {
+    id: "soc-triage-playbook", name: "SOC Triage Playbook", slug: "soc-triage-playbook",
+    description: "Step-by-step alert-triage method: correlate signals, assign severity, and draft an analyst verdict.",
+    instructions: "When triaging an alert:\n1. Correlate the alert against recent related signals before judging severity.\n2. Map observed behavior to MITRE ATT&CK techniques where possible.\n3. Assign a severity (P1–P4) with a one-line justification.\n4. End with an explicit next-step recommendation for the analyst.\nNever invent indicators that are not present in the evidence.",
+    resources: [
+      { name: "SKILL.md", kind: "instruction", sizeKB: 3.1, contentHash: "sha256:9a1f…triage" },
+      { name: "severity-matrix.md", kind: "reference", sizeKB: 6.4, contentHash: "sha256:2c7b…sev" },
+    ],
+    status: "published", version: "v3", contentHash: "sha256:triage-v3",
+    signature: { signedBy: "Priya Nair", signedAt: "2026-10-03T16:00:00Z", masked: "sig:3f9a…e21c" },
+    boundAgents: 1, lastUpdated: "2026-10-03T16:00:00Z",
+  },
+  {
+    id: "citation-discipline", name: "Citation Discipline", slug: "citation-discipline",
+    description: "Answer only from retrieved context and attach a source citation to every claim; flag when context is thin.",
+    instructions: "Ground every factual claim in the retrieved context and cite the source inline. If the context does not cover the question, say so explicitly rather than guessing. Prefer a short, cited answer over a long, uncited one.",
+    resources: [{ name: "SKILL.md", kind: "instruction", sizeKB: 1.8, contentHash: "sha256:cite…md" }],
+    status: "published", version: "v2", contentHash: "sha256:cite-v2",
+    signature: { signedBy: "Sofia Rossi", signedAt: "2026-10-02T11:00:00Z", masked: "sig:7b2d…aa90" },
+    boundAgents: 1, lastUpdated: "2026-10-02T11:00:00Z",
+  },
+  {
+    id: "incident-report-format", name: "Incident Report Format", slug: "incident-report-format",
+    description: "Produce post-incident reports in the internal IR template: summary, timeline, impact, root cause, remediation.",
+    instructions: "Structure every incident report with these sections in order: Executive summary, Timeline, Impact, Root cause, Remediation, Follow-ups. Keep the timeline in UTC. Do not include speculation in Root cause — mark unknowns explicitly.",
+    resources: [
+      { name: "SKILL.md", kind: "instruction", sizeKB: 2.2, contentHash: "sha256:ir…md" },
+      { name: "ir-template.md", kind: "reference", sizeKB: 4.0, contentHash: "sha256:irtpl…md" },
+    ],
+    status: "draft", version: "v1", contentHash: "sha256:ir-v1",
+    signature: null,
+    boundAgents: 0, lastUpdated: "2026-10-04T08:00:00Z",
+  },
+  {
+    id: "query-dsl-safety", name: "Query DSL Safety", slug: "query-dsl-safety",
+    description: "Generate data-lake query DSL that is always dry-run-validated and scoped; never emit an unbounded scan.",
+    instructions: "Always bound a generated query with an explicit time range and row limit. Prefer indexed fields. Emit the query for a dry-run validation step before presenting it as final. Refuse to produce a full-table scan.",
+    resources: [{ name: "SKILL.md", kind: "instruction", sizeKB: 2.6, contentHash: "sha256:dsl…md" }],
+    status: "published", version: "v1", contentHash: "sha256:dsl-v1",
+    signature: { signedBy: "Diego Fuentes", signedAt: "2026-09-30T14:00:00Z", masked: "sig:11cc…4d2f" },
+    boundAgents: 0, lastUpdated: "2026-09-30T14:00:00Z",
+  },
+
+  /* ---- Trellix People Ops workspace ---- */
+  {
+    id: "hr-tone-guide", name: "HR Tone & Policy Guide", slug: "hr-tone-guide",
+    description: "Answer employee questions in a warm, policy-accurate tone; escalate anything legal or compensation-sensitive.",
+    instructions: "Respond to employees warmly and concisely. Ground answers in the handbook. For anything involving legal matters, compensation disputes, or terminations, do not advise — direct the employee to HR Business Partner contact instead.",
+    resources: [{ name: "SKILL.md", kind: "instruction", sizeKB: 2.0, contentHash: "sha256:hr…md" }],
+    status: "published", version: "v4", contentHash: "sha256:hr-v4",
+    signature: { signedBy: "Raman Garg", signedAt: "2026-10-01T09:00:00Z", masked: "sig:aa31…90ff" },
+    boundAgents: 0, lastUpdated: "2026-10-01T09:00:00Z",
+    workspaceId: "trellix-people",
+  },
 ];
 
 /* ---------------------------------------------------------------- Tools/MCP */
@@ -989,8 +1080,10 @@ export const CHANNELS_SEED: Channel[] = [
 
 /* -------------------------------------------------------- Dashboard series */
 /* Chart series and headline stat tiles are keyed by workspace so each tenant
-   shows its own data. Selectors fall back to the trellix-xdr values for any
-   workspace without an explicit entry (e.g. grc/labs), preserving today's view. */
+   shows its own data. Selectors behave as follows: a KNOWN workspace returns its
+   own entry; an UNKNOWN workspace id (e.g. a freshly created space) returns a
+   zero/empty dataset — never another tenant's numbers; `undefined` (no active ws)
+   still falls back to the trellix-xdr seed so the default view is populated. */
 export type Series = { name: string; values: number[] };
 
 export const SPEND_LABELS = ["Sep 5", "Sep 9", "Sep 13", "Sep 17", "Sep 21", "Sep 25", "Sep 29", "Oct 3"];
@@ -1007,7 +1100,10 @@ const SPEND_SERIES_BY_WS: Record<string, Series[]> = {
   "trellix-grc": [{ name: "Google", values: [1, 1, 2, 2, 3, 3, 4, 4] }],
   "trellix-labs": [{ name: "Mistral", values: [3, 2, 1, 1, 0, 0, 0, 0] }],
 };
-export const spendSeries = (ws?: string): Series[] => SPEND_SERIES_BY_WS[ws ?? ""] ?? SPEND_SERIES_BY_WS[DEFAULT_WORKSPACE_ID];
+// A new/unseeded workspace has no data: return a single zero-valued series of the right length (NOT [],
+// which would crash consumers that read series[0].values) so charts render a flat baseline.
+const ZERO_SPEND_SERIES: Series[] = [{ name: "Spend", values: SPEND_LABELS.map(() => 0) }];
+export const spendSeries = (ws?: string): Series[] => ws ? (SPEND_SERIES_BY_WS[ws] ?? ZERO_SPEND_SERIES) : SPEND_SERIES_BY_WS[DEFAULT_WORKSPACE_ID];
 
 export const RUNS_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 const RUNS_SERIES_BY_WS: Record<string, Series[]> = {
@@ -1016,7 +1112,8 @@ const RUNS_SERIES_BY_WS: Record<string, Series[]> = {
   "trellix-grc": [{ name: "Runs", values: [28, 34, 40, 36, 52, 12, 9] }],
   "trellix-labs": [{ name: "Runs", values: [4, 2, 1, 0, 0, 0, 0] }],
 };
-export const runsSeries = (ws?: string): Series[] => RUNS_SERIES_BY_WS[ws ?? ""] ?? RUNS_SERIES_BY_WS[DEFAULT_WORKSPACE_ID];
+const ZERO_RUNS_SERIES: Series[] = [{ name: "Runs", values: RUNS_LABELS.map(() => 0) }];
+export const runsSeries = (ws?: string): Series[] => ws ? (RUNS_SERIES_BY_WS[ws] ?? ZERO_RUNS_SERIES) : RUNS_SERIES_BY_WS[DEFAULT_WORKSPACE_ID];
 
 export const LATENCY_LABELS = ["Sep 29", "Sep 30", "Oct 1", "Oct 2", "Oct 3", "Oct 4"];
 const LATENCY_SERIES_BY_WS: Record<string, Series[]> = {
@@ -1025,7 +1122,8 @@ const LATENCY_SERIES_BY_WS: Record<string, Series[]> = {
   "trellix-grc": [{ name: "p95 latency (ms)", values: [2680, 2640, 2600, 2620, 2650, 2640] }],
   "trellix-labs": [{ name: "p95 latency (ms)", values: [0, 0, 0, 0, 0, 0] }],
 };
-export const latencySeries = (ws?: string): Series[] => LATENCY_SERIES_BY_WS[ws ?? ""] ?? LATENCY_SERIES_BY_WS[DEFAULT_WORKSPACE_ID];
+const ZERO_LATENCY_SERIES: Series[] = [{ name: "p95 latency (ms)", values: LATENCY_LABELS.map(() => 0) }];
+export const latencySeries = (ws?: string): Series[] => ws ? (LATENCY_SERIES_BY_WS[ws] ?? ZERO_LATENCY_SERIES) : LATENCY_SERIES_BY_WS[DEFAULT_WORKSPACE_ID];
 
 export type Activity = { who: string; action: string; target: string; time: string; tone: "good" | "warning" | "critical" | "neutral" };
 const ACTIVITY_BY_WS: Record<string, Activity[]> = {
@@ -1053,7 +1151,8 @@ const ACTIVITY_BY_WS: Record<string, Activity[]> = {
     { who: "Raman Garg", action: "archived", target: "Engineering Onboarding Buddy", time: "2026-08-14T10:00:00Z", tone: "neutral" },
   ],
 };
-export const activityFor = (ws?: string): Activity[] => ACTIVITY_BY_WS[ws ?? ""] ?? ACTIVITY_BY_WS[DEFAULT_WORKSPACE_ID];
+const EMPTY_ACTIVITY: Activity[] = [];
+export const activityFor = (ws?: string): Activity[] => ws ? (ACTIVITY_BY_WS[ws] ?? EMPTY_ACTIVITY) : ACTIVITY_BY_WS[DEFAULT_WORKSPACE_ID];
 
 /* Headline stat tiles (illustrative, not derivable from the seed lists) keyed by workspace. */
 export type DashStats = { spendDelta: string; evalDelta: string; evalSpark: number[]; callsDelta: string };
@@ -1063,7 +1162,8 @@ const DASH_STATS_BY_WS: Record<string, DashStats> = {
   "trellix-grc": { spendDelta: "3.2%", evalDelta: "0.0 pts", evalSpark: [84, 84, 85, 84, 85, 85, 84, 85], callsDelta: "5.1%" },
   "trellix-labs": { spendDelta: "0.0%", evalDelta: "0.0 pts", evalSpark: [0, 0, 0, 0, 0, 0, 0, 0], callsDelta: "0.0%" },
 };
-export const dashStats = (ws?: string): DashStats => DASH_STATS_BY_WS[ws ?? ""] ?? DASH_STATS_BY_WS[DEFAULT_WORKSPACE_ID];
+const ZERO_DASH_STATS: DashStats = { spendDelta: "0.0%", evalDelta: "0.0 pts", evalSpark: [0, 0, 0, 0, 0, 0, 0, 0], callsDelta: "0.0%" };
+export const dashStats = (ws?: string): DashStats => ws ? (DASH_STATS_BY_WS[ws] ?? ZERO_DASH_STATS) : DASH_STATS_BY_WS[DEFAULT_WORKSPACE_ID];
 
 export type RunsStats = {
   runsToday: number; runsTodayDelta: string;
@@ -1077,7 +1177,8 @@ const RUNS_STATS_BY_WS: Record<string, RunsStats> = {
   "trellix-grc": { runsToday: 210, runsTodayDelta: "+4.0%", successDelta: "-0.2pts", successSpark: [97, 98, 97, 98, 98, 97, 98], p95ms: 2640, p95Delta: "-10ms", spendToday: 6.4, spendTodayDelta: "+2.1%", spendTodaySpark: [1, 2, 2, 3, 3, 4, 4] },
   "trellix-labs": { runsToday: 0, runsTodayDelta: "0.0%", successDelta: "0.0pts", successSpark: [0, 0, 0, 0, 0, 0, 0], p95ms: 0, p95Delta: "0ms", spendToday: 0, spendTodayDelta: "0.0%", spendTodaySpark: [0, 0, 0, 0, 0, 0, 0] },
 };
-export const runsStats = (ws?: string): RunsStats => RUNS_STATS_BY_WS[ws ?? ""] ?? RUNS_STATS_BY_WS[DEFAULT_WORKSPACE_ID];
+const ZERO_RUNS_STATS: RunsStats = { runsToday: 0, runsTodayDelta: "0.0%", successDelta: "0.0pts", successSpark: [0, 0, 0, 0, 0, 0, 0], p95ms: 0, p95Delta: "0ms", spendToday: 0, spendTodayDelta: "0.0%", spendTodaySpark: [0, 0, 0, 0, 0, 0, 0] };
+export const runsStats = (ws?: string): RunsStats => ws ? (RUNS_STATS_BY_WS[ws] ?? ZERO_RUNS_STATS) : RUNS_STATS_BY_WS[DEFAULT_WORKSPACE_ID];
 
 export type EvalStats = {
   runs30d: string; runs30dDelta: string; runs30dSpark: number[];
@@ -1091,7 +1192,8 @@ const EVAL_STATS_BY_WS: Record<string, EvalStats> = {
   "trellix-grc": { runs30d: "6", runs30dDelta: "+2", runs30dSpark: [0, 1, 1, 0, 1, 1, 2], passRate: "84.5%", passRateDelta: "-1.1pts", passRateSpark: [86, 86, 85, 85, 84, 85, 84], driftDelta: "+1", driftSpark: [0, 0, 1, 0, 1, 0, 1], qualityDelta: "+0.3pts", qualitySpark: [83, 84, 84, 85, 84, 85, 85] },
   "trellix-labs": { runs30d: "0", runs30dDelta: "0", runs30dSpark: [0, 0, 0, 0, 0, 0, 0], passRate: "0.0%", passRateDelta: "0.0pts", passRateSpark: [0, 0, 0, 0, 0, 0, 0], driftDelta: "0", driftSpark: [0, 0, 0, 0, 0, 0, 0], qualityDelta: "0.0pts", qualitySpark: [0, 0, 0, 0, 0, 0, 0] },
 };
-export const evalStats = (ws?: string): EvalStats => EVAL_STATS_BY_WS[ws ?? ""] ?? EVAL_STATS_BY_WS[DEFAULT_WORKSPACE_ID];
+const ZERO_EVAL_STATS: EvalStats = { runs30d: "0", runs30dDelta: "0", runs30dSpark: [0, 0, 0, 0, 0, 0, 0], passRate: "0.0%", passRateDelta: "0.0pts", passRateSpark: [0, 0, 0, 0, 0, 0, 0], driftDelta: "0", driftSpark: [0, 0, 0, 0, 0, 0, 0], qualityDelta: "0.0pts", qualitySpark: [0, 0, 0, 0, 0, 0, 0] };
+export const evalStats = (ws?: string): EvalStats => ws ? (EVAL_STATS_BY_WS[ws] ?? ZERO_EVAL_STATS) : EVAL_STATS_BY_WS[DEFAULT_WORKSPACE_ID];
 
 /* ------------------------------------------------------------- selectors */
 export const getAgent = (id: string) => AGENTS.find((a) => a.id === id);

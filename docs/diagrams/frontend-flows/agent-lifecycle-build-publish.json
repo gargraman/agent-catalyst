@@ -1,0 +1,51 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "Agent Lifecycle — Build → Configure → Test → Publish",
+    "subtitle": "The core product journey, with the eval-gated publish",
+    "output": "docs/diagrams/frontend-flows/agent-lifecycle-build-publish.html",
+    "quality_profile": "showcase"
+  },
+  "lanes": [
+    { "id": "builder", "label": "Builder (console UI)" },
+    { "id": "store", "label": "Store / mock API" },
+    { "id": "evals", "label": "Eval engine" },
+    { "id": "gate", "label": "Publish gate", "variant": "exception" }
+  ],
+  "phases": [
+    { "id": "build", "label": "Build", "fromCol": 0, "toCol": 1 },
+    { "id": "configure", "label": "Configure", "fromCol": 2, "toCol": 2, "variant": "emphasis" },
+    { "id": "test", "label": "Test", "fromCol": 3, "toCol": 4 },
+    { "id": "publish", "label": "Publish", "fromCol": 5, "toCol": 5, "variant": "dashed" }
+  ],
+  "mainPath": ["new", "create", "configure", "mark", "runEval", "verdict", "gateCheck", "publish"],
+  "nodes": [
+    { "id": "new", "lane": "builder", "col": 0, "type": "frontend", "label": "New Agent form", "sublabel": "template + base config" },
+    { "id": "create", "lane": "store", "col": 1, "type": "backend", "label": "addAgent()", "sublabel": "status: draft · v1", "tag": "POST /api/v1/agents" },
+    { "id": "configure", "lane": "builder", "col": 2, "type": "frontend", "label": "Agent hub", "sublabel": "model · KB · tools · skills · guardrails" },
+    { "id": "mark", "lane": "store", "col": 2, "type": "backend", "label": "updateAgent / Config", "sublabel": "sets needsReEval", "tag": "drift trigger" },
+    { "id": "runEval", "lane": "evals", "col": 3, "type": "backend", "label": "simulateEvalRun", "sublabel": "candidate vs frozen baseline" },
+    { "id": "verdict", "lane": "evals", "col": 4, "type": "database", "label": "computeVerdict", "sublabel": "quality · cost · latency" },
+    { "id": "gateCheck", "lane": "gate", "col": 4, "type": "security", "label": "Eval gate", "sublabel": "publishGateDecision", "tag": "hard block in store" },
+    { "id": "publish", "lane": "store", "col": 5, "type": "backend", "label": "publishAgent()", "sublabel": "published · endpoint assigned", "tag": "immutable snapshot" },
+    { "id": "blocked", "lane": "gate", "col": 5, "type": "security", "label": "Publish blocked", "sublabel": "eval_failing · needsReEval · low-confidence" }
+  ],
+  "edges": [
+    { "id": "e-create", "from": "new", "to": "create", "label": "Create (agent.create)", "variant": "emphasis" },
+    { "id": "e-open", "from": "create", "to": "configure", "label": "open hub" },
+    { "id": "e-edit", "from": "configure", "to": "mark", "label": "edit model / prompt / KB / tools" },
+    { "id": "e-run", "from": "mark", "to": "runEval", "label": "run eval" },
+    { "id": "e-score", "from": "runEval", "to": "verdict", "label": "scores" },
+    { "id": "e-check", "from": "verdict", "to": "gateCheck", "label": "check" },
+    { "id": "e-pass", "from": "gateCheck", "to": "publish", "label": "pass → endpoint", "variant": "emphasis", "role": "main" },
+    { "id": "e-fail", "from": "gateCheck", "to": "blocked", "label": "fail", "variant": "security", "role": "error" },
+    { "id": "e-loop", "from": "blocked", "to": "configure", "label": "fix & re-run", "variant": "dashed", "role": "return" }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "Build & configure", "items": ["Template presets (scratch / rag / support / triage) prefill config", "addAgent() creates a draft pinned at v1", "Hub tabs edit model, knowledge, tools/MCP, skills, guardrails", "Resource binding is access-filtered; only published skills bind"] },
+    { "dot": "amber", "title": "Drift engine", "items": ["TRIGGER_FIELDS (provider, model, knowledgeBases, tools, skills) set needsReEval", "Any config change except spend also sets needsReEval", "Attaching / re-ingesting a KB or editing / publishing a bound skill trips it too"] },
+    { "dot": "rose", "title": "Publish gate (hard block)", "items": ["publishAgent blocks on eval_failing, needsReEval, or low-confidence", "low-confidence is overridable only when policy allows", "On pass: status=published, endpoint assigned (mirrors server 409 eval_gate)", "Each version is an immutable snapshot the endpoint pins"] },
+    { "dot": "slate", "title": "Source map & real contract", "items": ["app/(app)/agents/new · app/(app)/agents/[id]", "lib/store.ts: addAgent · updateAgent · updateAgentConfig · publishAgent", "components/eval-explainer.tsx: publishGateDecision", "Endpoints: POST /api/v1/agents · POST /api/v1/agents/:id/evals · POST /api/v1/versions/:vid/publish (409 eval_gate)"] }
+  ]
+}

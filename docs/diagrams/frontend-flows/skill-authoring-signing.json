@@ -1,0 +1,43 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "Skill Authoring, Signing & Publish",
+    "subtitle": "4-step wizard → draft → sign at publish → bind to agents",
+    "output": "docs/diagrams/frontend-flows/skill-authoring-signing.html",
+    "quality_profile": "showcase"
+  },
+  "lanes": [
+    { "id": "author", "label": "Author (4-step wizard)" },
+    { "id": "store", "label": "Store / mock API" },
+    { "id": "sign", "label": "Signing & provenance" },
+    { "id": "agent", "label": "Agent config" }
+  ],
+  "phases": [
+    { "id": "write", "label": "Write", "fromCol": 0, "toCol": 2 },
+    { "id": "publish", "label": "Sign + publish", "fromCol": 3, "toCol": 4, "variant": "emphasis" },
+    { "id": "use", "label": "Use", "fromCol": 5, "toCol": 5 }
+  ],
+  "mainPath": ["basics", "instr", "res", "draft", "sign", "bind"],
+  "nodes": [
+    { "id": "basics", "lane": "author", "col": 0, "type": "frontend", "label": "Step 1 · Basics", "sublabel": "name + always-loaded description" },
+    { "id": "instr", "lane": "author", "col": 1, "type": "frontend", "label": "Step 2 · Instructions", "sublabel": "SKILL.md (untrusted content)" },
+    { "id": "res", "lane": "author", "col": 2, "type": "frontend", "label": "Step 3 · Resources", "sublabel": "reference files (metadata only)" },
+    { "id": "draft", "lane": "store", "col": 3, "type": "backend", "label": "addSkill", "sublabel": "status: draft · v1" },
+    { "id": "sign", "lane": "sign", "col": 4, "type": "security", "label": "publishSkill", "sublabel": "signature + contentHash", "tag": "signed at publish" },
+    { "id": "bind", "lane": "agent", "col": 5, "type": "messagebus", "label": "Bind to agent", "sublabel": "only published bindable" }
+  ],
+  "edges": [
+    { "id": "e-instr", "from": "basics", "to": "instr", "label": "next" },
+    { "id": "e-res", "from": "instr", "to": "res", "label": "next" },
+    { "id": "e-draft", "from": "res", "to": "draft", "label": "Create" },
+    { "id": "e-sign", "from": "draft", "to": "sign", "label": "Publish & sign", "variant": "emphasis" },
+    { "id": "e-bind", "from": "sign", "to": "bind", "label": "available" }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "What a skill is", "items": ["A reusable instruction playbook + reference files shared across agents", "Not a Tool (no API calls) and not a KB (not searchable documents)", "The description is always loaded so the model can decide to apply it", "SKILL.md is injected like a system-prompt fragment"] },
+    { "dot": "rose", "title": "Signing & provenance", "items": ["Skills don't execute code → no sandbox / egress / approval, and no credentials", "New risk vectors are prompt-injection + provenance, so skills are signed at publish", "signature: { signedBy, signedAt, masked } + contentHash on the version", "Only published skills are bindable to agents"] },
+    { "dot": "amber", "title": "Drift", "items": ["updateSkill (content change) flags every bound agent needsReEval", "publishSkill (re-sign) also trips the bound agents' re-eval"] },
+    { "dot": "orange", "title": "Mock seams", "items": ["contentHash / signature are synthetic; reference files are metadata-only (no upload)", "Source: app/(app)/skills/* · components/{stepper,file-dropzone}.tsx · lib/store.ts"] }
+  ]
+}

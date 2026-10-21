@@ -62,6 +62,14 @@ Thumbs.db
 graphify-out/
 .graphify_*
 
+# archify (diagram tool) — scratch dir + regenerable render receipts.
+# Keep the .json sources and .html renders under docs/diagrams/; ignore only the receipts.
+.archify/
+*.finalize.json
+*.finalize-summary.json
+*.browser-check.json
+*.delivery.json
+
 # Local agent / Claude settings (keep local-only; tracked skills under .claude/ are unaffected)
 .claude/settings.local.json
 .claude/*.local.json

@@ -18,7 +18,7 @@ import { DEFAULT_WORKSPACE_ID } from "@/lib/iam";
 import { canManage } from "@/lib/access-policy";
 import { CHANNEL_DEFS } from "@/lib/channels";
 import { resolveRun, statusLabel, type RunCtx, type Session } from "@/lib/runtime-access";
-import { addRun, deleteChannel, genId, nowIso, toast, updateChannel, useAgents, useChannel, useMcpServers } from "@/lib/store";
+import { addRun, deleteChannel, genId, nowIso, toast, updateChannel, useAgents, useChannel, useMcpServers, useSkills } from "@/lib/store";
 import type { Channel } from "@/lib/data";
 import { dateShort, relative } from "@/lib/format";
 
@@ -41,9 +41,10 @@ export default function ChannelDetailPage() {
   const channel = useChannel(id);
   const agents = useAgents();
   const mcpServers = useMcpServers();
+  const skills = useSkills();
   const { user } = useAuth();
   const principal = usePrincipal();
-  const { workspace } = useWorkspace();
+  const { workspace, active } = useWorkspace();
   const [confirmOpen, setConfirmOpen] = React.useState(false);
 
   if (!channel) {
@@ -58,7 +59,8 @@ export default function ChannelDetailPage() {
   const def = CHANNEL_DEFS[channel.platform];
   const boundAgents = channel.agentIds.map((aid) => agents.find((a) => a.id === aid)).filter(Boolean) as typeof agents;
   const target = agents.find((a) => a.id === (channel.defaultAgentId ?? channel.agentIds[0]));
-  const manage = canManage(channel.accessPolicy, principal);
+  // Inactive workspace = read-only freeze (these are plain-button mutations, not can()-gated).
+  const manage = active && canManage(channel.accessPolicy, principal);
   const tenant = channel.workspaceId ?? workspace?.id ?? DEFAULT_WORKSPACE_ID;
 
   // Access preview for the default agent, using the channel RunCtx arm — the federated Okta user
@@ -68,7 +70,7 @@ export default function ChannelDetailPage() {
     user: user.name, tenant, role: principal.role, teams: principal.teams,
   };
   const session: Session = { tenant, role: principal.role, teams: principal.teams };
-  const resolution = target ? resolveRun(ctx, target, session, mcpServers) : null;
+  const resolution = target ? resolveRun(ctx, target, session, mcpServers, skills) : null;
 
   function sendTest() {
     if (!target || !channel) return;
@@ -183,6 +185,7 @@ export default function ChannelDetailPage() {
                 </p>
                 <ResourceLine label="Tools" granted={resolution.grantedTools} denied={resolution.deniedTools.map((d) => d.name)} />
                 <ResourceLine label="Knowledge" granted={resolution.grantedKbs} denied={resolution.deniedKbs.map((d) => d.name)} />
+                <ResourceLine label="Skills" granted={resolution.grantedSkills} denied={resolution.deniedSkills.map((d) => d.name)} />
               </CardContent>
             </Card>
           )}
