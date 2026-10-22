@@ -64,7 +64,9 @@ CREATE TABLE channels (
   routing       channel_routing NOT NULL DEFAULT 'default',
   identity_mode channel_identity NOT NULL DEFAULT 'federated',
   default_agent_id uuid REFERENCES agents(id),
-  okta_group    text,                                          -- group granted this workspace
+  okta_group    text,                                          -- channel gate group (coarse end-user gate, §4)
+  allowed_email_domains text[] NOT NULL DEFAULT '{}',          -- H1: corporate-domain bind for federation (§4); reject senders outside this set
+  service_account text,                                        -- identity_mode='service': the client-credentials principal (§4)
   config        jsonb NOT NULL DEFAULT '{}',                   -- non-secret per-platform config
   credentials   jsonb NOT NULL DEFAULT '{}',                   -- {field: {masked, vault_path}} MULTI-SECRET
   installed_by  uuid REFERENCES users(id),
@@ -80,6 +82,17 @@ CREATE TABLE channel_agents (
   slash      text,                                             -- e.g. '/triage' (routing='slash')
   PRIMARY KEY (channel_id, agent_id)
 );
+
+-- H1.5: inbound-event dedup + dead-letter. The platform's event id is recorded BEFORE enqueue; a duplicate
+-- (platform retry) hits the PK and is dropped → one event id = one runtime.invoke. `status` drives the
+-- dead-letter path so an acked-but-unprocessed event is retried/surfaced, not silently lost.
+CREATE TABLE channel_events (
+  channel_id     uuid NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+  platform_event_id text NOT NULL,                             -- the platform's unique event/message id
+  status         text NOT NULL DEFAULT 'received',            -- received | processed | dead_letter
+  received_at    timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (channel_id, platform_event_id)                  -- dedup key: second delivery of the same id is a no-op
+);
 ```
 
 - `credentials` is a **multi-secret** map (bot token + signing secret), each value a `{masked,vault_path}`
@@ -92,42 +105,73 @@ CREATE TABLE channel_agents (
 
 ## 4. Identity federation (`09` delta)
 
-A **third ingress plane** beyond console-session and caller-token (`09 §1`):
+The **channel arm of the Caller (`executer`) plane** (`09 §1`, claim-based 2026-10-22): the caller-token and
+channel ingresses are **one plane** — both resolve to the single execute-only role `executer`, differing only
+in *how* identity is sourced (a bearer token vs. the verified-email→Okta federation below):
 
 ```python
-CHANNEL_INVOKE_ROLE = "viewer"   # baseline; see "Role & membership" below
+CHANNEL_INVOKE_ROLE = "executer"   # the caller plane's single execute-only role (09 §1); see "Role & membership"
 
-def resolve_channel_principal(ch: Channel, msg: InboundMessage) -> MintedToken:
+# `idp` is the active IdentityProvider adapter (18) — no `okta.*` calls here; federation goes through the contract.
+def resolve_channel_principal(ch: Channel, msg: InboundMessage, idp: IdentityProvider) -> MintedToken:
     if ch.identity_mode == "service":
-        return mint_service_token(ch.okta_service_account)      # client-credentials
-    email = msg.platform_user.email                             # from verified event
-    sub = okta.lookup_subject(email)                            # email is the join key
+        return mint_service_token(ch.service_account)          # client-credentials
+    # H1 — email is NON-AUTHORITATIVE on its own. Signature verification proves the event came from the
+    # platform intact, NOT that the sender owns the email. So before using email as the join key:
+    if not msg.platform_user.email_verified:                   # platform JWT claim (Google/Entra); reject if absent/false
+        raise UnverifiedEmail(msg.platform_user.email)         # -> friendly in-chat denial
+    email = msg.platform_user.email
+    if domain_of(email) not in ch.allowed_email_domains:       # corporate-domain bind; blocks guest/Slack-Connect/personal
+        raise ExternalSenderRejected(email)                    #   collisions that would otherwise federate to an internal subject
+    sub = idp.resolve_subject(email)                           # adapter: verified email -> subject (18 §2)
     if sub is None:
-        raise Unmapped(email)                                   # -> friendly in-chat denial
-    groups = okta.groups_for(sub)                               # the user's Okta groups (= teams)
-    if ch.okta_group and ch.okta_group not in groups:          # COARSE GATE — enforce it here, before mint
-        raise NotInChannelGroup(email)                          # -> friendly in-chat denial
+        raise Unmapped(email)                                  # -> friendly in-chat denial
+    groups = idp.groups_for(sub)                               # adapter: the user's IdP groups (= teams)
+    if ch.okta_group and ch.okta_group not in groups:         # COARSE GATE — the channel's gate group; enforce before mint
+        raise NotInChannelGroup(email)                         # -> friendly in-chat denial
     if ch.platform == "teams":
-        # OBO-exchanged token must resolve to the same {CHANNEL_INVOKE_ROLE, teams = Okta groups}.
-        return entra_obo_exchange(msg.platform_token, target=OKTA_AUD)   # true token exchange
-    # Direct mint (slack, gchat): baseline role, teams = the user's Okta groups.
+        # Teams OBO is the Entra adapter's exchange_obo (18); other adapters raise unsupported. The exchanged
+        # token must resolve to the same {CHANNEL_INVOKE_ROLE, teams = IdP groups}.
+        return idp.exchange_obo(msg.platform_token, audience=IDP_AUD)   # adapter token exchange
+    # Direct mint (slack, gchat): executer role, teams = the user's IdP groups.
     return mint_platform_token(sub, workspace=ch.workspace_id, role=CHANNEL_INVOKE_ROLE, teams=groups)
 ```
 
-The minted token feeds the unified `can_use(policy, *, role, teams, subject)` (`09 §5`) exactly like a
+The minted token feeds the unified `can_use(policy, *, role, teams, subject)` (`09 §5`) exactly like a cURL
 caller token — Okta groups are the `teams`, the **same model the console uses** (`09 §2.1`). A channel
-caller has no owner `subject`, so a `private` agent is denied (admin excepted). Note the channel's
-`okta_group` (this gate) is distinct from a workspace's optional backing group (`workspaces.okta_group`,
-`01`): one gates *this channel's* end users, the other may auto-grant *space membership*.
+caller has no owner `subject`, so a `private` agent is denied — and because `executer` is a caller role, not
+`admin`, there is **no "admin token" bypass at invoke** (`09 §5`). Note the channel's `okta_group` (this
+gate) is distinct from a workspace's membership claims (the per-workspace role claims mapped by `idp_binding`, `01`/`09
+§2.1`): the channel group gates *this channel's* end users at invoke, the workspace claims confer *console*
+membership/role — a channel user needs neither.
 **End-user access = two gates:** the channel `okta_group` (coarse — checked above, before mint) ∩ the
 agent's `access_policy` (fine — evaluated in `resolveRun`). Both must pass.
 
-**Role & membership.** The channel plane is **membership-independent** (`09 §1`): a federated end user needs
-**no workspace `memberships` row** (unlike the console `get_workspace_ctx` guard, `09 §3`). The minted
-`role` is a fixed **baseline invoke role** (`CHANNEL_INVOKE_ROLE`) — invoke requires no builder+ privilege,
-so any `useRoles`-based policy treats channel users as this baseline and real authorization rides on
-`teams` (Okta groups) ∩ the agent's policy. Role is **not** derived from Okta groups (consistent with the
-console: groups → teams, not roles). Tenancy still holds: the channel is pinned to one `workspace_id` and
+> **H1 — email is a non-authoritative join key; hardened platform tenant is a precondition.** A valid event
+> signature proves provenance, **not** email ownership — so without the checks above, any external/guest/
+> Slack-Connect/personal account whose email **collides** with an internal subject would federate straight into
+> that subject with full agent access. Mitigations, all required: (1) verify an **`email_verified`** / domain-
+> bound claim and reject if absent/false; (2) **bind federation to the corporate email domain(s)**
+> (`ch.allowed_email_domains`), rejecting guests/Slack-Connect; (3) install the platform workspace as
+> **no-guests, corporate-domain-only** (a deployment precondition, documented, not just code). Negative test
+> (09 §8 / channel suite): a colliding external/unverified email is **rejected**, never federated.
+>
+> **Inbound idempotency (H1.5).** Dedupe on the **platform event id** before enqueue, with a **dead-letter**
+> path, so an acked-but-unprocessed event isn't silently dropped and platform **retries don't double-invoke**
+> the agent. A duplicate event id → a single `runtime.invoke`.
+
+> **Teams OBO (H1 side-issue, resolved by the adapter).** The non-standard Entra→Okta cross-IdP exchange is now
+> the Entra adapter's `exchange_obo` (`18`); `teams` come **uniformly** from `idp.groups_for` regardless of
+> platform, so the old "OBO breaks teams = Okta groups" concern is gone — all three platforms resolve `teams`
+> the same way.
+
+**Role & membership.** The channel arm is **membership-independent** (`09 §1`): a federated end user needs
+**no workspace role claim** at all (unlike the console `get_workspace_ctx` guard, which requires an
+`ap-<prefix>-{builder,publisher}` claim, `09 §3`). The minted `role` is always **`executer`**
+(`CHANNEL_INVOKE_ROLE`) — the caller plane's execute-only role; invoke requires no console privilege, so any
+`useRoles`-based policy treats channel users as `executer` and real authorization rides on `teams` (Okta
+groups) ∩ the agent's policy. Role is **not** derived from Okta groups (consistent with the console: the
+*functional* groups → teams, not roles). Tenancy still holds: the channel is pinned to one `workspace_id` and
 RLS (`09 §7`) partitions every query, so a channel user can reach only **that** workspace's bound agents.
 
 ## 5. Invoke mapping (`03`)

@@ -18,8 +18,9 @@ flowchart TD
 
 **Binding config —** `top_k`, `threshold`, `hybrid`, `reranker`, `max_ctx`, `injection`.
 
-Tables in `01-data-model.md §4.4`. The KB is the unit an agent binds to; a binding is snapshotted into
-the version (`retrieval_bindings`, with `kb_index_version` pinned) so retrieval is reproducible.
+Tables in `01-data-model.md §4.4`. The KB is the unit an agent binds to; the **binding** (which KB +
+`retrieval_config` + `embedding_model`) is snapshotted into the version so the binding is reproducible. The
+KB's **content** is live & independent of the agent version — a refresh does not re-version the agent (see §9).
 
 ## 2. Ingestion pipeline (async job)
 
@@ -187,12 +188,24 @@ they come from `state["retrieved"]` (03 §3).
 
 ## 9. Reproducibility & drift tie-in (why RAG is a drift source)
 
-Retrieval silently changes answer quality, so it is version-pinned and change-tracked:
-- `embedding_model` + `kb_index_version` are pinned into the `retrieval_binding` snapshot (01).
-- **Changing the embedding model or the KB binding = new version + re-eval** (it changes retrieval
-  quality → a drift trigger, 05 §triggers).
-- **Re-ingesting a bound KB after publish** raises a **stale-index warning** and flags re-eval — the
-  published version still runs on its pinned `index_version` until an eval-gated re-point.
+> **⚠️ Decision (2026-10-22): KB content is LIVE and INDEPENDENT of the agent version.** The agent version
+> pins the **binding** — *which* KB is attached + `retrieval_config` (`top_k`/threshold) + `embedding_model`
+> — but **not the KB's content**. A KB refresh (periodic or manual) updates chunks in place and **does NOT bump
+> the agent version**; the two events are independent. The binding is reproducible; the content is not pinned.
+> This supersedes the earlier "runs on a pinned `index_version` until an eval-gated re-point" claim.
+
+The **binding** is version-pinned and change-tracked; the **content** is live:
+- `embedding_model`, `retrieval_config`, and the KB identity are pinned into the `retrieval_binding` snapshot
+  (01). `kb_index_version` is retained as the KB's own refresh-generation marker (observability + the parked
+  eval signal below), **not** as a retrieval pin that freezes content for a live endpoint.
+- **Changing the embedding model, `retrieval_config`, or *which* KB is bound = new version + re-eval** (a
+  binding change → drift trigger, 05 §triggers). *(Re-pointing the binding is still eval-gated.)*
+- **Re-ingesting a bound KB's content after publish** updates what the live endpoint retrieves immediately —
+  by design (content is live). The agent version is unchanged.
+  > **⚠️ PARKED (open decision — revisit; review-fixes C3).** Whether a content refresh of a bound KB carries
+  > an **eval/drift signal** — i.e. flags `needsReEval` + notifies on regression, and therefore whether
+  > `kb_index_version` folds into `snapshot_hash` (05) and busts the verdict cache — is **deferred**. Until
+  > decided, treat the `05` RAG snapshot-hash-coverage note as provisional, not authoritative.
 - Eval evaluates **retrieval, not just generation** (05): a case can assert "retrieved the right chunk,"
   so an embedding regression is caught even if the generation model is unchanged (spec E risk #3).
 

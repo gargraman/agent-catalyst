@@ -8,13 +8,13 @@
 
 ## 1. Conventions
 
-**URL prefixes by plane** (reconciling the FE map's `/v1/...` with spec B11). The full auth model is **four planes** (`09 §1`: console session · caller token · channel · platform-admin); this catalog's HTTP surface is:
+**URL prefixes by plane** (reconciling the FE map's `/v1/...` with spec B11). The full auth model is **three planes** (`09 §1`, claim-based 2026-10-22: console · caller `executer` (cURL + channel) · app-wide admin); this catalog's HTTP surface is:
 
 | Plane | Prefix | Auth | Who calls it |
 |---|---|---|---|
-| Builder API | `/api/v1/*` | **console session** (OIDC cookie, CSRF) + workspace scope | the Next.js console |
-| Published runtime | `/v1/agents/:id/invoke`, `/v1/...` | **caller bearer token** (hashed, scoped) | external apps / cURL |
-| Org governance | `/api/v1/org/*` | **console session + `platform_admins` roster** (09 §1, deployment-wide, read-only) | the console's org/admin view (15) |
+| Builder API | `/api/v1/*` | **console session** (OIDC cookie, CSRF) + per-workspace role claim | the Next.js console |
+| Published runtime | `/v1/agents/:id/invoke`, `/v1/...` | **caller bearer token** (hashed, scoped; role `executer`) | external apps / cURL (and the channel plane, 12) |
+| Org governance | `/api/v1/org/*` | **console session + `ap-platform-admin` claim** (09 §1, the app-wide admin) | the console's org/admin view (15) |
 
 Both are served by the `api` process (00 §2); different routers, different FastAPI dependencies
 (`deps.session_principal` vs `deps.caller_token`). The FE map writes paths as `/v1/...`; in the builder
@@ -61,14 +61,15 @@ source. After the TTL, a replay returns the stored run metadata + a `result_expi
 reconstructing output.
 
 **Tenancy:** every builder route takes `workspace_id` from the client's selection (`?workspace=:id` or
-`X-Workspace-Id`) but **authorizes it against the session's memberships** before use (09 §3) — selecting
-a workspace you don't belong to is a 403, never a leak, so it cannot be forged. The tenancy guard + RLS
-(09, 01 §6) then pin and enforce it.
+`X-Workspace-Id`) but **authorizes it against the session's per-workspace role claim** (`ap-<prefix>-builder`
+/ `-publisher`, or the app-wide `ap-platform-admin`) before use (09 §3) — selecting a workspace you hold no
+claim for is a 403, never a leak, so it cannot be forged. The tenancy guard + RLS (09, 01 §6) then pin and
+enforce it.
 
 ## 2. Endpoint catalog
 
-Faithful to `backend-integration-map.md`. `Auth`: **S**=session, **T**=caller token, **P**=platform-admin
-(session + `platform_admins`, 09 §1). `Async`: returns a job/stream (00 §5, 10). `Backs`: the
+Faithful to `backend-integration-map.md`. `Auth`: **S**=session, **T**=caller token (`executer`), **P**=admin
+(session + `ap-platform-admin` claim, 09 §1). `Async`: returns a job/stream (00 §5, 10). `Backs`: the
 `frontend/src/lib/data.ts` symbol (via `store.ts`); P0 routes with no FE backer yet are marked *(net FE)*.
 
 ### Agents & versions
@@ -145,8 +146,8 @@ there is deliberately **no test-invoke, no risk-tier, and no approval route** he
 | `GET /api/v1/runs?workspace=:id` | S | — | `useRuns` / `RUNS` |
 | `GET /api/v1/runs/:id` | S | — | run detail + spans |
 | `GET /api/v1/metrics/{spend,volume,latency,activity}` | S | — | dashboard/runs charts (§7) |
-| `GET /api/v1/workspaces/:id` | S | — | `useWorkspaceSettings` (slug read-only; name/access/provider/model) |
-| `PATCH /api/v1/workspaces/:id` | S(**platform-admin**) | — | `updateWorkspace` (name, backing `okta_group`, `member_role`; slug immutable) + `updateWorkspaceSettings` (default provider/model). **No `access_mode`** — removed (2026-10-20 group-driven pivot) |
+| `GET /api/v1/workspaces/:id` | S | — | `useWorkspaceSettings` (slug read-only; name/idp_binding/provider/model) |
+| `PATCH /api/v1/workspaces/:id` | S(**admin**) | — | `updateWorkspace` (name, `idp_binding`; slug immutable) + `updateWorkspaceSettings` (default provider/model). **No `member_role`/`access_mode`/`okta_group`** — claim-based + IdP-agnostic model (2026-10-22, 18); membership + role are the per-workspace IdP claims mapped by `idp_binding` (09 §2.1) |
 | `POST /api/v1/workspaces/:id/archive` (deactivate) **· NEW reactivate endpoint** | S(admin) | — | `setWorkspaceActive` — reversible Inactive toggle via `archived_at`; deactivate unpublishes endpoints, reactivate (net-new) clears it. FE enforces a read-only freeze while inactive |
 | **`POST /api/v1/workspaces`** *(net-new, not in base design)* | S | — | `addWorkspace` — **FE mock-only** self-serve create (creator → admin, seeds baseline + starter kit). Base design has **no create** (workspaces are org-provisioned); a real deploy adds this or keeps provisioning out-of-band |
 | **`DELETE /api/v1/workspaces/:id`** *(net-new, not in base design)* | S(admin) | — | `deleteWorkspace` — **FE mock-only** hard-delete cascade over every scoped resource. Base design **archives (soft)** instead; a real deploy would add a guarded admin cascade or disallow it |
@@ -154,8 +155,8 @@ there is deliberately **no test-invoke, no risk-tier, and no approval route** he
 | `GET /api/v1/provider-keys?workspace=:id` | S | — | `useProviderKeys` (masked) |
 | `POST /api/v1/provider-keys` | S(admin) | — | `addProviderKey` (vaulted; 09) |
 | `POST /api/v1/provider-keys/:id/rotate` · `…/revoke` | S(admin) | — | `rotateProviderKey` / `revokeProviderKey` (audited; 09 §12) |
-| `GET /api/v1/members?workspace=:id` | S | — | `useMembers` — **READ-ONLY** roster projected from the workspace's backing Okta group (role = the workspace's `member_role`). Identity + membership from Okta |
-| ~~`POST/DELETE …/invites`, `DELETE /members/:id`, `POST …/join`~~ | — | — | **REMOVED (2026-10-20 group-driven pivot).** No invites, no self-join, no in-app remove — membership = Okta group. Add/remove happens in Okta (optionally auto-upsert `platform_admins` from a group, 15). |
+| `GET /api/v1/members?workspace=:id` | S | — | `useMembers` — **READ-ONLY** projection of the workspace's `viewer`/`builder`/`publisher` claim holders, resolved through the active identity adapter (18 §3; each member's role = the claim they hold). Identity + membership from the IdP; no Postgres roster (09 §2.1) |
+| ~~`POST/DELETE …/invites`, `DELETE /members/:id`, `POST …/join`~~ | — | — | **REMOVED (claim-based model, 2026-10-22).** No invites, no self-join, no in-app remove — membership **is** the per-workspace IdP role claim (mapped by `idp_binding`, 18). Add/remove happens in the IdP; app-wide admin is the adapter's admin claim (15). |
 | `PUT /api/v1/{agents\|knowledge\|tools\|mcp\|channels\|skills}/:id/access-policy` | S(admin) | — | `setAccessPolicy` (09 §5); body is the unified `AccessPolicy` (`visibility: workspace\|restricted\|private`, role/team lists, `owner?`); each target table carries an `access_policy jsonb` column (01; channels in 12) |
 | `GET /api/v1/agents/:id/guardrails` · `PUT …` | S | — | Guardrails tab (per-version config; 06) |
 | `GET /api/v1/search?q=` | S | — | topbar + list search |
@@ -484,9 +485,10 @@ class WorkspaceSettingsOut(BaseModel):   # mirrors TS WorkspaceSettings; name/sl
 class WorkspaceSettingsPatch(BaseModel): # PATCH /workspaces/:id — slug is NOT patchable
     default_provider: str | None = Field(default=None, alias="defaultProvider")
     default_model: str | None = Field(default=None, alias="defaultModel")
-    okta_group: str | None = Field(default=None, alias="oktaGroup")   # backing Okta group (authoritative)
-    member_role: str | None = Field(default=None, alias="memberRole") # base role the group confers
-    # access_mode REMOVED (2026-10-20 group-driven pivot) — no open/restricted; membership = Okta group.
+    idp_binding: dict | None = Field(default=None, alias="idpBinding")  # per-workspace role→native-group map the
+    #   active identity adapter resolves (01 §4.1, 09 §2.1, 18 §3): {viewer,builder,publisher,teams}. IdP-authoritative.
+    # member_role / okta_group / access_mode / group_prefix REMOVED (claim-based + IdP-agnostic model, 2026-10-22, 18)
+    #   — role is the per-workspace IdP claim mapped by idp_binding; app-wide admin is the adapter's admin claim.
     class Config: populate_by_name = True
 class LimitsOut(BaseModel):              # mirrors TS Limits; composed from spend_limits+concurrency_limits+workspaces
     monthly_spend_usd: float = Field(alias="monthlySpendUsd")

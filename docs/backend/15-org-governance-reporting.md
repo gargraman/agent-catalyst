@@ -1,4 +1,4 @@
-# 15 — Org Governance & Reporting (the platform-admin plane)
+# 15 — Org Governance & Reporting (the app-wide admin claim)
 
 > Closes the org-governance gap. Today `09 §10` / `10 §6,§10` dashboards are **per-workspace or
 > operator-only**, and `09 §4` has **no role that spans workspaces** — so leadership has no org-wide view
@@ -9,60 +9,56 @@
 > the metrics-rollup pattern (`08 §7`, `10 §6`), and the registration fields (`agents.registered_at` /
 > `owner_subject`) from `14`. **Design only — nothing here is built** (no `services/`).
 
-## 1. The platform-admin plane
+## 1. The app-wide admin claim
 
-The three auth planes (`09 §1`) are all **tenant-scoped**: a console session, a caller token, and a
-channel each resolve to exactly one `workspace_id`, and everything they can read is partitioned by it
-(guard + RLS, `09 §3,§7`). Org governance is the one capability that is *deliberately not* tenant-scoped
-— it must see across every workspace at once. We model it as a **fourth plane** sitting **above** the
-three tenant planes, mirroring how `/v1/branding` already sits "above the workspace planes" (`08 §1`).
+> **⚠️ Claim-based model (2026-10-22; `scope.md`, `09 §1`).** The old "platform-admin plane" is now the
+> app-wide **`admin`** claim — one of the **three** auth planes (`09 §1`), **not** a fourth, and sourced
+> from the active identity adapter's admin claim (`admin_group_ref`, 18 §6; e.g. Okta `ap-platform-admin`),
+> **not** a `platform_admins` table. It also **reverses the
+> read-only rule below**: admin *mutates* — it does everything a builder/publisher can in every workspace,
+> owns all governance (keys, eval policy, baseline, access policy, limits) **and workspace CRUD**. Org
+> governance (this doc) is the *additional* elevated cross-tenant **read** that admin carries on top; the
+> read stays **metadata-only** for `private`-tier resources and is the one isolation-suite exception (§2).
+
+The three auth planes (`09 §1`) are Console · Caller (`executer`) · **Admin**. The Console and Caller
+planes are **tenant-scoped**: each resolves to exactly one `workspace_id`, and everything they read is
+partitioned by it (guard + RLS, `09 §3,§7`). The **Admin** plane is the one that is *deliberately not*
+tenant-scoped — it spans every workspace, mirroring how `/v1/branding` already sits "above the workspace
+planes" (`08 §1`). Org governance is the admin capability that must see across all workspaces at once.
 
 **One deployment = one org.** `13` onboards a new organization by **redeploy** (org config baked at
-build/deploy time); `orgs` is **branding-only** (`13 §1`). So "platform admin" is a **platform /
-deployment-wide** role, not an org-scoped one. Concretely:
+build/deploy time); `orgs` is **branding-only** (`13 §1`). So `admin` is a **platform / deployment-wide**
+claim, not an org-scoped one. Concretely:
 
 - **Do not** introduce an `org_memberships` table or any `org_id`-scoped logic — there is exactly one org
   per deployment, so an `org_id` dimension would be a column that is always the same value.
-- Membership is a minimal, **elevated** (not `WorkspaceScoped`) table:
+- **No `platform_admins` table, and no roster of any kind.** admin is the adapter's admin claim
+  (`admin_group_ref`, 18 §6; Okta adapter default `ap-platform-admin`), read live from the token on each
+  request (`09 §1/§2.1`). Grant/revoke happens **in the IdP** (audited there); it takes effect on next login.
+  There is nothing to store, upsert, or RLS-partition.
+  `Principal.is_admin` (`09 §1`) is `True` iff the token carries that claim.
 
-```sql
--- services/api/migrations/platform_admins.sql
--- Deployment-wide governance roster. NOT WorkspaceScoped (no workspace_id), NOT RLS-partitioned — it is
--- the one roster that is intentionally global. Kept separate from `memberships` (01 §4.1) so an elevated
--- grant can never be confused with a per-workspace role, and so RLS never applies to it.
-create table platform_admins (
-  subject    text primary key,              -- OIDC subject (org Okta user id), same identity source as memberships
-  granted_at timestamptz not null default now(),
-  granted_by text not null                  -- subject of the platform_admin who granted this (or 'deploy' at bootstrap)
-);
-```
+### 1.1 admin in the `09 §1` auth-plane table (already one of the three)
 
-- **Optionally Okta-group-backed.** Consistent with the **2026-10-15 app-managed-membership decision**
-  (`09 §2.1`: the app roster is the system of record; role is *not* group-encoded), a deployment MAY
-  auto-upsert `platform_admins` from a designated Okta group read off the OIDC `groups` claim — but the
-  table stays authoritative and the role is an app attribute, never derived from a group name at
-  authorization time.
-
-### 1.1 Extend the `09 §1` auth-plane table (3 → 4)
-
-Add one row. The new plane is **read-only — governance, not mutation**; it never publishes, edits, or
-invokes.
+admin is **not** a separate row to add — it *is* the Admin plane in `09 §1`:
 
 | Plane | Who | Credential | Authorization basis | Used by |
 |---|---|---|---|---|
-| **Platform-admin** (`P`) | a platform/deployment-wide admin (leadership / central ops) | OIDC session (`09 §2`) **+** `platform_admins` membership | **not** workspace `memberships`; the global `platform_admins` roster — **deployment-wide, read-only** | `GET /api/v1/org/*` (§3) |
+| **Admin** (app-wide) | a deployment superuser (leadership / central ops) | OIDC session (`09 §2`) **+** the adapter's admin claim (`admin_group_ref`, 18 §6) | the one claim unique to the application — spans **all** workspaces | all builder routes in every workspace **+** `GET /api/v1/org/*` (§3) |
 
-New RBAC permission `org.report.read` (`09 §4`). It is **not** a rung on the per-workspace `RANK`
-ladder (`viewer<builder<publisher<admin`) — a workspace `admin` is still only an admin *of that
-workspace*. `org.report.read` is a **plane-level** permission, granted solely by `platform_admins`
-membership. A finer `org.report.content_read` (§2) gates the one action that can see private content.
+RBAC permission `org.report.read` (`09 §4`) is held **only** by admin. On the per-workspace `RANK` ladder
+(`executer<viewer<builder<publisher<admin`, `09 §4`) `admin` is the top rung but is **app-wide**, not per-workspace
+(there is no per-workspace admin). A finer `org.report.content_read` (§2) gates the one action that can see
+`private` content — so reading the estate never silently exposes private resource bodies.
 
 ### 1.2 Bootstrap
 
-The first `platform_admin` is **seeded at deploy** (env/`org.config.json` subject, written with
-`granted_by = 'deploy'`, same deploy-time channel as branding, `13 §2`). Thereafter a `platform_admin`
-may grant another — an **audited** action (`org.admin.grant` / `org.admin.revoke`, written to the
-org-level audit sink, §2). This avoids a chicken-and-egg lockout without a side door into the DB.
+No seeding a DB row: the first admin is whoever the IdP places in the configured admin group
+(`admin_group_ref`, 18 §6; set at deploy via env/`org.config.json`, the same deploy-time channel as branding,
+`13 §2`). Thereafter grant/revoke is an **IdP** group change (audited in the IdP); every admin *action in-app*
+is still audited to
+the org-level sink (`org.report.read` / `org.report.content_read`, §2). This avoids both a chicken-and-egg
+lockout and a side door into the DB — there is no in-app grant path to protect.
 
 ## 2. The elevated, audited cross-tenant read path
 
@@ -97,17 +93,26 @@ grant execute on function org_report_agents() to platform_report;   -- elevated 
 ```
 
 ```python
-# services/api/org/deps.py — the platform-admin plane dependency (parallel to get_workspace_ctx, 09 §3)
+# services/api/org/deps.py — the admin (org-read) dependency (parallel to get_workspace_ctx, 09 §3).
+# Name kept for continuity; "platform_admin" == the app-wide `admin` claim (09 §1), NOT a roster lookup.
 async def require_platform_admin(
     request: Request,
     principal: Principal = Depends(get_principal),   # the SAME OIDC session as the console plane (09 §2)
-    db: AsyncSession = Depends(get_db),
 ) -> PlatformAdminCtx:
     # NO workspace selection, NO `SET LOCAL app.workspace_id`: this plane is deployment-wide, not tenant-scoped.
-    if not await is_platform_admin(db, principal.subject_id):     # platform_admins roster (§1)
-        raise Forbidden("requires platform_admin")                # → 403 access.denied (08 §1)
-    return PlatformAdminCtx(principal=principal)
+    # Authorization is the adapter's admin claim on the token (Principal.is_admin, §1, 18 §6) — no DB roster.
+    if not principal.is_admin:                                    # the adapter's admin_group_ref claim (§1)
+        raise Forbidden("requires admin")                         # → 403 access.denied (08 §1)
+    # The org plane runs on a SEPARATE DB connection authenticated as the `platform_report` role (the only role
+    # with EXECUTE on org_report_*), NOT the general app role. So even a logic bug/SQLi on the normal app path
+    # cannot call the definer functions — the boundary is enforced at the DB, not just by this dependency (C4).
+    return PlatformAdminCtx(principal=principal, db=org_report_conn())  # platform_report-authenticated engine
 ```
+
+> **DB-level boundary (C4 — tenant isolation).** The `EXECUTE` grant on `org_report_*` goes **only** to the
+> dedicated `platform_report` role (§2 DDL), and the general app role has **none** — asserted by a DB-level CI
+> test (`09 §8` org-plane boundary). All org reads (incl. `enrich_estate`, §3) go through the `SECURITY DEFINER`
+> functions on the `platform_report` connection, never the RLS-bound app session (which would return empty).
 
 ### 2.1 It is the single exception to the isolation suite
 
@@ -145,8 +150,10 @@ only through this path. New audit actions: `org.report.read`, `org.report.conten
 ### 2.3 Metadata-only for `private` resources (the hard constraint)
 
 `access-policy.ts` defines a **`private`** tier: owner-only, Splunk-style — only the resource owner
-(plus a *workspace* admin) may use or manage it. A platform admin is **not** a workspace admin and holds
-**no owner subject**, so the org report must honor the private tier. The rule:
+(plus the app-wide **admin**, which bypasses every tier on the console path via 09 §5) may use or manage
+it. But the **org-report path is not a console session** — it is the elevated `SECURITY DEFINER` read (§2),
+which carries **no owner subject and no per-resource authorization**, so it must honor the private tier
+regardless. The rule:
 
 - For a `private` agent the report MAY show **metadata**: existence, owning workspace, owner, status,
   active-version label, eval verdict, drift, 30-day spend, policy tier, compliance flags.
@@ -204,9 +211,12 @@ private rows are metadata-only (§2.3).
 ```python
 # services/api/org/routes.py
 @router.get("/api/v1/org/agents")
-async def org_agents(ctx: PlatformAdminCtx = Depends(require_platform_admin), db=Depends(get_db)):
+async def org_agents(ctx: PlatformAdminCtx = Depends(require_platform_admin)):
+    db = ctx.db                                                            # platform_report connection, NOT the
+                                                                          #   RLS-bound app session (C4; else empty)
     rows = await db.execute(text("select * from org_report_agents()"))     # the ONE cross-tenant read (§2)
-    estate = await enrich_estate(db, rows)   # joins active version, latest eval_run verdict, spend_30d, flags
+    estate = await enrich_estate(db, rows)   # joins active version, latest eval_run verdict, spend_30d, flags —
+                                             #   ALSO via org_report_* definer fns on this same connection (C4)
     await write_org_audit(db, actor=ctx.principal.subject_id,
                           action="org.report.read", target="org/agents")   # workspace_id NULL (§2.2)
     return [project_estate_row(r) for r in estate]                         # metadata-only for private (§2.3)
@@ -248,7 +258,8 @@ sync.
 
 ```python
 @router.get("/api/v1/org/compliance")
-async def org_compliance(ctx: PlatformAdminCtx = Depends(require_platform_admin), db=Depends(get_db)):
+async def org_compliance(ctx: PlatformAdminCtx = Depends(require_platform_admin)):
+    db = ctx.db                                                                  # platform_report connection (C4)
     flagged = await db.execute(text("select * from org_report_compliance()"))   # cross-tenant, SECURITY DEFINER (§2)
     await write_org_audit(db, actor=ctx.principal.subject_id,
                           action="org.report.read", target="org/compliance")    # audited (§2.2)

@@ -5,30 +5,46 @@
 > agents execute tools/MCP that reach internal systems, so this doc is not optional hardening — it is
 > the thing that keeps a prompt-injected agent from becoming an SSRF/exfiltration primitive.
 
-## 1. Four auth planes (do not conflate them)
+## 1. Three auth planes (do not conflate them)
+
+> **Claim-based, IdP-agnostic model (2026-10-22; `scope.md`, adapter spec `18`).** Workspace membership +
+> role come from **per-workspace IdP group/role claims**, mapped to a role by the active **identity adapter**
+> (`18`) via `workspaces.idp_binding` — not an app-managed roster, and **not tied to one IdP** (Okta, Ping,
+> Entra, Cognito, custom). There is **no** `memberships`/`workspace_invites` table, no invite/self-join, no
+> `access_mode`. This supersedes both the 2026-10-15 app-roster model *and* the 2026-10-20
+> one-group-per-workspace model. **Roles:** per-workspace `viewer` (read-only) < `builder` < `publisher`;
+> one app-wide `admin`; the caller role `executer`.
 
 | Plane | Who | Credential | Authorization basis | Used by |
 |---|---|---|---|---|
-| **Console session** | a signed-in builder/PM (a human) | OIDC session (Trellix IAM) | **workspace `memberships`** (role_in) + RBAC + resource policy | all `/api/v1/*` builder routes |
-| **Caller token** | an external app/service calling a published agent | scoped bearer token | token's `{tenant, role, teams, scopes}` + resource policy | `POST /v1/agents/:id/invoke` only |
-| **Channel** (12) | an end user in Slack/Teams/GChat | federated → minted Agent Platform token | channel `okta_group` ∩ resource policy — **membership-independent** (no `memberships` row required) | `POST /channels/{platform}/events` |
-| **Platform-admin** (15) | a deployment-wide governance owner (leadership) | OIDC session **+** `platform_admins` roster (01 §4.9) | spans **all** workspaces; **read-only**; `org.report.read` permission (§4) | `GET /api/v1/org/*` only, via the elevated audited path (§7) |
+| **Console** | a signed-in viewer/builder/publisher (a human) | OIDC session (IdP via the active adapter, 18) | **per-workspace role claim** (IdP group → `viewer`\|`builder`\|`publisher`, mapped by `idp_binding`) + RBAC + resource policy | all `/api/v1/*` builder routes |
+| **Caller (`executer`)** | a cURL app/service **or** a channel end user (Slack/Teams/GChat) | scoped bearer token **or** channel-federated minted token | fixed role **`executer`** (execute-only) + per-resource policy; tenant pinned by the token/channel | `POST /v1/agents/:id/invoke`, `POST /channels/{platform}/events` |
+| **Admin** (app-wide, 15) | a deployment superuser (leadership / central ops) | OIDC session **+** the adapter's admin claim (`admin_group_ref`, 18 §6) | the one claim **unique to the application** — spans **all** workspaces | all builder routes in every workspace **+** `GET /api/v1/org/*` |
 
-The platform-admin plane is the deliberate exception to per-workspace scoping: one deployment = one org
-(13 §4), so it is a single app-managed role (not `org_id`-scoped). It reads the whole estate through the
-`SECURITY DEFINER` path in §7 and writes an `org.report.read` audit row on every call (§12). It can
-**mutate nothing** and sees **metadata only** for `private`-tier resources (15 §2).
+The **caller** plane unifies the old caller-token and channel planes: both resolve to the single
+execute-only role `executer`, differing only in *how* identity is sourced (a bearer token vs. a
+verified-email→IdP federation, 12 §4). Neither needs a membership row — the tenant is pinned by the token
+or channel binding and RLS (§7) partitions every query.
 
-The frontend already models this split (`lib/auth.tsx` session vs `lib/runtime-access.ts` token decode,
-which also has a channel arm). The server is now the source of truth; the FE token decode becomes
-**preview-only** (Playground shows what a token *would* resolve to; the real check is server-side).
+The **admin** plane is the one claim unique to the application (not per-workspace): one deployment = one org
+(13 §4). admin does everything a builder/publisher can in **every** workspace, owns all governance (keys,
+eval policy, baseline, access policy, limits) and **workspace CRUD**, and reads the whole estate through the
+`SECURITY DEFINER` path in §7 (writing an `org.report.read` audit row per call, §12). The org read is
+**metadata only** for `private`-tier resources (15 §2).
 
-> **Note the differing authorization bases.** The console plane authorizes off workspace `memberships`
-> (`get_workspace_ctx`, §3) — a user is a member by invite or by self-joining an `access: "open"` space
-> (§2.1). The caller-token and channel planes authorize off the token's resolved identity (tenant pinned by
-> the token/channel) + per-resource policy — a channel end user can invoke a workspace's agent **without** a
-> `memberships` row (12 §4). Tenancy is still enforced: the channel is pinned to one `workspace_id` and RLS
-> (§7) partitions every query.
+> **Accepted tradeoff (2026-10-22).** admin subsumes the old platform-admin, so "govern a space" and "read
+> every tenant" are the same claim. Mitigation: admin is a small, audited set (every admin + org-read action
+> writes `audit_logs`, §12); org content for a `private` resource needs the separate `org.report.content_read`
+> action (15 §2.3), never a side effect of the estate read.
+
+The FE console is **migrated** to this model (2026-10-22, scope.md rev 5): `lib/iam.ts` resolves per-workspace
+`ap-<prefix>-<role>` claims via an `idpBinding(ws)` helper (the Okta adapter's convention) and a claim-based
+`roleFor` (highest held claim; `admin` from the platform-admin claim); `viewer` retained; `Workspace` carries
+`groupPrefix` (no more `oktaGroup`/`memberRole`). The caller planes now resolve to the **`executer`** role
+(`lib/runtime-access.ts` + the `CallerRole` type in `access-policy.ts`): token/channel callers are
+execute-only, no longer typed as a console role (`npm run build` green). The FE decode is **preview-only** —
+the server is the source of truth (Playground shows what a token *would* resolve to; the real check is
+server-side).
 
 ## 2. Console authN — OIDC/SSO
 
@@ -44,68 +60,61 @@ class Principal:
     subject_id: str            # OIDC sub
     email: str
     display_name: str
-    memberships: dict[str, str]  # {workspace_id: role}  — app-managed, from the memberships table (01)
-    teams: frozenset[str]        # Okta groups, from the OIDC `groups` claim (NOT the memberships table)
+    workspace_roles: dict[str, str]  # {workspace_id: "viewer"|"builder"|"publisher"} — resolved by the active
+                                     #   adapter from per-workspace IdP claims via idp_binding (§2.1, 18); NOT a roster
+    is_admin: bool                   # the adapter's app-wide admin claim → admin in EVERY workspace (15, 18 §6)
+    teams: frozenset[str]            # functional IdP groups, from the OIDC `groups` claim (access policy, §5)
 
     def role_in(self, workspace_id: str) -> str | None:
-        return self.memberships.get(workspace_id)
+        if self.is_admin: return "admin"            # the app-wide admin is every workspace's superuser
+        return self.workspace_roles.get(workspace_id)
 ```
 
 ```python
 # services/api/deps.py
-async def get_principal(request: Request) -> Principal:
+async def get_principal(request: Request, idp: IdentityProvider = Depends(get_idp)) -> Principal:
     token = _session_token(request)                 # cookie or Authorization for API clients
-    claims = await oidc.verify(token)               # signature, iss, aud, exp, nbf
+    claims = await idp.verify_token(token)          # adapter: OIDC verify (sig/iss/aud/exp/nbf) or SAML (18 §2)
     if not claims:
         raise Unauthorized()
-    teams = groups_to_teams(claims.get("groups", []))   # Okta groups claim -> teams (see 2.1)
-    return await load_principal(claims["sub"], teams=teams)   # joins memberships (01); teams from claim
+    # The ADAPTER maps native groups/roles into the three kinds (§2.1, 18 §3): per-workspace role claims →
+    # workspace_roles (via idp_binding), the admin claim → is_admin, functional groups → teams. The core
+    # never parses a vendor-specific claim shape itself.
+    return await idp.build_principal(claims)
 ```
 
 CSRF: state-changing console routes require a CSRF token (double-submit cookie) since the session is
 cookie-based. Pure bearer API clients (no cookie) are exempt.
 
-### 2.1 Teams = Okta groups (the group dimension)
+### 2.1 Claim sourcing — the adapter maps native claims into three kinds (keep them distinct)
 
-> ⚠️ **REVERSED (2026-10-20 group-driven pivot; scope.md).** Workspace membership + role are **no longer an
-> app-managed roster**. Each workspace binds **ONE authoritative Okta group** (`workspaces.okta_group`) that
-> confers a single base role (`workspaces.member_role ∈ {viewer,builder,publisher}`); a deployment-wide
-> **platform-admin group** (→ `platform_admins`, §7/15) is admin everywhere and the only principal that can
-> create/delete/(de)activate/edit workspaces. **Removed:** `memberships` as SoR, `workspace_invites`,
-> self-join, and `access: open/restricted`. **Visibility = group membership** (platform-admins see all);
-> `Principal.memberships`/`role_in()` below are superseded by *group → member_role* resolution. `teams`
-> (functional Okta groups, this section) are a **separate** dimension and are unchanged. The paragraphs
-> below describing the invite/self-join roster are retained for history but no longer authoritative.
+Identity is the org's IdP (OIDC; SAML via a heavier adapter, 18 §5). The **active adapter** (`18`) reads the
+IdP's native group/role claim and maps it — via `workspaces.idp_binding` (01 §4.1) + the deployment
+`admin_group_ref` — into **three kinds** that drive three different things. The native identifier may be a
+group *name* (Okta), a group *GUID* (Entra), a `memberOf` DN or SAML attribute (Ping), etc.; the core never
+sees the vendor shape, only the mapped result:
 
-`teams` is the group dimension of the access model, and it is sourced from **Okta groups** carried in the
-OIDC **`groups` claim** — not from the `memberships` table and not stored in Postgres. `groups_to_teams`
-normalizes the claim (e.g. maps each group's display name / id to a team slug) into `Principal.teams`.
-Keep this decoupled from tenancy:
+- **Workspace role claims → `workspace_roles`.** The native ref bound to `viewer`/`builder`/`publisher` for a
+  workspace (01 `idp_binding`) **is** that workspace's access + role. A user mapped to publisher in XDR and
+  builder in Labs gets `{xdr: publisher, labs: builder}`. **No app roster, no invites, no self-join** — the
+  IdP claim (through the adapter) is the system of record; the Members tab (08) is a read-only projection
+  resolved through the adapter. *(The Okta adapter derives these from the `ap-<prefix>-<role>` naming
+  convention; other adapters use explicit `idp_binding` refs — 18 §3.)*
+- **The admin claim → `is_admin`.** The deployment's `admin_group_ref` (18 §6) — the single app-wide claim
+  (§1). *(Okta adapter default: `ap-platform-admin`.)*
+- **Teams** (functional IdP groups: SOC, Detection, …) — normalized by the adapter into `Principal.teams`,
+  used **only** for the per-resource `access_policy` team dimension (§5) and the channel end-user gate (12 §4).
+  Teams are **not** workspace membership and **not** roles; the same `teams` semantics are reused by the
+  channel plane, so console and chat share one access model.
 
-- **Workspace membership + role-per-workspace are app-managed** in `memberships` (§1, §3): a user joins a
-  space either by a **space admin's invite** or by **self-joining an `access: "open"` space** (Google Chat /
-  Teams model). App entry = **member of ≥1 space, OR at least one open space to join** (§3). Identity still
-  comes from org Okta; the *roster* is the app's.
-- **Teams (Okta groups) drive fine-grained access** only: the `teams` term of per-resource `access_policy`
-  (§5) and the channel end-user gate (12). The same `teams` semantics are reused by the channel plane
-  (12 §4), so console and chat share one model. Teams are **distinct** from the optional per-space backing
-  group below — functional groups (SOC/…) are not space membership.
-- Requires the IdP to emit a `groups` claim scoped to this product (configure the scope/claim on the
-  org Okta app registration). No SCIM or directory sync is needed for teams — they are read live
-  from the token on each request.
-
-> **Optional per-space backing Okta group (reversal of the earlier "deferred" decision).** Earlier revisions
-> deferred the "workspace = Okta group" model as out of scope. We now **adopt a bounded version**: a
-> workspace MAY carry an optional backing Okta group (`workspaces.okta_group`, 01) that **auto-grants
-> membership** to users in that group at the default join role — useful for team-backed/open spaces. It is
-> **optional and not authoritative**: the app `memberships` roster remains the system of record (invites and
-> self-joins write to it), so a space needs no backing group and group removal is reconciled on next login.
-> We deliberately did **not** adopt group-per-workspace-**role** proliferation; role is an app roster
-> attribute, assigned on invite/join, not encoded in the group.
+Requires the IdP to emit a groups/roles claim scoped to this product (configured on the IdP app registration;
+per-adapter notes in 18 §5). **No SCIM or directory sync is needed for authZ** — claims are read live from the
+token on each request, so an IdP grant/revoke takes effect on next login. (Async recipient *enumeration* —
+16 — does need the adapter's `members_of` where available; see 18 §4.)
 
 ## 3. Workspace scoping — the tenancy guard (layer 1)
 
-Every tenant route resolves an **active workspace** and asserts membership, then pins it on the DB
+Every tenant route resolves an **active workspace** and asserts the role claim, then pins it on the DB
 connection so RLS (layer 2, §7) filters automatically.
 
 ```python
@@ -115,18 +124,23 @@ async def get_workspace_ctx(
     principal: Principal = Depends(get_principal),
     db: AsyncSession = Depends(get_db),
 ) -> WorkspaceCtx:
-    # Client SELECTS the workspace (header or ?workspace=); the membership check below is what makes it
-    # unforgeable — selection is not authority, membership is (reconciles 08 §1 "cannot be forged").
+    # Client SELECTS the workspace (header or ?workspace=); the claim check below is what makes it
+    # unforgeable — selection is not authority, the IdP role claim (via the adapter) is (08 §1 "cannot be forged").
     ws_id = request.headers.get("X-Workspace-Id") or request.query_params.get("workspace")
-    role = principal.role_in(ws_id)
+    if not ws_id:
+        raise BadRequest("no workspace selected")   # header/query param is required
+    role = principal.role_in(ws_id)                 # admin → "admin"; else the group-conferred role; else None
     if role is None:
-        # Not a member yet. Open spaces are joinable by any org member (self-service, default join role);
-        # restricted spaces require an invite, so selecting one you don't belong to is still a 403.
-        ws = await load_workspace(ws_id)
-        if ws and ws.access_mode == "open":
-            role = await join_workspace(principal.subject_id, ws_id, role=DEFAULT_JOIN_ROLE)  # upsert membership
-        else:
-            raise Forbidden("not a member of this workspace")
+        raise Forbidden("not a member of this workspace")   # no invite/self-join — access IS the group claim
+    # role_in() returns "admin" for ANY ws_id string (the app-wide admin is every workspace's superuser), so
+    # an admin with a typo'd/probed id would otherwise skip straight to SET LOCAL and pin a non-existent tenant
+    # — an authorized-but-empty context instead of a 404. Validate existence before pinning. (This matters only
+    # on the ADMIN path: a non-admin's claim can't resolve for an unknown/deleted workspace — role_in returns
+    # None → the Forbidden above (403) fires first, before this check. Admins get 404; non-admins get 403.)
+    # Archived/inactive is a separate read-only concern enforced on the write path, not here (reads of an
+    # inactive ws still resolve).
+    if not await workspace_exists(db, ws_id):       # SELECT 1 FROM workspaces WHERE id = :w  (admin path)
+        raise NotFound("workspace not found")
     # Pin tenant for RLS — SET LOCAL resets at txn end, so this is per-request (01 §6).
     await db.execute(text("SET LOCAL app.workspace_id = :w"), {"w": ws_id})
     return WorkspaceCtx(workspace_id=ws_id, role=role, principal=principal)
@@ -137,33 +151,37 @@ async def get_workspace_ctx(
 > another tenant's data. One without the other is a single point of failure. The isolation test suite
 > (§8) proves both hold.
 
-## 4. RBAC — roles and what they gate
+## 4. RBAC — claims and what they gate
 
-Roles per workspace (01 `member_role`): `viewer | builder | publisher | admin`. **`admin` is the Space
-Manager** — it owns member management, access policy, keys, and workspace settings (no separate role).
+Three per-workspace console roles (01 `workspace_role`): `viewer < builder < publisher` (publisher ⊃ builder ⊃
+viewer). **`viewer`** is read-only console access — the auditor/compliance tier (e.g. GRC). One app-wide claim:
+**`admin`** — the deployment superuser (§1), which holds every capability in every workspace. One caller role:
+**`executer`** — execute-only (cURL/channel), never a console role.
 
-| Action | viewer | builder | publisher | admin |
-|---|:--:|:--:|:--:|:--:|
-| Read agents/runs/evals | ✓ | ✓ | ✓ | ✓ |
-| Create/edit agents, versions, KBs, run playground | | ✓ | ✓ | ✓ |
-| Run eval (`eval.run`), **author suites/cases** (`eval.author`) | | ✓ | ✓ | ✓ |
-| **Govern eval policy, re-freeze baseline, low-confidence override** (`eval.govern`) | | | | ✓ |
-| **Publish / re-point / unpublish** | | | ✓ | ✓ |
-| **Mint/revoke caller tokens** | | | ✓ | ✓ |
-| **Approve/deny high-risk tool calls** (`tool.approve`) | | | ✓ | ✓ |
-| **MCP servers, tools, connectors** (`mcp.manage` / `tool.manage`) | | ✓ | ✓ | ✓ |
-| **Skills** — author/edit/publish-sign (`skill.manage`) | | ✓ | ✓ | ✓ |
-| **Provider keys** (`key.manage`) | | | | ✓ |
-| Set access policy, retention | | | | ✓ |
-| **Invite / remove members, change member role, set `access_mode`** | | | | ✓ |
-| **Edit workspace config + limits, archive workspace** | | | | ✓ |
+| Action | executer | viewer | builder | publisher | admin (app) |
+|---|:--:|:--:|:--:|:--:|:--:|
+| **Execute** an agent (cURL / channel / playground) | ✓ (cURL/channel) | ✓ (playground) | ✓ | ✓ | ✓ |
+| Read agents/runs/evals | | ✓ | ✓ | ✓ | ✓ |
+| Create/edit agents, versions, KBs; run playground | | | ✓ | ✓ | ✓ |
+| Run eval (`eval.run`), author suites/cases (`eval.author`) | | | ✓ | ✓ | ✓ |
+| MCP servers/tools/connectors (`mcp.manage`/`tool.manage`); skills (`skill.manage`) | | | ✓ | ✓ | ✓ |
+| **Publish / re-point / unpublish** | | | | ✓ | ✓ |
+| **Mint/revoke caller tokens** | | | | ✓ | ✓ |
+| **Approve/deny high-risk tool calls** (`tool.approve`) | | | | ✓ | ✓ |
+| **Provider keys** (`key.manage`) | | | | | ✓ |
+| **Eval policy, baseline re-freeze, low-confidence override** (`eval.govern`) | | | | | ✓ |
+| **Set access policy, retention** | | | | | ✓ |
+| **Edit workspace config + limits** | | | | | ✓ |
+| **Workspace CRUD** (create / edit / delete / (de)activate) | | | | | ✓ |
+| **Org-wide estate/spend/compliance read** (`org.report.read`, 15) | | | | | ✓ |
 
-> Member management (invite / remove / role change), the space's `access_mode`, workspace config (default
-> provider/model), per-workspace limits, and archive are **admin-only** (the Space Manager) — the FE gates
-> member management on `member.manage` and the rest on `settings.manage`. Caller-token mint/revoke stays
-> **publisher+**, since a publisher owns the endpoints they publish. **Self-joining an `access: "open"`
-> space is not a per-role action** — any authenticated org member may join (§3), landing at the default
-> join role (`viewer`).
+> **`viewer` = read-only console.** It can read agents/runs/evals/config and exercise the playground, but
+> cannot create, edit, publish, or govern — the auditor tier. (A `viewer` is still a *console* role; a caller
+> `executer` is not — it never reads the console, only invokes.) Governance (provider keys, eval policy +
+> baseline re-freeze, per-resource access policy, workspace config + limits), **workspace CRUD**, and the
+> org-wide read are **admin-only** — the single app-wide claim (§1); there is no per-workspace admin.
+> Caller-token mint/revoke stays **publisher+**, since a publisher owns the endpoints they publish. There is
+> **no self-join** — workspace access is the per-workspace role claim itself, mapped by the adapter (§2.1, 18).
 
 > **Eval governance split (05).** Authoring eval suites/cases (`eval.author`) is a **builder** capability —
 > builders own their agent's tests. But the *policy* that decides pass/fail (min cases, quality bar,
@@ -187,15 +205,15 @@ Manager** — it owns member management, access policy, keys, and workspace sett
 > risk tier and no approval gate** for a skill — it does not execute code (§10), so there is nothing to gate at
 > invoke beyond the access-policy `can_use` check. Skills carry **no credentials** (§9).
 
-**Above the per-workspace roles: the platform-admin plane (15).** `platform_admin` is **not** a fifth
-workspace role — it is a deployment-wide plane (§1) whose only permission is **`org.report.read`**: read the
-whole-estate governance report (15 §3) through the elevated path (§7). It grants **no** mutation anywhere and
-**no** content access to `private`-tier resources (metadata only). Membership is the `platform_admins` roster
-(01 §4.9), app-managed and audited — orthogonal to every workspace `memberships` row.
+**The app-wide admin claim (15).** `admin` is **not** a per-workspace role — it is the single claim unique to
+the application (§1), sourced from the `ap-platform-admin` group. It is builder+publisher in **every**
+workspace, owns all governance + workspace CRUD, and additionally holds **`org.report.read`**: the
+whole-estate governance report (15 §3) through the elevated path (§7), **metadata only** for `private`-tier
+resources. Every admin + org-read action is audited (§12).
 
 ```python
 # services/api/auth/rbac.py
-RANK = {"viewer": 0, "builder": 1, "publisher": 2, "admin": 3}
+RANK = {"executer": 0, "viewer": 1, "builder": 2, "publisher": 3, "admin": 4}  # executer = caller-only; viewer = read-only console; admin = app-wide
 
 def require_role(min_role: str):
     async def dep(ctx: WorkspaceCtx = Depends(get_workspace_ctx)) -> WorkspaceCtx:
@@ -215,8 +233,12 @@ One shape, three sharing tiers (modelled on Google Chat / MS Teams / Splunk):
 
 - **`workspace`** — every space member may use/manage (default).
 - **`restricted`** — gated by **role AND team**, evaluated **separately for use vs manage**; a restricted
-  policy that names neither a role nor a team **fails closed** (grants no one).
-- **`private`** — only the **owner** (+ space admins) may use/manage.
+  policy that names neither a role nor a team **fails closed** (grants no one). **Caller rule (2026-10-23):**
+  `useRoles` gate **console** principals only — an `executer` caller has no console role, so it is gated on
+  **`useTeams` alone**; a role-only `restricted` policy therefore **denies all callers** (fail closed), while a
+  team-named one admits a caller on a matching team. This keeps the channel model "channel `okta_group` ∩ agent
+  `access_policy`" (12) team-based for callers; role restriction stays a console-side control.
+- **`private`** — only the **owner** (+ the app-wide admin) may use/manage.
 
 The FE `canUse`/`canManage` is **UI gating only**; the server re-checks identically on read, manage, and
 — critically — **at invoke**.
@@ -225,35 +247,39 @@ The FE `canUse`/`canManage` is **UI gating only**; the server re-checks identica
 # services/runtime/access.py  (shared by api reads AND runtime invoke)
 def _matches(roles, teams, *, role, user_teams) -> bool:
     if not roles and not teams: return False                  # restricted naming neither → fail closed
+    # Caller plane (role == "executer"): `roles` gate CONSOLE principals only; a caller has no console role,
+    # so it is gated on TEAMS alone — a role-only policy (no team) denies callers (fail closed). Keeps the
+    # channel model "channel okta_group ∩ agent access_policy" (12) team-based for callers.
+    if role == "executer":
+        return bool(teams) and bool(user_teams & set(teams))
     role_ok = not roles or role in roles
     team_ok = not teams or bool(user_teams & set(teams))
     return role_ok and team_ok
 
 def can_use(policy: dict, *, role: str, teams: set[str], subject: str | None) -> bool:
     vis = policy.get("visibility", "workspace")
-    if vis == "workspace":  return True                        # any space member
-    if role == "admin":     return True                        # space admin (Space Manager) bypass
+    if vis == "workspace":  return True                        # any workspace member (builder/publisher/exec)
+    if role == "admin":     return True                        # app-wide admin bypass
     if vis == "private":    return subject is not None and subject == policy.get("owner")
     return _matches(policy.get("useRoles", []), policy.get("useTeams", []), role=role, user_teams=teams)
 
 def can_manage(policy: dict, *, role: str, teams: set[str], subject: str | None) -> bool:
     vis = policy.get("visibility", "workspace")
     if vis == "workspace":  return True
-    if role == "admin":     return True                        # admins can always fix a restricted/private policy
+    if role == "admin":     return True                        # app-wide admin can always fix a restricted/private policy
     if vis == "private":    return subject is not None and subject == policy.get("owner")
     return _matches(policy.get("manageRoles", []), policy.get("manageTeams", []), role=role, user_teams=teams)
 ```
 
-At invoke, the caller-token's resolved identity (role/teams) is fed to `can_use` before the runtime touches
-a provider — so access policy is enforced on the **runtime path**, not just the console. A **bound skill** is
-`can_use`-checked at invoke exactly like a bound KB: a skill whose instruction fragment a caller may not use is
-not composed into the prompt (03 §4). (There is no execute path to gate for a skill — the only control is this
-read/`can_use` check; §10.) A token/channel
-caller carries **no owner subject**, so a `private` resource is denied to every run-time caller except an
-admin token (fail closed). On the **console** path the `teams` argument is `Principal.teams` (the Okta
-groups from the OIDC groups claim, §2.1) and `subject` is the signed-in user; on the **channel** path
-`teams` is the minted token's `teams` (the end user's Okta groups, 12 §4) — one model, three sources of
-`teams`.
+At invoke, the caller's resolved identity (`role="executer"` + teams + optional subject) is fed to `can_use`
+before the runtime touches a provider — so access policy is enforced on the **runtime path**, not just the
+console. A **bound skill** is `can_use`-checked at invoke exactly like a bound KB: a skill whose instruction
+fragment a caller may not use is not composed into the prompt (03 §4). (There is no execute path to gate for a
+skill — the only control is this read/`can_use` check; §10.) A caller (`executer`) carries **no owner
+subject**, so a `private` resource is denied to every caller (fail closed) — `admin` is a **console claim**,
+not a caller role, so there is no "admin token" bypass at invoke. The `teams` argument has three sources, one
+model: **console** = `Principal.teams` (IdP groups via the adapter, §2.1); **channel** = the minted token's
+`teams` (the end user's IdP groups, 12 §4); **cURL token** = the token's `scopes.teams` (09 §6).
 
 ## 6. Caller tokens (published invoke authN)
 
@@ -268,8 +294,9 @@ async def resolve_caller(authorization: str, db) -> CallerCtx:
     if not tok or tok.revoked_at:        raise Unauthorized("revoked or unknown token")
     if tok.expires_at and tok.expires_at < now():  raise Unauthorized("expired")
     await rate_limit(tok.id)                                       # Redis sliding window (10, 07)
-    # scopes carry tenant/role/teams/scope claims (mirrors FE runtime-access.ts, server-authoritative)
-    return CallerCtx(workspace_id=tok.workspace_id, token_id=tok.id,
+    # the caller role is always `executer` (execute-only, §1); scopes carry tenant/teams/scope claims
+    # (mirrors FE runtime-access.ts, server-authoritative)
+    return CallerCtx(workspace_id=tok.workspace_id, token_id=tok.id, role="executer",
                      teams=set(tok.scopes.get("teams", [])),
                      scopes=set(tok.scopes.get("scopes", [])),
                      subject=tok.scopes.get("subject"))
@@ -292,7 +319,7 @@ Covered in `01-data-model.md §6` (policies, `SET LOCAL app.workspace_id`, non-o
   They never use the default session role. The path is a Postgres **`SECURITY DEFINER`** function owned by
   the migration role (which may cross tenants) and `EXECUTE`-granted only to a dedicated `platform_report`
   reader role; the normal app role still has no `BYPASSRLS`. The API calls it **only** from the
-  platform-admin plane (§1, `org.report.read`), and **every call writes an org-level audit row**
+  admin plane (§1, `org.report.read`), and **every call writes an org-level audit row**
   (`audit_logs.workspace_id = NULL`, §12, 01 §4.8). It returns **metadata only** for `private`-tier
   resources (15 §2). This is the single sanctioned exception to §8 — see there.
 
@@ -303,12 +330,19 @@ A dedicated suite asserts tenant A can never read or act on tenant B, run in CI 
 - write: A cannot PATCH/DELETE a B resource id (404, not 403 — don't confirm existence).
 - vector: a retrieval in A never returns B chunks even with a colliding query — including the new
   `agent_signatures` dedup index (14 §3): a scan in A never matches B signatures.
-- secrets (two parts, since §9.1 splits custody): (a) no workspace session can resolve the platform-held
+- secrets (three parts, since §9.1 splits custody): (a) no workspace session can resolve the platform-held
   **provider-pool** key (replaces the old per-workspace provider-key test, now that provider keys are a
-  platform pool); **and (b)** tenant A's decrypt path cannot resolve tenant B's **per-workspace tool /
-  connector / channel** secret (those keep per-workspace DEKs, §9.1) — this cross-tenant case must stay in
-  the suite, not be dropped in the rescope.
+  platform pool); **(b)** tenant A's decrypt path cannot resolve tenant B's **per-workspace tool / connector /
+  channel** secret (per-workspace DEKs, §9.1); **and (c)** the **per-user-MCP** secret — held under a
+  **per-USER DEK** (§9.1, 17 §3) — cannot be decrypted **across tenants *or* across users** (A can't read B's,
+  and user U can't read user V's within a tenant). This least-privilege scope matches the per-user audit goal.
 - invoke: a B caller-token cannot invoke an A endpoint.
+- **worker GUC scoping (C4):** every worker job `SET LOCAL app.workspace_id` for its tenant at job start and
+  resets at job end; a test asserts a job cannot read another tenant's rows and the GUC does not leak to the
+  next job on a reused connection.
+- **org-plane DB boundary (C4):** a **DB-level** test that the general app role has **no `EXECUTE`** on the
+  `org_report_*` `SECURITY DEFINER` functions — only the dedicated `platform_report` role, on a **separate
+  connection** (15 §2), may call them — so an SQLi/logic bug on the normal app path cannot cross tenants.
 - **notifications:** a recipient in A never sees B's notifications (workspace RLS + app-level
   `recipient_subject` filter, 16 §1).
 - **skills:** a list/detail in A never returns B's skills, and A cannot bind B's skill onto an A version
@@ -319,7 +353,7 @@ A dedicated suite asserts tenant A can never read or act on tenant B, run in CI 
   stay within the caller's tenant — the child `runtime.invoke` inherits the parent `workspace_id` (never
   crosses), and the approvals inbox + `POST /approvals/:id/decide` are workspace-filtered so A can neither see
   nor decide B's `tool_approvals`.
-- **the one sanctioned exception:** only the platform-admin elevated path (§7, 15) may cross workspaces,
+- **the one sanctioned exception:** only the admin elevated path (§7, 15) may cross workspaces,
   and the suite asserts (a) no *other* role/plane can call the `SECURITY DEFINER` reader, and (b) every
   successful cross-tenant read emitted an `org.report.read` audit row. Anything else crossing = a failure.
 
@@ -327,8 +361,9 @@ A dedicated suite asserts tenant A can never read or act on tenant B, run in CI 
 
 Provider keys, tool creds, connector creds, MCP auth — **none are ever stored plaintext** (01
 `provider_keys` holds only `masked` + `vault_path`). Base envelope scheme, **per-workspace DEK** (the
-diagram + code below show this tier; **provider keys are the exception** — they move to a *platform-scope*
-pool DEK per **§9.1**, while tool / connector / channel / per-user-MCP creds keep the per-workspace DEK):
+diagram + code below show this tier; **two exceptions** — **provider keys** move to a *platform-scope* pool DEK
+per **§9.1**, and **per-user-MCP creds use a per-USER DEK** (17 §3; least-privilege per connected user). Tool /
+connector / channel creds keep the per-workspace DEK):
 
 ```mermaid
 flowchart LR
@@ -386,7 +421,9 @@ The P0-1 enforcement lever (14 §1) narrows provider-credential handling:
   from `backend-integration-plan.md` Part 4 is **superseded for enforcement**: if a team holds a usable
   provider key it can bypass the platform, so the platform must hold the *only* usable key. The envelope
   scheme above is unchanged; the DEK for the provider pool is platform-scoped rather than per-workspace.
-  **Tool / connector / MCP creds stay per-workspace DEK** — only the *provider* key moves to the pool.
+  **Tool / connector / shared-MCP creds stay per-workspace DEK; per-user-MCP creds use a per-USER DEK**
+  (17 §3 — ratified 2026-10-22, resolving the old `09 §9` ↔ `17` contradiction). Only the *provider* key moves
+  to the platform pool.
 - **Cost + tenancy survive the change:** per-tenant cost attribution still works (computed from our own
   profiles per Run tagged `workspace_id`, 02/07, not from a per-tenant key); the pool key is never exposed
   to any workspace, so cross-tenant secrecy holds (the §8 secrets test is rescoped accordingly).
@@ -452,7 +489,7 @@ actions `tool.bind` (incl. risk-tier set), `tool.approval.{request,approve,deny}
 08) and `skill.bind` (freeze a skill onto a version, 08). Fields:
 actor, action, target, meta, ts. Append-only; surfaced per workspace.
 
-**Org-level audit (15).** The platform-admin plane's reads write `org.report.read` (and, for the rare
+**Org-level audit (15).** The admin plane's reads write `org.report.read` (and, for the rare
 private-content read, `org.report.content_read`) with **`workspace_id = NULL`** — these are not
 workspace-surfaced; they are the audit trail for the elevated cross-tenant path (§7) and are readable only
 through it. This is the one audit class that is org-scoped rather than per-workspace.

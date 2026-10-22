@@ -32,10 +32,10 @@ Legend: **Auth** = console session (signed-in user, RBAC) vs caller token (runti
 |---|---|---|---|---|---|
 | `lib/org.ts:ORG` | GET /v1/branding (or deploy env/config) | - | - | - | **Per-deployment org branding** (orgName, productName, idpName, email/docs domain, logo). One deployment per org; branding resolved at deploy/build time. Sits **above** workspace tenancy (not tenant-scoped). Color/radius/font tokens live in `app/brand.css`; default tenant is seed-derived (`iam.ts:DEFAULT_WORKSPACE_ID`), not branding. See `docs/backend/13-branding.md`. |
 | `lib/auth.tsx:MOCK_PROFILE` | OIDC session | session | - | - | Replace mock profile with Auth.js + Trellix IAM OIDC; `useAuth`/`useWorkspace`/`usePrincipal` surface unchanged. |
-| `lib/iam.ts:WORKSPACES/TEAMS/MOCK_PROFILE` | GET (org Okta + app roster) | session | - | - | Identity + teams (Okta `groups` claim); workspaces carry `access` (open/restricted); role-per-workspace is the **app-managed** membership roster (invite / join-open). |
-| `lib/store.ts:setActiveWorkspace` | session / persist | session | yes | - | Active workspace from session; visible list = the user's Okta group memberships (platform-admins see all). No self-join — membership is group-driven. |
+| `lib/iam.ts:WORKSPACES/TEAMS/MOCK_PROFILE` | GET (IdP claims via adapter, 18) | session | - | - | Identity + teams (IdP `groups` claim); role-per-workspace is the **IdP role claim** mapped by `idp_binding` (viewer/builder/publisher) — no app roster, no access-mode, no invite/join. |
+| `lib/store.ts:setActiveWorkspace` | session / persist | session | yes | - | Active workspace from session; visible list = workspaces the user holds any `ap-<prefix>-<role>` claim for (admins see all). No self-join — access IS the claim. |
 | `lib/store.ts:setRoleOverride/setTeamOverride` | remove | - | - | - | Dev-only preview switches; delete with real IAM (also the switcher UI in `app-shell.tsx`). |
-| `app/(app)/layout.tsx`, `components/app-boundary.tsx` | gate | session | yes | - | No-access / space-picker screens driven by the Okta session + app roster; picker offers **Join** on open spaces (no member *and* no open space → no access). |
+| `app/(app)/layout.tsx`, `components/app-boundary.tsx` | gate | session | yes | - | No-access / space-picker screens driven by the IdP session claims; not a member of any space → no access (no self-join — membership is the IdP claim). |
 
 ## Agents
 
@@ -190,11 +190,11 @@ hook + an inline `@backend` marker when the FE surface is built (follow-up, not 
 
 | Source (`file:symbol`) | Method / Path | Auth | Tenant | Async | Notes |
 |---|---|---|---|---|---|
-| `lib/store.ts:useWorkspaces` | GET /v1/workspaces (user's Okta group memberships) | session | yes | - | Store-backed registry (mutable in the mock); real list = workspaces whose backing Okta group the user is in (platform-admins see all). |
-| `lib/store.ts:useWorkspaceSettings` | GET /v1/workspaces/:id | session | yes | - | Slug read-only identity; name / backing okta_group / member_role / default provider+model editable. |
-| `lib/store.ts:updateWorkspace` | PATCH /v1/workspaces/:id | session (**platform-admin**) | yes | - | Saves identity (name, `okta_group`, `member_role`); slug/id immutable. No more `access_mode`. |
+| `lib/store.ts:useWorkspaces` | GET /v1/workspaces (user's per-workspace role claims) | session | yes | - | Store-backed registry (mutable in the mock); real list = workspaces the user holds any `ap-<prefix>-<role>` claim for (platform-admins see all). |
+| `lib/store.ts:useWorkspaceSettings` | GET /v1/workspaces/:id | session | yes | - | Slug read-only identity; name / `group_prefix` (`idp_binding`) / default provider+model editable. Claim-based (backend/09 §2.1, 18). |
+| `lib/store.ts:updateWorkspace` | PATCH /v1/workspaces/:id | session (**admin**) | yes | - | Saves identity (name, `group_prefix`/`idp_binding`); slug/id immutable. No `member_role`/`okta_group`/`access_mode` (claim-based model, 18). |
 | `lib/store.ts:updateWorkspaceSettings` | PATCH /v1/workspaces/:id | session (admin) | yes | - | Saves default provider/model; slug immutable. |
-| `lib/store.ts:addWorkspace` | **no endpoint** (org-provisioned) | session (**platform-admin**) | **no** | - | **Mock-only** self-serve create: binds an Okta group + member role, seeds config + a starter kit. A real deploy adds `POST /v1/workspaces` (platform-admin) or keeps provisioning out-of-band. |
+| `lib/store.ts:addWorkspace` | **no endpoint** (org-provisioned) | session (**admin**) | **no** | - | **Mock-only** self-serve create: sets a `group_prefix` (per-workspace role claims derive from it), seeds config + a starter kit. A real deploy adds `POST /v1/workspaces` (admin) or keeps provisioning out-of-band. |
 | `lib/store.ts:setWorkspaceActive` | POST /v1/workspaces/:id/archive (deactivate) **+ NEW reactivate endpoint** | session (**platform-admin**) | partial | - | Reversible Inactive toggle via `archived_at`; deactivate exists (unpublishes endpoints), reactivate needs a new endpoint. Drives the FE read-only freeze. |
 | `lib/store.ts:deleteWorkspace` | **no endpoint** (backend archives) | session (**platform-admin**) | **no** | - | **Mock-only** hard-delete cascade: removes the space + every scoped resource. A real deploy would add a guarded platform-admin cascade or disallow it in favor of archive. |
 | `lib/store.ts:useLimits` / `updateLimits` | GET/PUT /v1/workspaces/:id/limits | session (admin) | yes | - | Per-workspace spend + max-concurrency + timeout. **Stored P1, enforced P2** (backend/07). |
@@ -204,7 +204,7 @@ hook + an inline `@backend` marker when the FE surface is built (follow-up, not 
 | `lib/store.ts:useProviderKeys` | GET /v1/provider-keys?workspace=:id | session | yes | - | Masked. |
 | `lib/store.ts:addProviderKey` | POST /v1/provider-keys | session (admin) | yes | - | Stored in vault; value never returned. |
 | `lib/store.ts:rotateProviderKey` / `revokeProviderKey` | POST /v1/provider-keys/:id/rotate\|revoke | session (admin) | yes | - | Rotate replaces the vaulted secret + mask; revoke tombstones (status=revoked). Audited (09 §12). |
-| `lib/store.ts:useMembers` | GET /v1/members?workspace=:id | session | yes | - | **READ-ONLY** roster projected from the workspace's backing Okta group (role = the workspace's `member_role`). No in-app invite/remove — membership is managed in Okta. |
+| `lib/store.ts:useMembers` | GET /v1/members?workspace=:id | session | yes | - | **READ-ONLY** roster projected from the workspace's per-role claim holders (each member's role = the `ap-<prefix>-<role>` claim they hold), resolved via the identity adapter (18 §4). No in-app invite/remove — membership managed in the IdP. |
 | `settings/page.tsx:RolesAccess` → `lib/store.ts:setAccessPolicy` | PUT /v1/{agents\|knowledge\|tools\|mcp\|channels\|skills}/:id/access-policy | session (admin) | yes | - | Roles & access tab EDITS per-resource policies across all kinds (agents/knowledge/tools/mcp/channels/skills) via `AccessPolicyEditor`. |
 
 ## Guardrails & search

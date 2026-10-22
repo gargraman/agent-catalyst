@@ -16,34 +16,37 @@ authorization come from IAM. There are **two distinct access contexts**:
 **Key principle:** build-time visibility is not run-time access.
 `effective access = agent config ∩ caller grants ∩ caller tenant ∩ resource access policy`.
 
-**Boundary with Okta (spaces model):** **authentication** is org-level **Okta** (OIDC). **Workspace
-membership and the per-workspace role are app-managed** — a user joins a space by a **space admin's invite**
-or by **self-joining an `access: "open"` space** (Google Chat / MS Teams model). Space admins manage members
-in-app. **Teams are Okta groups**, carried in the OIDC **`groups` claim** and normalized to team slugs at
-request time (not stored, not the `memberships` table) — see `backend/09 §2.1`. What admins also configure
-**in this app** is the **per-resource access policy** — which roles/teams (Okta groups), or the owner, may
-use or manage each agent, KB, tool, MCP server, and channel.
+**Boundary with the IdP (claim-based):** **authentication** is the org **IdP** (OIDC; Okta is the reference
+adapter, `18`). **Workspace membership and the per-workspace role come from per-workspace IdP role claims**
+(`ap-<prefix>-<role>`, mapped via `idp_binding` / FE `groupPrefix`) — there is **no** app roster, invite, or
+self-join. **Teams are functional IdP groups**, carried in the OIDC **`groups` claim** and normalized to team
+slugs at request time (not stored) — see `backend/09 §2.1`. What admins configure **in this app** is the
+**per-resource access policy** — which roles/teams, or the owner, may use or manage each agent, KB, tool, MCP
+server, and channel.
 
-> ⚠️ **SUPERSEDED (2026-10-20 group-driven pivot; scope.md).** The 2026-10-15 app-managed-roster model below
-> is reversed. Membership + role are now **Okta-group-driven**: each workspace binds **ONE authoritative Okta
-> group** (`oktaGroup`) conferring a single base role (`memberRole ∈ {viewer,builder,publisher}`); a
-> deployment-wide **platform-admin group** is admin everywhere and the only principal that can
-> create/delete/(de)activate/edit workspaces. **Removed:** `access` open/restricted, invites, self-join, the
-> per-user roster. **Visibility = group membership** (platform-admins see all); the Members view is read-only.
-> `teams` (functional Okta groups) are unchanged. The original note is kept below for history.
+> ⚠️ **CURRENT MODEL: claim-based & IdP-agnostic (2026-10-22; scope.md rev 1/2/5, `backend/09 §1-§2.1`, `18`).**
+> Both the 2026-10-15 app-roster model *and* the 2026-10-20 one-group-per-workspace model below are
+> **superseded**. Membership + role come from **per-workspace IdP role claims** (`ap-<prefix>-<role>`, mapped by
+> the active **identity adapter** via `workspaces.idp_binding` / FE `groupPrefix` — not tied to one IdP). A user
+> can be publisher in one workspace and builder in another. Console roles: **`viewer` < `builder` < `publisher`**
+> (viewer = read-only), an app-wide **`admin`** claim (the adapter's admin group; does workspace CRUD + all
+> governance across every workspace), and a caller-only **`executer`** (invoke). **Removed:** `oktaGroup` +
+> single `memberRole`, invites, self-join, `access` open/restricted, the per-user roster, the `platform_admins`
+> table. Visibility = holding any role claim for the workspace (platform-admins see all); Members view is a
+> read-only projection of the per-role claim holders. `teams` (functional IdP groups) are unchanged. **FE is
+> migrated** (scope.md rev 5). Both historical notes are kept below for the decision trail.
 >
-> **Scope note (decision, 2026-10-15 — reverses the earlier "deferred" stance):** workspaces now have an
-> `access` mode (`open` = any org member can join · `restricted` = invite-only), and membership is the
-> app-managed roster. A workspace MAY carry an **optional backing Okta group** that auto-grants membership;
-> it is not authoritative (the roster is). We did **not** adopt group-per-workspace-**role** proliferation —
-> role is a roster attribute set on invite/join. Okta groups still map to the **teams** dimension for
-> fine-grained resource access and the channel end-user gate.
+> **Historical (2026-10-15, SUPERSEDED — kept for the decision trail):** an earlier revision gave workspaces
+> an `access` mode (`open`/`restricted`) with an app-managed invite/self-join roster + an optional backing Okta
+> group. It was replaced first by one-group-per-workspace (2026-10-20) and then by the claim-based model above
+> (2026-10-22). Only the **teams** dimension (functional IdP groups for resource access + the channel gate)
+> carried through unchanged.
 
 **Caller token vs provider key (do not conflate):** the caller token governs **tools/knowledge/MCP**
 access; the **LLM provider key stays the workspace's vaulted key** (server-side), never the caller's.
 
-Everything is **tenant-scoped**: the app-managed roster carries each user's space memberships and a role
-**per workspace** (Admin in one space, Viewer in another is possible).
+Everything is **tenant-scoped**: a user's per-workspace role comes from their IdP role claims, so a user can
+hold **different roles in different workspaces** (publisher in one, viewer in another).
 
 ### Access contexts
 ```mermaid
@@ -67,7 +70,7 @@ flowchart TB
     P1 -->|yes| E[view / edit / bind]
   end
   subgraph Run[Run time - caller token]
-    T[Caller token<br/>tenant + role/teams + scopes] --> X{tenant match?}
+    T[Caller token<br/>tenant + executer + teams + scopes] --> X{tenant match?}
     X -->|no| D1[tenant_mismatch]
     X -->|yes| P2{resource policy +<br/>token scope?}
     P2 -->|fail| D2[policy_denied / no scope]
@@ -75,9 +78,9 @@ flowchart TB
   end
 ```
 
-Decisions locked: **Playground = run-as-me + optional run-token preview** · **org Okta auth + app-managed
-space membership (invite / join-open) + dev role switcher** · **per-resource policies in-app (role, team, or
-owner)** · **policy granularity = roles + Okta teams + `private` owner**. No backend in scope.
+Decisions locked: **Playground = run-as-me + optional run-token preview** · **org IdP auth + claim-based
+per-workspace membership (no invite/self-join) + dev role switcher** · **per-resource policies in-app (role,
+team, or owner)** · **policy granularity = roles + IdP teams + `private` owner**. No backend in scope.
 
 > **As-built notes (shipped `b26cd89` → `640453f`):** this doc was the plan; a few details shipped
 > differently —
@@ -103,8 +106,8 @@ owner)** · **policy granularity = roles + Okta teams + `private` owner**. No ba
 - Scope resources by workspace: `workspaceId` on every resource; **all** store reads filtered by the
   active workspace (lists, agent detail, dashboard, runs, evals); **creates stamp** the active
   `workspaceId`. Tenant banner shows the active workspace.
-- Edge states: no member *and* no open space to join → "No access" screen; otherwise a space picker that
-  lists member spaces and offers **Join** on open spaces.
+- Edge states: not a member of any space (no role claim for any workspace) → "No access" screen; otherwise a
+  space picker listing the workspaces the user holds a role claim for. No self-join — membership is the IdP claim.
 
 ## Part A - Identity + permissions (mock now, IAM-ready)
 - `src/lib/permissions.ts` - roles `viewer|builder|publisher|admin`; permissions `view, playground.use,
@@ -125,11 +128,13 @@ owner)** · **policy granularity = roles + Okta teams + `private` owner**. No ba
 ## Part B2 - Admin-configurable per-resource access policies
 - `src/lib/access-policy.ts` - each agent/KB/tool/MCP/channel has `accessPolicy: { visibility:
   "workspace"|"restricted"|"private", useRoles[], useTeams[], manageRoles[], manageTeams[], owner? }`; helpers
-  `canUse(resource, principal)` / `canManage(resource, principal)` where principal = `{ role, teams, subject? }`.
-  `private` = owner-only (by `subject`) plus the admin bypass; at run time callers have no `subject`, so
-  `private` resources are denied to tokens/channels (admin tokens excepted). Same shape as the backend
-  `access_policy` (backend/09 §5, backend/01).
-- `src/components/access-policy-editor.tsx` - visibility (workspace / restricted / private) + role + **Okta
+  `canUse(resource, principal)` / `canManage(resource, principal)` where principal = `{ role, teams, subject? }`
+  and `role` is a `CallerRole` (`Role | "executer"`, access-policy.ts). `private` = owner-only (by `subject`)
+  plus the **console** admin bypass; at run time every token/channel caller resolves to **`executer`** (a
+  caller-only role, never `admin`) and carries no `subject`, so `private` resources are denied to **all**
+  runtime callers — **there is no admin-token bypass at invoke** (backend/09 §5, runtime-access.ts). Same shape
+  as the backend `access_policy` (backend/09 §5, backend/01).
+- `src/components/access-policy-editor.tsx` - visibility (workspace / restricted / private) + role + **IdP
   team** multiselects for Use and Manage; shown only to `access.manage`.
 - Config surfaces: **Access tab** on agent detail; access editor on KB/tool/MCP; **Roles & access** view
   in Settings.
@@ -148,9 +153,9 @@ owner)** · **policy granularity = roles + Okta teams + `private` owner**. No ba
 
 ## Part D - Surface the model + Settings
 - `src/components/access-note.tsx` - build-vs-run access callout reused in Configure/Playground/Publish.
-- Settings: Authentication note (org Okta OIDC sign-in); **Members** — app-managed roster, space admins
-  invite/remove in-app (`member.manage`); provider-keys vaulted note; **Roles & access** tab that edits
-  per-resource access policies.
+- Settings: Authentication note (org IdP OIDC sign-in); **Members** — a **read-only** projection of the
+  per-workspace role-claim holders (managed in the IdP, not in-app); provider-keys vaulted note; **Roles &
+  access** tab that edits per-resource access policies.
 - Runs: show caller **subject + tenant** attribution.
 
 ## Part E - Real IAM wiring (later, not in scope)
@@ -164,7 +169,8 @@ owner)** · **policy granularity = roles + Okta teams + `private` owner**. No ba
 - **Viewer:** read-only everywhere; create/edit/publish/manage hidden or disabled; read-only banner.
 - **Builder:** build + manage knowledge/tools/MCP + run evals + **author eval suites/cases** + playground; Publish gated.
 - **Publisher:** + publish/unpublish + endpoint tokens.
-- **Admin:** + keys, members (invite/remove in-app), delete, **per-resource access policies**, and **eval governance** (workspace eval policy, baseline re-freeze, low-confidence override).
+- **Admin (app-wide claim):** everything in every workspace — + keys, **workspace CRUD**, delete, **per-resource access policies**, **eval governance** (eval policy, baseline re-freeze, low-confidence override), and the org-wide estate read. Membership itself is managed in the IdP, not in-app.
+- **Caller (`executer`):** a cURL token or channel-federated end user; execute-only, never a console role; access = token/channel grants ∩ config ∩ tenant ∩ policy.
 - **Restricted resource:** agent limited to team "SOC" is hidden/locked for a non-SOC builder and
   `policy_denied` for a caller token lacking SOC, even with the tool scopes.
 - **Cross-tenant user:** switching workspace re-derives role + visible resources.
@@ -190,7 +196,7 @@ owner)** · **policy granularity = roles + Okta teams + `private` owner**. No ba
 
 ## Open decisions (recommended first)
 1. Viewer may use the playground read-only *(recommended)* vs builders+ only.
-2. ~~Members read-only "manage in IAM" vs in-app invite mock.~~ **Decided (2026-10-15): in-app invite /
-   join-open** — membership is the app-managed roster; space admins invite/remove, open spaces are
-   self-join. Identity (sign-in) still comes from org Okta.
+2. ~~Members read-only "manage in IAM" vs in-app invite mock.~~ **Final (2026-10-22): read-only, managed in
+   the IdP** — membership + role are per-workspace IdP role claims; no in-app invite/self-join. (The
+   2026-10-15 "in-app invite/join-open" decision was superseded by the claim-based model.)
 3. Sign out = reset role + toast *(recommended)* vs full stub login screen.

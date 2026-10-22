@@ -5274,7 +5274,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           <text data-domain-label="" x="979" y="25.6" class="t-muted er-band-label" font-size="9" font-weight="700">tools / MCP</text>
         </g>
         <g data-domain-band="adoption / notifications" class="er-hue-messagebus">
-          <rect x="1284" y="22" width="259" height="1062" rx="12" class="c-lane er-band" stroke-width="1"/>
+          <rect x="1284" y="22" width="259" height="542" rx="12" class="c-lane er-band" stroke-width="1"/>
           <rect x="1292" y="15" width="163" height="15" rx="7.5" class="c-mask"/>
           <rect x="1292" y="15" width="163" height="15" rx="7.5" class="er-band-pill"/>
           <text data-domain-label="" x="1299" y="25.6" class="t-muted er-band-label" font-size="9" font-weight="700">adoption / notifications</text>
@@ -5308,7 +5308,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
         <path data-edge-from="spans" data-edge-to="runs" data-edge-key="17" data-edge-id="span_run" data-er-ends="many one" data-composition-points="483,1280;483,1256" d="M 483 1280 L 483 1256" class="a-default" data-animate="edge" style="--step:12" stroke-width="1.5" marker-start="url(#er-many-start)" marker-end="url(#er-one-end)"/>
         <path data-edge-from="agent_signatures" data-edge-to="agents" data-edge-key="18" data-edge-id="sig_agent" data-er-ends="many one" data-composition-points="1296,116;1230,116;1230,27;942,27;942,84;918,84" d="M 1296 116 L 1238 116 Q 1230 116 1230 108 L 1230 35 Q 1230 27 1222 27 L 950 27 Q 942 27 942 35 L 942 76 Q 942 84 934 84 L 918 84" class="a-default" data-animate="edge" style="--step:12" stroke-width="1.5" marker-start="url(#er-many-start)" marker-end="url(#er-one-end)"/>
         <path data-edge-from="agent_signatures" data-edge-to="agent_versions" data-edge-key="19" data-edge-id="sig_av" data-er-ends="one" data-composition-points="1296,140;1272,140;1272,27;942,27;942,344;918,344" d="M 1296 140 L 1280 140 Q 1272 140 1272 132 L 1272 35 Q 1272 27 1264 27 L 950 27 Q 942 27 942 35 L 942 336 Q 942 344 934 344 L 918 344" class="a-default" data-animate="edge" style="--step:12" stroke-width="1.5" marker-start="url(#er-one-start)" marker-end="url(#er-one-end)"/>
-        <path data-edge-from="notifications" data-edge-to="agents" data-edge-key="20" data-edge-id="notif_agent" data-er-ends="many one optional" data-composition-points="1296,428;1272,428;1272,219;1534,219;1534,19;684,19;684,200;813,200;813,176" d="M 1296 428 L 1280 428 Q 1272 428 1272 420 L 1272 227 Q 1272 219 1280 219 L 1526 219 Q 1534 219 1534 211 L 1534 27 Q 1534 19 1526 19 L 692 19 Q 684 19 684 27 L 684 192 Q 684 200 692 200 L 805 200 Q 813 200 813 192 L 813 176" class="a-dashed" data-animate="edge" style="--step:12" stroke-width="1.5" marker-start="url(#er-many-start)" marker-end="url(#er-one-optional-end)"/>
+        <path data-edge-from="notifications" data-edge-to="agents" data-edge-key="20" data-edge-id="notif_agent" data-er-ends="many one optional" data-composition-points="1296,428;1272,428;1272,1071;1291,1071;1291,2137;345,2137;345,19;700,19;700,200;813,200;813,176" d="M 1296 428 L 1280 428 Q 1272 428 1272 436 L 1272 1063 Q 1272 1071 1280 1071 L 1283 1071 Q 1291 1071 1291 1079 L 1291 2129 Q 1291 2137 1283 2137 L 353 2137 Q 345 2137 345 2129 L 345 27 Q 345 19 353 19 L 692 19 Q 700 19 700 27 L 700 192 Q 700 200 708 200 L 805 200 Q 813 200 813 192 L 813 176" class="a-dashed" data-animate="edge" style="--step:12" stroke-width="1.5" marker-start="url(#er-many-start)" marker-end="url(#er-one-optional-end)"/>
         <path data-edge-from="mcp_user_connections" data-edge-to="mcp_servers" data-edge-key="21" data-edge-id="muc_srv" data-er-ends="many one" data-composition-points="1238,2008;1262,2008;1262,418;1231,418" d="M 1238 2008 L 1254 2008 Q 1262 2008 1262 2000 L 1262 426 Q 1262 418 1254 418 L 1231 418" class="a-default" data-animate="edge" style="--step:12" stroke-width="1.5" marker-start="url(#er-many-start)" marker-end="url(#er-one-end)"/>
 
         <!-- Entities -->
@@ -6817,118 +6817,6 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           </g>
         </g>
 
-        <g id="node-platform_admins" data-node-id="platform_admins" data-node-label="platform_admins" tabindex="0" role="button" aria-label="Focus platform_admins, Entity" aria-pressed="false" data-node-kind="database" data-node-tag="adoption / notifications" data-node-context="Entity" class="er-hue-messagebus">
-          <title>platform_admins · Entity · adoption / notifications</title>
-          <rect x="1296" y="580" width="235" height="96" rx="8" class="c-mask"/>
-          <rect x="1296" y="580" width="235" height="96" rx="8" class="c-database er-table" data-animate="node" style="--step:12" stroke-width="1.2"/>
-          <path class="er-table-header" d="M 1304 580 H 1523 A 8 8 0 0 1 1531 588 V 610 H 1296 V 588 A 8 8 0 0 1 1304 580 Z"/>
-          <path class="er-table-cap" d="M 1308 581.4 H 1519" stroke-width="2.6" stroke-linecap="round" fill="none"/>
-          <g aria-hidden="true" data-semantic-sigil="database" class="semantic-sigil s-database" transform="translate(1304 587) scale(0.875)">
-            <ellipse cx="8" cy="4" rx="5" ry="2"/>
-            <path d="M3 4v8c0 1.1 2.2 2 5 2s5-.9 5-2V4M3 8c0 1.1 2.2 2 5 2s5-.9 5-2"/>
-          </g>
-          <text data-node-label="" x="1413.5" y="599" class="t-primary er-title" font-size="13" font-weight="700" text-anchor="middle">platform_admins</text>
-          <line x1="1296" y1="610" x2="1531" y2="610" class="c-grid er-header-rule" stroke-width="1"/>
-          <g data-detail="context" data-er-row="0">
-            <line x1="1296" y1="610" x2="1531" y2="610" class="c-grid er-row-rule" stroke-width="0.5"/>
-
-            <rect x="1306" y="615" width="22" height="13" rx="3" class="er-key-badge" data-er-badge="pk"/><text data-detail="context" x="1317" y="625" class="t-database" font-size="9" font-weight="600">PK</text>
-            <text data-detail="context" x="1338" y="625" class="t-primary er-name-pk" font-size="11">subject</text>
-            <text data-detail="context" x="1519" y="625" class="er-type" font-size="10.5" text-anchor="end">text</text>
-          </g>
-          <g data-detail="context" data-er-row="1">
-            <line x1="1296" y1="630" x2="1531" y2="630" class="c-grid er-row-rule" stroke-width="0.5"/>
-            <rect x="1300" y="631" width="227" height="18" rx="4" class="er-zebra"/>
-
-            <text data-detail="context" x="1338" y="645" class="t-primary" font-size="11">granted_at</text>
-            <text data-detail="context" x="1519" y="645" class="er-type" font-size="10.5" text-anchor="end">timestamptz</text>
-          </g>
-          <g data-detail="context" data-er-row="2">
-            <line x1="1296" y1="650" x2="1531" y2="650" class="c-grid er-row-rule" stroke-width="0.5"/>
-
-
-            <text data-detail="context" x="1338" y="665" class="t-primary" font-size="11">granted_by</text>
-            <text data-detail="context" x="1519" y="665" class="er-type" font-size="10.5" text-anchor="end">text</text>
-          </g>
-        </g>
-
-        <g id="node-memberships" data-node-id="memberships" data-node-label="memberships" tabindex="0" role="button" aria-label="Focus memberships, Entity" aria-pressed="false" data-node-kind="database" data-node-tag="adoption / notifications" data-node-context="Entity" class="er-hue-messagebus">
-          <title>memberships · Entity · adoption / notifications</title>
-          <rect x="1296" y="860" width="235" height="216" rx="8" class="c-mask"/>
-          <rect x="1296" y="860" width="235" height="216" rx="8" class="c-database er-table" data-animate="node" style="--step:12" stroke-width="1.2"/>
-          <path class="er-table-header" d="M 1304 860 H 1523 A 8 8 0 0 1 1531 868 V 890 H 1296 V 868 A 8 8 0 0 1 1304 860 Z"/>
-          <path class="er-table-cap" d="M 1308 861.4 H 1519" stroke-width="2.6" stroke-linecap="round" fill="none"/>
-          <g aria-hidden="true" data-semantic-sigil="database" class="semantic-sigil s-database" transform="translate(1304 867) scale(0.875)">
-            <ellipse cx="8" cy="4" rx="5" ry="2"/>
-            <path d="M3 4v8c0 1.1 2.2 2 5 2s5-.9 5-2V4M3 8c0 1.1 2.2 2 5 2s5-.9 5-2"/>
-          </g>
-          <text data-node-label="" x="1413.5" y="879" class="t-primary er-title" font-size="13" font-weight="700" text-anchor="middle">memberships</text>
-          <line x1="1296" y1="890" x2="1531" y2="890" class="c-grid er-header-rule" stroke-width="1"/>
-          <g data-detail="context" data-er-row="0">
-            <line x1="1296" y1="890" x2="1531" y2="890" class="c-grid er-row-rule" stroke-width="0.5"/>
-
-            <rect x="1306" y="895" width="22" height="13" rx="3" class="er-key-badge" data-er-badge="pk"/><text data-detail="context" x="1317" y="905" class="t-database" font-size="9" font-weight="600">PK</text>
-            <text data-detail="context" x="1338" y="905" class="t-primary er-name-pk" font-size="11">id</text>
-            <text data-detail="context" x="1519" y="905" class="er-type" font-size="10.5" text-anchor="end">uuid</text>
-          </g>
-          <g data-detail="context" data-er-row="1">
-            <line x1="1296" y1="910" x2="1531" y2="910" class="c-grid er-row-rule" stroke-width="0.5"/>
-            <rect x="1300" y="911" width="227" height="18" rx="4" class="er-zebra"/>
-            <rect x="1306" y="915" width="22" height="13" rx="3" class="er-key-badge" data-er-badge="fk"/><text data-detail="context" x="1317" y="925" class="t-messagebus" font-size="9" font-weight="600">FK</text>
-            <text data-detail="context" x="1338" y="925" class="t-primary" font-size="11">workspace_id</text>
-            <text data-detail="context" x="1519" y="925" class="er-type" font-size="10.5" text-anchor="end">uuid</text>
-          </g>
-          <g data-detail="context" data-er-row="2">
-            <line x1="1296" y1="930" x2="1531" y2="930" class="c-grid er-row-rule" stroke-width="0.5"/>
-
-
-            <text data-detail="context" x="1338" y="945" class="t-primary" font-size="11">subject_id</text>
-            <text data-detail="context" x="1519" y="945" class="er-type" font-size="10.5" text-anchor="end">text</text>
-          </g>
-          <g data-detail="context" data-er-row="3">
-            <line x1="1296" y1="950" x2="1531" y2="950" class="c-grid er-row-rule" stroke-width="0.5"/>
-            <rect x="1300" y="951" width="227" height="18" rx="4" class="er-zebra"/>
-
-            <text data-detail="context" x="1338" y="965" class="t-primary" font-size="11">email</text>
-            <text data-detail="context" x="1519" y="965" class="er-type" font-size="10.5" text-anchor="end">text</text>
-          </g>
-          <g data-detail="context" data-er-row="4">
-            <line x1="1296" y1="970" x2="1531" y2="970" class="c-grid er-row-rule" stroke-width="0.5"/>
-
-
-            <text data-detail="context" x="1338" y="985" class="t-primary" font-size="11">display_name</text>
-            <text data-detail="context" x="1519" y="985" class="er-type" font-size="10.5" text-anchor="end">text</text>
-          </g>
-          <g data-detail="context" data-er-row="5">
-            <line x1="1296" y1="990" x2="1531" y2="990" class="c-grid er-row-rule" stroke-width="0.5"/>
-            <rect x="1300" y="991" width="227" height="18" rx="4" class="er-zebra"/>
-
-            <text data-detail="context" x="1338" y="1005" class="t-primary" font-size="11">role</text>
-            <text data-detail="context" x="1519" y="1005" class="er-type" font-size="10.5" text-anchor="end">member_role</text>
-          </g>
-          <g data-detail="context" data-er-row="6">
-            <line x1="1296" y1="1010" x2="1531" y2="1010" class="c-grid er-row-rule" stroke-width="0.5"/>
-
-
-            <text data-detail="context" x="1338" y="1025" class="t-primary" font-size="11">invited_by</text>
-            <text data-detail="context" x="1519" y="1025" class="er-type" font-size="10.5" text-anchor="end">text</text>
-          </g>
-          <g data-detail="context" data-er-row="7">
-            <line x1="1296" y1="1030" x2="1531" y2="1030" class="c-grid er-row-rule" stroke-width="0.5"/>
-            <rect x="1300" y="1031" width="227" height="18" rx="4" class="er-zebra"/>
-
-            <text data-detail="context" x="1338" y="1045" class="t-primary" font-size="11">joined_at</text>
-            <text data-detail="context" x="1519" y="1045" class="er-type" font-size="10.5" text-anchor="end">timestamptz</text>
-          </g>
-          <g data-detail="context" data-er-row="8">
-            <line x1="1296" y1="1050" x2="1531" y2="1050" class="c-grid er-row-rule" stroke-width="0.5"/>
-
-
-            <text data-detail="context" x="1338" y="1065" class="t-primary" font-size="11">last_active_at</text>
-            <text data-detail="context" x="1519" y="1065" class="er-type" font-size="10.5" text-anchor="end">timestamptz</text>
-          </g>
-        </g>
-
         <g id="node-mcp_user_connections" data-node-id="mcp_user_connections" data-node-label="mcp_user_connections" tabindex="0" role="button" aria-label="Focus mcp_user_connections, Entity" aria-pressed="false" data-node-kind="database" data-node-tag="tools / MCP" data-node-context="Entity" class="er-hue-cloud">
           <title>mcp_user_connections · Entity · tools / MCP</title>
           <rect x="976" y="1900" width="262" height="216" rx="8" class="c-mask"/>
@@ -7264,7 +7152,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
         <ul>
           <li>docs/backend/01-data-model.md §4 (DDL) · 09 (tokens, Vault, audit) · 10 (runs/spans) · 14 (adoption) · 16 (notifications)</li>
           <li>Part 2 of 2 — anchors agents/agent_versions shown compact; full columns in Part 1 (schema-core-authoring)</li>
-          <li>memberships is a read-only roster projected from the workspace Okta group (not the system of record)</li>
+          <li>Members view is a read-only projection of per-workspace IdP role claims (ap-&lt;prefix&gt;-&lt;role&gt;); no roster table</li>
         </ul>
       </div>
     </div>

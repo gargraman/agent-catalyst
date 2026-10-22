@@ -23,7 +23,7 @@
   "messages": [
     { "id": "post", "from": "client", "to": "api", "y": 168, "label": "POST /v1/agents/:id/invoke · Bearer", "variant": "emphasis" },
     { "id": "lookup", "from": "api", "to": "db", "y": 198, "label": "lookup api_tokens · sha256(token)", "variant": "security", "note": "reject if revoked / expired" },
-    { "id": "ctx", "from": "db", "to": "api", "y": 256, "label": "CallerCtx {tenant, role, teams, scopes}", "variant": "return" },
+    { "id": "ctx", "from": "db", "to": "api", "y": 256, "label": "CallerCtx {tenant, role=executer, teams, scopes}", "variant": "return" },
     { "id": "admit", "from": "api", "to": "redis", "y": 286, "label": "rate-limit + spend reserve", "note": "429 / 402 · SET LOCAL pins RLS tenant" },
     { "id": "load", "from": "api", "to": "db", "y": 344, "label": "load VersionSnapshot (pinned_version)" },
     { "id": "snap", "from": "db", "to": "api", "y": 374, "label": "snapshot + access_policy", "variant": "return" },
@@ -41,9 +41,9 @@
     { "participant": "runtime", "from": 492, "to": 550, "type": "backend" }
   ],
   "cards": [
-    { "dot": "rose", "title": "Caller-token auth", "items": ["Strip 'Bearer ', sha256 the secret → lookup api_tokens.token_hash (only the hash is ever stored)", "Reject on revoked_at or expires_at; per-token rate-limit via a Redis sliding window", "CallerCtx carries {workspace_id, token_id, role, teams, scopes} — the FE runtime-access decode, now server-authoritative"] },
+    { "dot": "rose", "title": "Caller-token auth", "items": ["Strip 'Bearer ', sha256 the secret → lookup api_tokens.token_hash (only the hash is ever stored)", "Reject on revoked_at or expires_at; per-token rate-limit via a Redis sliding window", "CallerCtx carries {workspace_id, token_id, role=executer, teams, scopes} — the FE runtime-access decode, now server-authoritative"] },
     { "dot": "amber", "title": "Admit & isolate", "items": ["SET LOCAL app.workspace_id pins the tenant for the request — PgBouncer MUST be transaction-pool mode or it leaks across callers", "BudgetGuard reserves spend up-front, reconciles against actual after the run (402 if over cap)", "[P2] concurrency slot; idempotency_key dedupe so a retried call can't double-run or double-bill"] },
-    { "dot": "cyan", "title": "Effective access (fail-closed)", "items": ["canUse runs BEFORE any provider call: access = agent config ∩ caller grants ∩ tenant ∩ resource policy", "A token/channel caller carries no owner subject → private resources deny for everyone but an admin token", "Denied tools / KBs / skills are dropped from the run, not errored"] },
+    { "dot": "cyan", "title": "Effective access (fail-closed)", "items": ["canUse runs BEFORE any provider call: access = agent config ∩ caller grants ∩ tenant ∩ resource policy", "A token/channel caller carries no owner subject → private resources deny for every caller (admin is a console claim, not a token)", "Denied tools / KBs / skills are dropped from the run, not errored"] },
     { "dot": "emerald", "title": "Same core, fully recorded", "items": ["runtime.invoke(run_source=api) is the SAME code playground + eval run — the drift guarantee holds in prod", "Provider key is Vault-decrypted just-in-time into memory and discarded after the call", "The Run is tagged caller_token_id + workspace_id so cost attributes to the endpoint; events re-encode 1:1 to SSE"] },
     { "dot": "slate", "title": "Source", "items": ["docs/backend/00-overview §5B · 09-security-tenancy (tokens, Vault, RLS, access) · 08-api-surface (invoke) · 02 (gateway)", "services/api/publish/endpoint.py · services/runtime/invoke.py · tables api_tokens · published_endpoints · runs"] }
   ]

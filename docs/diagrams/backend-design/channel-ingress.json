@@ -186,8 +186,8 @@
       "title": "Federated identity (membership-independent)",
       "items": [
         "Verified platform email → okta.lookup_subject (email is the join key); unmapped → in-chat denial",
-        "Mint a short-lived platform token: role = CHANNEL_INVOKE_ROLE (fixed baseline 'viewer'), teams = Okta groups",
-        "Teams uses Entra OBO exchange; federated users need NO memberships row",
+        "Mint a short-lived platform token: role = CHANNEL_INVOKE_ROLE (fixed baseline 'executer'), teams = Okta groups",
+        "Teams uses the adapter exchange_obo; federated users are membership-independent (no roster row, identity is claim-derived)",
         "Channel is pinned to one workspace_id; RLS partitions everything"
       ]
     },

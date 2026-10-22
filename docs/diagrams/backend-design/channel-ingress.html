@@ -5592,8 +5592,8 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
         </div>
         <ul>
           <li>Verified platform email → okta.lookup_subject (email is the join key); unmapped → in-chat denial</li>
-          <li>Mint a short-lived platform token: role = CHANNEL_INVOKE_ROLE (fixed baseline &#39;viewer&#39;), teams = Okta groups</li>
-          <li>Teams uses Entra OBO exchange; federated users need NO memberships row</li>
+          <li>Mint a short-lived platform token: role = CHANNEL_INVOKE_ROLE (fixed baseline &#39;executer&#39;), teams = Okta groups</li>
+          <li>Teams uses the adapter exchange_obo; federated users are membership-independent (no roster row, identity is claim-derived)</li>
           <li>Channel is pinned to one workspace_id; RLS partitions everything</li>
         </ul>
       </div>

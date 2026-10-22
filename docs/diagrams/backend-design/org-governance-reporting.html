@@ -5152,7 +5152,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
         <div class="pulse-dot"></div>
         <h1>Org Governance — the platform-admin reporting plane</h1>
       </div>
-      <p class="subtitle">A 4th plane above the tenant planes: one SECURITY DEFINER read across every workspace, audited, metadata-only for private (doc 15)</p>
+      <p class="subtitle">The app-wide admin plane (one of 3 planes): one SECURITY DEFINER read across every workspace, audited, metadata-only for private (doc 15)</p>
     </div>
 
 
@@ -5162,7 +5162,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
          data-preset-badge-editorial-plate="ARCHIFY / PLATE 04">
       <svg viewBox="0 0 920 590" data-sequence-column-fit="spread" data-reader-fit="width-first" role="img" lang="en" aria-labelledby="archify-diagram-title archify-diagram-description" data-animation="trace" data-preset="classic" data-quality-profile="showcase" data-motion-choreography="sequence">
         <title id="archify-diagram-title">Org Governance — the platform-admin reporting plane</title>
-        <desc id="archify-diagram-description">A 4th plane above the tenant planes: one SECURITY DEFINER read across every workspace, audited, metadata-only for private (doc 15)</desc>
+        <desc id="archify-diagram-description">The app-wide admin plane (one of 3 planes): one SECURITY DEFINER read across every workspace, audited, metadata-only for private (doc 15)</desc>
         <!-- Definitions -->
         <defs>
           <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
@@ -5216,7 +5216,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           <rect x="86.775" y="148" width="256.2" height="18" rx="3" class="c-mask"/>
           <text x="214.875" y="158" class="t-edge-emphasis" font-size="11" text-anchor="middle">GET /api/v1/org/agents (OIDC session)</text>
         </g>
-        <text data-detail="context" x="148.5" y="186" class="t-muted" font-size="7"><tspan x="148.5" dy="0">require_platform_admin ·</tspan><tspan x="148.5" dy="11">platform_admins roster · 403 else</tspan></text>
+        <text data-detail="context" x="148.5" y="186" class="t-muted" font-size="7"><tspan x="148.5" dy="0">require admin (app-wide claim) ·</tspan><tspan x="148.5" dy="11">403 else</tspan></text>
         </g>
 
         <g data-edge-from="api" data-edge-to="fn" data-edge-label="org_report_agents()" data-edge-key="1" data-edge-id="call">
@@ -5544,12 +5544,12 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
       <div class="card">
         <div class="card-header">
           <div class="card-dot cyan"></div>
-          <h3>A 4th plane, read-only</h3>
+          <h3>The app-wide admin plane, read-only</h3>
         </div>
         <ul>
-          <li>The three auth planes (console / token / channel) are all tenant-scoped to one workspace_id</li>
+          <li>The two tenant planes (console roles + the executer caller) are tenant-scoped to one workspace_id</li>
           <li>Org governance is deliberately NOT tenant-scoped — it sees across every workspace at once</li>
-          <li>Modeled as a 4th plane above them: OIDC session + platform_admins roster → permission org.report.read</li>
+          <li>The app-wide admin plane (one of 3 planes): OIDC session + the app-wide admin claim → permission org.report.read</li>
           <li>Deployment-wide (one org per deploy), never mutates — governance, not publish/edit/invoke</li>
         </ul>
       </div>
@@ -5599,7 +5599,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
         </div>
         <ul>
           <li>docs/backend/15-org-governance-reporting.md §1 plane /§2 crossing+audit+metadata /§3 reports</li>
-          <li>tables: platform_admins · audit_logs (workspace_id now nullable) · agents.registered_at/owner_subject (14)</li>
+          <li>admin = the adapter&#39;s app-wide claim (not a table) · tables: audit_logs (workspace_id now nullable) · agents.registered_at/owner_subject (14)</li>
         </ul>
       </div>
     </div>

@@ -363,6 +363,10 @@ outside this codebase" (`14 §1`, `09 §9.1`).
 `result_expired`; concurrent same-key behavior undefined; SSE has no `Last-Event-ID` resume (`08 §1/§4`). A
 caller/admin token's subject is self-asserted in scopes and an admin token bypasses `private`-tier for the
 whole workspace with no per-call human identity (`09 §5/§6`).
+> **⚠️ Partly superseded (2026-10-22 claim-based model; scope.md rev 6).** The "admin token bypasses private"
+> half is **moot**: all runtime callers now resolve to the caller-only `executer` role, `admin` is a console
+> claim, so there is **no admin token at invoke** and no private-tier bypass. The idempotency gaps remain (see
+> `architecture-review-v2.md` H9).
 
 **F25 · (flagship) Eval gate can't govern side-effecting / per-user agents.** `architectural-risk · High.`
 See §2.4(3), `17 §7`, `08` test-invoke. Undercuts the defensible core for the product's best use case.

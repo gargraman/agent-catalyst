@@ -202,7 +202,7 @@ reverse proxy.
 | `useRuns`/`useRunsForAgent`, dashboard/runs charts + stat tiles | `GET /api/v1/runs[?workspace=:id` \| `/:id]`, `GET /api/v1/metrics/{spend,volume,latency,activity}` |
 | Publish & Export, endpoint OpenAPI/snippets | `POST /api/v1/versions/:vid/publish` (**409** if no PASS eval), `POST /api/v1/agents/:id/repoint`, `GET /api/v1/endpoints/:eid/export?format=curl\|ts\|python`, `GET …/openapi.json` |
 | `useTokens`, `addToken`, `revokeToken` | `GET`/`POST /api/v1/agents/:id/tokens` (secret shown once), `DELETE /api/v1/tokens/:id` |
-| `useProviderKeys`, `addProviderKey` (+rotate/revoke), `useMembers`/`useInvites`, `inviteMember`/`revokeInvite`/`removeMember`/`joinWorkspace` | `GET /api/v1/provider-keys?workspace=:id`, `POST /api/v1/provider-keys` (+`/rotate`,`/revoke`; admin), `GET /api/v1/members?workspace=:id` (app-managed roster), `POST`/`GET /api/v1/workspaces/:id/invites` + `DELETE …/invites/:id`, `DELETE /api/v1/members/:id` (`member.manage`), `POST /api/v1/workspaces/:id/join` (self-join open spaces) |
+| `useProviderKeys`, `addProviderKey` (+rotate/revoke), `useMembers` | `GET /api/v1/provider-keys?workspace=:id`, `POST /api/v1/provider-keys` (+`/rotate`,`/revoke`; admin), `GET /api/v1/members?workspace=:id` (**read-only** roster projected from IdP role claims via the adapter, 18 §3 — no invite/self-join endpoints; membership managed in the IdP) |
 | `setAccessPolicy`, `canUse`/`canManage` | `PUT /api/v1/{agents\|knowledge\|tools\|mcp\|channels\|skills}/:id/access-policy` (admin; server-enforced) |
 | Guardrails tab, topbar/list search | `GET`/`PUT /api/v1/agents/:id/guardrails`, `GET /api/v1/search?q=` |
 | Playground `send()` / published invoke, run feedback | `POST /v1/agents/:id/invoke` (SSE; token or session; `run_source`), `POST /v1/runs/:id/feedback` |
@@ -249,7 +249,7 @@ enforces scoping in the app layer, with **Postgres row-level security (RLS)** as
 
 **Already modeled in the frontend (mock):** every seed resource carries `workspaceId` + an
 `accessPolicy`; the store scopes all reads to the active workspace and stamps it on creates.
-`permissions.ts` defines the `viewer|builder|publisher|admin` roles and `access-policy.ts` the
+`permissions.ts` defines the per-workspace console roles `viewer|builder|publisher` (the app-wide `admin` is a separate claim; `executer` is the caller plane — 09 §1) and `access-policy.ts` the
 per-resource policy (visibility `workspace|restricted` + use/manage by role and IAM team). There are
 **four workspaces** — `trellix-xdr` (security demo), `trellix-grc`, `trellix-labs`, and `trellix-people`
 (People Ops / HR, the non-security persona) — each with per-workspace metrics. The runtime grant is
@@ -266,7 +266,7 @@ per-resource policy (visibility `workspace|restricted` + use/manage by role and 
 | Memory / sessions | LangGraph checkpointer keyed by `(workspace_id, agent_id, session_id)`; long-term memory scoped per workspace/end-user |
 | Fairness (noisy neighbor) | Per-workspace + per-endpoint **rate limits, concurrency caps (Redis semaphores), spend quotas** (pre-call reservation + reconciliation); per-tenant or weighted queues |
 | Cost attribution | Every Run tags `workspace_id` + computed cost → per-tenant rollups for quotas/chargeback |
-| RBAC + audit | `viewer/builder/publisher/admin` per workspace; publish + key/MCP mgmt gated; per-workspace audit log |
+| RBAC + audit | per-workspace `viewer/builder/publisher` + app-wide `admin` claim + `executer` caller role (09 §1); publish + key/MCP mgmt gated; per-workspace audit log |
 | Runtime pools | Separate **interactive** pool (playground/published, latency-sensitive) from **batch** pool (eval/ingest, autoscaled by queue depth) |
 | MCP blast radius (P2) | Egress-restricted per-call sandbox; vaulted tool creds; depth/fan-out caps |
 

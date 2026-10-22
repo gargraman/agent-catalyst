@@ -5276,7 +5276,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           <text x="471.00000000000006" y="366" class="t-muted" font-size="11" text-anchor="middle">{ hasAccess, workspace, role }</text>
         </g>
         <rect data-detail="context" data-graph-role="message-note-background" x="417.1" y="383.6" width="113.2" height="49.39999999999998" rx="2" class="c-mask" pointer-events="none"/>
-        <text data-detail="context" x="419.1" y="394" class="t-muted" font-size="7"><tspan x="419.1" dy="0">memberWorkspaces() filters</tspan><tspan x="419.1" dy="11">by Okta group · roleFor()</tspan><tspan x="419.1" dy="11">derives role · frozen if</tspan><tspan x="419.1" dy="11">workspace inactive</tspan></text>
+        <text data-detail="context" x="419.1" y="394" class="t-muted" font-size="7"><tspan x="419.1" dy="0">memberWorkspaces() filters</tspan><tspan x="419.1" dy="11">by ap-&lt;prefix&gt; claims ·</tspan><tspan x="419.1" dy="11">roleFor() derives role ·</tspan><tspan x="419.1" dy="11">frozen if inactive</tspan></text>
         </g>
 
         <g data-edge-from="boundary" data-edge-to="shell" data-edge-label="render AppShell" data-edge-key="8" data-edge-id="render-shell">
@@ -5302,7 +5302,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           <rect x="638.1" y="522" width="91.19999999999999" height="18" rx="3" class="c-mask"/>
           <text x="683.7" y="532" class="t-muted" font-size="11" text-anchor="middle">allow / deny</text>
         </g>
-        <text data-detail="context" x="560.9000000000001" y="560" class="t-muted" font-size="7"><tspan x="560.9000000000001" dy="0">frozen workspace → only</tspan><tspan x="560.9000000000001" dy="11">&#39;view&#39; · &lt;Gate&gt; /</tspan><tspan x="560.9000000000001" dy="11">&lt;GateButton&gt; hide or</tspan><tspan x="560.9000000000001" dy="11">disable controls</tspan></text>
+        <text data-detail="context" x="560.9000000000001" y="560" class="t-muted" font-size="7"><tspan x="560.9000000000001" dy="0">frozen workspace →</tspan><tspan x="560.9000000000001" dy="11">read-only · &lt;Gate&gt; /</tspan><tspan x="560.9000000000001" dy="11">&lt;GateButton&gt; hide or</tspan><tspan x="560.9000000000001" dy="11">disable controls</tspan></text>
         </g>
 
         <g data-edge-from="shell" data-edge-to="user" data-edge-label="console rendered" data-edge-key="11" data-edge-id="rendered">
@@ -5618,9 +5618,9 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           <h3>Gates</h3>
         </div>
         <ul>
-          <li>hasAccess = member of ≥1 workspace</li>
-          <li>Active workspace resolved from the visible set only — a non-member id yields the picker, never a leaked tenant</li>
-          <li>frozen (inactive workspace) collapses every permission to &#39;view&#39;</li>
+          <li>hasAccess = holds ≥1 ap-&lt;prefix&gt;-&lt;role&gt; claim (claim-derived membership)</li>
+          <li>Active workspace resolved from the visible set only — an id with no matching claim yields the picker, never a leaked tenant</li>
+          <li>frozen (inactive workspace) collapses every permission to read-only</li>
         </ul>
       </div>
 
@@ -5631,7 +5631,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
         </div>
         <ul>
           <li>MOCK_PROFILE replaces the real OIDC session</li>
-          <li>Dev role / team / platform-admin overrides win inside useAuth</li>
+          <li>Dev role / app-admin overrides win inside useAuth</li>
           <li>Source: app/page.tsx · components/app-boundary.tsx · lib/{auth,iam,permissions}.ts</li>
         </ul>
       </div>

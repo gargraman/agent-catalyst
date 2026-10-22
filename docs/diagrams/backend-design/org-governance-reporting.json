@@ -3,7 +3,7 @@
   "diagram_type": "sequence",
   "meta": {
     "title": "Org Governance — the platform-admin reporting plane",
-    "subtitle": "A 4th plane above the tenant planes: one SECURITY DEFINER read across every workspace, audited, metadata-only for private (doc 15)",
+    "subtitle": "The app-wide admin plane (one of 3 planes): one SECURITY DEFINER read across every workspace, audited, metadata-only for private (doc 15)",
     "output": "docs/diagrams/backend-design/org-governance-reporting.html",
     "quality_profile": "showcase"
   },
@@ -64,7 +64,7 @@
       "y": 168,
       "label": "GET /api/v1/org/agents (OIDC session)",
       "variant": "emphasis",
-      "note": "require_platform_admin · platform_admins roster · 403 else"
+      "note": "require admin (app-wide claim) · 403 else"
     },
     {
       "id": "call",
@@ -146,11 +146,11 @@
   "cards": [
     {
       "dot": "cyan",
-      "title": "A 4th plane, read-only",
+      "title": "The app-wide admin plane, read-only",
       "items": [
-        "The three auth planes (console / token / channel) are all tenant-scoped to one workspace_id",
+        "The two tenant planes (console roles + the executer caller) are tenant-scoped to one workspace_id",
         "Org governance is deliberately NOT tenant-scoped — it sees across every workspace at once",
-        "Modeled as a 4th plane above them: OIDC session + platform_admins roster → permission org.report.read",
+        "The app-wide admin plane (one of 3 planes): OIDC session + the app-wide admin claim → permission org.report.read",
         "Deployment-wide (one org per deploy), never mutates — governance, not publish/edit/invoke"
       ]
     },
@@ -188,7 +188,7 @@
       "title": "Source",
       "items": [
         "docs/backend/15-org-governance-reporting.md §1 plane /§2 crossing+audit+metadata /§3 reports",
-        "tables: platform_admins · audit_logs (workspace_id now nullable) · agents.registered_at/owner_subject (14)"
+        "admin = the adapter's app-wide claim (not a table) · tables: audit_logs (workspace_id now nullable) · agents.registered_at/owner_subject (14)"
       ]
     }
   ]

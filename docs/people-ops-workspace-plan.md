@@ -1,9 +1,11 @@
 # People Ops (non-AI) workspace — design & implementation plan
 
-> ⚠️ **Note (2026-10-20 group-driven pivot; scope.md):** this plan predates the Okta-group access model.
-> References to `MOCK_PROFILE.memberships`, `memberWorkspaces`/`joinableWorkspaces`, and `access` mode are
-> superseded — People Ops is now backed by an Okta group (`ap-people`) conferring its `memberRole`; the demo
-> user sees it via platform-admin (or by being in that group). The workspace/persona intent is unchanged.
+> ⚠️ **Note (superseded by the 2026-10-22 claim-based, IdP-agnostic model; scope.md, 09 §1, 18):** this plan
+> predates the current auth model. References to `MOCK_PROFILE.memberships`, `memberWorkspaces`/
+> `joinableWorkspaces`, `access` mode, and a single `memberRole` are **historical** — People Ops membership +
+> role now come from per-workspace IdP role claims (`ap-people-{viewer,builder,publisher}`, mapped via
+> `idp_binding`); the demo user sees it via the app-wide admin claim or by holding a People Ops role claim.
+> The workspace/persona intent is unchanged.
 
 - **Status:** Implemented — shipped in `640453f` (People Ops workspace + per-workspace
   metrics + standalone Playground). The eval-failure explainer/remedies that `resume-screener`

@@ -347,8 +347,9 @@ route has separate bearer-token auth.
 ### B12. Security
 Provider/tool/source creds: envelope encryption via **Vault Transit** (per-workspace DEK); plaintext
 only in memory at call time; log-redaction scrubs key-shaped strings; never in config/traces/exports.
-Builder UI: OIDC/SSO + CSRF; `[P2]` RBAC (`viewer|builder|publisher|admin`): **publish** gated to
-publisher/admin, **provider-key mgmt gated to admin**, **MCP/tool mgmt gated to builder+**
+Builder UI: OIDC/SSO + CSRF; `[P2]` RBAC — per-workspace `viewer|builder|publisher` + an **app-wide `admin`**
+claim + the **`executer`** caller role (09 §1; claim-based, IdP-agnostic): **publish** gated to publisher+,
+**provider-key mgmt + governance + workspace CRUD gated to admin**, **MCP/tool mgmt gated to builder+**
 (`mcp.manage`/`tool.manage`). (Reconciled 2026-10-19 — this reverses the earlier "key/MCP mgmt →
 publisher/admin"; building an agent *is* binding its tools, so tool/MCP management belongs at builder+,
 while only the org-wide provider key stays admin-only. See `backend/09`, `scope.md`.) Published endpoints:

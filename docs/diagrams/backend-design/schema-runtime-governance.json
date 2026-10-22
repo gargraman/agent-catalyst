@@ -1066,78 +1066,6 @@
       ]
     },
     {
-      "id": "platform_admins",
-      "label": "platform_admins",
-      "tag": "adoption / notifications",
-      "row": 2,
-      "col": 4,
-      "width": 235,
-      "attributes": [
-        {
-          "name": "subject",
-          "type": "text",
-          "key": "pk"
-        },
-        {
-          "name": "granted_at",
-          "type": "timestamptz"
-        },
-        {
-          "name": "granted_by",
-          "type": "text"
-        }
-      ]
-    },
-    {
-      "id": "memberships",
-      "label": "memberships",
-      "tag": "adoption / notifications",
-      "row": 3,
-      "col": 4,
-      "width": 235,
-      "attributes": [
-        {
-          "name": "id",
-          "type": "uuid",
-          "key": "pk"
-        },
-        {
-          "name": "workspace_id",
-          "type": "uuid",
-          "key": "fk",
-          "references": "workspaces.id"
-        },
-        {
-          "name": "subject_id",
-          "type": "text"
-        },
-        {
-          "name": "email",
-          "type": "text"
-        },
-        {
-          "name": "display_name",
-          "type": "text"
-        },
-        {
-          "name": "role",
-          "type": "member_role"
-        },
-        {
-          "name": "invited_by",
-          "type": "text"
-        },
-        {
-          "name": "joined_at",
-          "type": "timestamptz"
-        },
-        {
-          "name": "last_active_at",
-          "type": "timestamptz"
-        }
-      ]
-    },
-    {
       "id": "mcp_user_connections",
       "label": "mcp_user_connections",
       "tag": "tools / MCP",
@@ -1412,7 +1340,7 @@
       "items": [
         "docs/backend/01-data-model.md §4 (DDL) · 09 (tokens, Vault, audit) · 10 (runs/spans) · 14 (adoption) · 16 (notifications)",
         "Part 2 of 2 — anchors agents/agent_versions shown compact; full columns in Part 1 (schema-core-authoring)",
-        "memberships is a read-only roster projected from the workspace Okta group (not the system of record)"
+        "Members view is a read-only projection of per-workspace IdP role claims (ap-<prefix>-<role>); no roster table"
       ]
     }
   ]

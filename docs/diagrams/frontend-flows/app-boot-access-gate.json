@@ -28,10 +28,10 @@
     { "id": "use-workspace", "from": "boundary", "to": "auth", "y": 288, "label": "useWorkspace()", "variant": "security" },
     { "id": "read-ws", "from": "auth", "to": "store", "y": 318, "label": "read activeWorkspaceId" },
     { "id": "ws-id", "from": "store", "to": "auth", "y": 346, "label": "workspace id", "variant": "return" },
-    { "id": "access", "from": "auth", "to": "boundary", "y": 376, "label": "{ hasAccess, workspace, role }", "variant": "return", "note": "memberWorkspaces() filters by Okta group · roleFor() derives role · frozen if workspace inactive" },
+    { "id": "access", "from": "auth", "to": "boundary", "y": 376, "label": "{ hasAccess, workspace, role }", "variant": "return", "note": "memberWorkspaces() filters by ap-<prefix> claims · roleFor() derives role · frozen if inactive" },
     { "id": "render-shell", "from": "boundary", "to": "shell", "y": 444, "label": "render AppShell", "variant": "emphasis", "note": "else: no member workspace → NoProductAccess · no active workspace → WorkspacePicker" },
     { "id": "can", "from": "shell", "to": "auth", "y": 512, "label": "can(permission)", "variant": "security" },
-    { "id": "allow", "from": "auth", "to": "shell", "y": 542, "label": "allow / deny", "variant": "return", "note": "frozen workspace → only 'view' · <Gate> / <GateButton> hide or disable controls" },
+    { "id": "allow", "from": "auth", "to": "shell", "y": 542, "label": "allow / deny", "variant": "return", "note": "frozen workspace → read-only · <Gate> / <GateButton> hide or disable controls" },
     { "id": "rendered", "from": "shell", "to": "user", "y": 610, "label": "console rendered", "variant": "return" }
   ],
   "activations": [
@@ -43,7 +43,7 @@
   ],
   "cards": [
     { "dot": "emerald", "title": "Happy path", "items": ["Root route redirects into the (app) group", "AppBoundary calls useWorkspace() before anything renders", "Identity is sourced from MOCK_PROFILE (stands in for OIDC)"] },
-    { "dot": "rose", "title": "Gates", "items": ["hasAccess = member of ≥1 workspace", "Active workspace resolved from the visible set only — a non-member id yields the picker, never a leaked tenant", "frozen (inactive workspace) collapses every permission to 'view'"] },
-    { "dot": "orange", "title": "Mock seams", "items": ["MOCK_PROFILE replaces the real OIDC session", "Dev role / team / platform-admin overrides win inside useAuth", "Source: app/page.tsx · components/app-boundary.tsx · lib/{auth,iam,permissions}.ts"] }
+    { "dot": "rose", "title": "Gates", "items": ["hasAccess = holds ≥1 ap-<prefix>-<role> claim (claim-derived membership)", "Active workspace resolved from the visible set only — an id with no matching claim yields the picker, never a leaked tenant", "frozen (inactive workspace) collapses every permission to read-only"] },
+    { "dot": "orange", "title": "Mock seams", "items": ["MOCK_PROFILE replaces the real OIDC session", "Dev role / app-admin overrides win inside useAuth", "Source: app/page.tsx · components/app-boundary.tsx · lib/{auth,iam,permissions}.ts"] }
   ]
 }

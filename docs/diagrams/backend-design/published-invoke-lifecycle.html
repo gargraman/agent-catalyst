@@ -5228,11 +5228,11 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
         <text data-detail="context" x="277.3" y="216" class="t-muted" font-size="7"><tspan x="277.3" dy="0">reject if revoked /</tspan><tspan x="277.3" dy="11">expired</tspan></text>
         </g>
 
-        <g data-edge-from="db" data-edge-to="api" data-edge-label="CallerCtx {tenant, role, teams, scopes}" data-edge-key="2" data-edge-id="ctx">
+        <g data-edge-from="db" data-edge-to="api" data-edge-label="CallerCtx {tenant, role=executer, teams, scopes}" data-edge-key="2" data-edge-id="ctx">
           <path data-composition-edge-from="db" data-composition-edge-to="api" data-composition-edge-id="ctx" data-composition-points="818.5,256;265.3,256" d="M 818.5 256 L 265.3 256" class="a-default" data-animate="edge" style="--step:2" stroke-width="1.4" stroke-dasharray="3,5" marker-end="url(#arrowhead)"/>
         <g data-detail="context">
-          <rect x="407.2" y="236" width="269.4" height="18" rx="3" class="c-mask"/>
-          <text x="541.9" y="246" class="t-muted" font-size="11" text-anchor="middle">CallerCtx {tenant, role, teams, scopes}</text>
+          <rect x="377.5" y="236" width="328.79999999999995" height="18" rx="3" class="c-mask"/>
+          <text x="541.9" y="246" class="t-muted" font-size="11" text-anchor="middle">CallerCtx {tenant, role=executer, teams, scopes}</text>
         </g>
         </g>
 
@@ -5608,7 +5608,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
         <ul>
           <li>Strip &#39;Bearer &#39;, sha256 the secret → lookup api_tokens.token_hash (only the hash is ever stored)</li>
           <li>Reject on revoked_at or expires_at; per-token rate-limit via a Redis sliding window</li>
-          <li>CallerCtx carries {workspace_id, token_id, role, teams, scopes} — the FE runtime-access decode, now server-authoritative</li>
+          <li>CallerCtx carries {workspace_id, token_id, role=executer, teams, scopes} — the FE runtime-access decode, now server-authoritative</li>
         </ul>
       </div>
 
@@ -5631,7 +5631,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
         </div>
         <ul>
           <li>canUse runs BEFORE any provider call: access = agent config ∩ caller grants ∩ tenant ∩ resource policy</li>
-          <li>A token/channel caller carries no owner subject → private resources deny for everyone but an admin token</li>
+          <li>A token/channel caller carries no owner subject → private resources deny for every caller (admin is a console claim, not a token)</li>
           <li>Denied tools / KBs / skills are dropped from the run, not errored</li>
         </ul>
       </div>

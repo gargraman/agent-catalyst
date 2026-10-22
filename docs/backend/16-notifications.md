@@ -66,10 +66,11 @@ Who gets a row is resolved at **emit time**, not read time:
   registration gate must capture `owner_subject` as a **routable** OIDC subject (a real, addressable
   identity, not a placeholder) at agent creation. If owners aren't routable, the whole surface
   silently no-ops — the founding problem again. (`14` owns that gate; this doc assumes it.)
-- **Plus workspace publishers + admins** — ⚠️ **re-sourced (2026-10-20 group-driven pivot):** there is no
-  `memberships` roster anymore. The recipient set is now **platform-admins** (the `platform_admins` plane, 15)
-  **+ the members of the workspace's backing Okta group when its `member_role = 'publisher'`** (the group
-  confers one role to all). So an agent that outlives its original owner still has someone watching.
+- **Plus workspace publishers + admins** — ⚠️ **re-sourced (claim-based model, 2026-10-22):** there is no
+  `memberships` roster (and no `member_role` column) anymore. The recipient set is now **the holders of the
+  workspace's `publisher` claim** (mapped by `idp_binding`, 18) **+ the app-wide admins** (the adapter's admin
+  claim, 15) — resolved through the active identity adapter, not Postgres (enumeration via the `group_members`
+  cache, 01 §4.1 / 18 §4). So an agent that outlives its original owner still has someone watching.
 
 One logical event therefore fans out to **N rows, one per recipient subject** (same `dedupe_key`,
 different `recipient_subject`). This keeps the read model trivial: "my inbox" is a single-table filter.
@@ -198,11 +199,20 @@ The one emit point whose recipients are **not** the §1.1 owner set. When `runti
 node (03) hits a tool binding with `requires_approval` (a `tool_risk_tier` the policy marks destructive —
 01, 09 §10), it **pauses the run** and writes a `tool_approvals` row (`approval_status='pending'`, 01); the
 run resumes only on an approve/deny decision (`POST /v1/approvals/:id/decide`, 08). That pause must reach
-whoever can *act on* it, so this kind addresses **the workspace's publishers + admins** — the members of
-the workspace's backing Okta group when its `member_role='publisher'`, plus `platform_admins` (the
-group-driven model, §1.1; there is no `memberships` roster) — **not** `agents.owner_subject`. A
+whoever can *act on* it, so this kind addresses **the workspace's publishers + admins** — the holders of the
+workspace's `publisher` claim (mapped by `idp_binding`, 18), plus the app-wide admins (the adapter's admin
+claim); the claim-based model (§1.1; there is no `memberships` roster) — **not** `agents.owner_subject`. A
 builder can author a destructive binding but, by the reconciled RBAC (09, spec B12), approving its live
 execution is a publisher/admin decision.
+
+> **Recipient enumeration without a roster (resolved 2026-10-22; 18 §4).** Notifications are emitted by a
+> **background worker** (no incoming user token), but there is no Postgres roster to query for "all holders of
+> the `publisher` claim in workspace X", and `members_of` is **not available on every IdP**. **Adopted policy:**
+> (1) an **owner-only floor** — `agents.owner_subject` (routable by 14) is always notified; (2) **fan-out to
+> publishers + admins via the `group_members` read-model cache** (01 §4.1), populated by the active adapter's
+> `members_of()` where the IdP supports it, else upserted from tokens on login. The cache is **not** the authz
+> system of record (authz still reads live claims); a stale/empty cache **degrades to the owner-only floor,
+> never silent**. This keeps enumeration IdP-agnostic — a custom IdP with no `members_of` still gets the floor.
 
 ```python
 # services/runtime/graph/nodes/tool_approval_gate.py (after writing the pending tool_approvals row, 03)

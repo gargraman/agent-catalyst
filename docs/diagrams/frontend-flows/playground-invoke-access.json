@@ -23,7 +23,7 @@
     { "id": "prompt", "from": "user", "to": "pg", "y": 168, "label": "type prompt + run mode" },
     { "id": "read", "from": "pg", "to": "store", "y": 198, "label": "read agent + mcp + skills" },
     { "id": "snapshot", "from": "store", "to": "pg", "y": 226, "label": "snapshot", "variant": "return" },
-    { "id": "resolveRun", "from": "pg", "to": "resolve", "y": 258, "label": "resolveRun(ctx, agent, …)", "variant": "security", "note": "session = full scope · token = decodeToken (string match) · channel = federated/service" },
+    { "id": "resolveRun", "from": "pg", "to": "resolve", "y": 258, "label": "resolveRun(ctx, agent, …)", "variant": "security", "note": "session = full scope · caller (cURL token + channel) collapses to one plane → role=executer" },
     { "id": "canUse", "from": "resolve", "to": "policy", "y": 316, "label": "canUse(agent.accessPolicy)", "variant": "security" },
     { "id": "decision", "from": "policy", "to": "resolve", "y": 344, "label": "allow / deny", "variant": "return" },
     { "id": "resolution", "from": "resolve", "to": "pg", "y": 374, "label": "RunResolution", "variant": "return", "note": "status ok | expired | revoked | tenant_mismatch | policy_denied · partial token grants even-indexed tools/KB" },
@@ -37,8 +37,8 @@
     { "participant": "policy", "from": 316, "to": 344, "type": "security" }
   ],
   "cards": [
-    { "dot": "emerald", "title": "What the preview shows", "items": ["Run context: tenant · subject · role · scopes · expiry · status", "Bound resources split into granted vs denied for Tools / Knowledge / Skills", "Recomputed on every render as the run mode / token changes"] },
+    { "dot": "emerald", "title": "What the preview shows", "items": ["Run context: tenant · subject · role (caller = executer) · scopes · expiry · status", "Bound resources split into granted vs denied for Tools / Knowledge / Skills", "Recomputed on every render as the run mode / token changes"] },
     { "dot": "rose", "title": "Access resolution", "items": ["base scope by mode; then canUse(accessPolicy) can flip status to policy_denied", "principal carries no subject at invoke → private resources fail closed", "blocked short-circuits all grants; denied resources show struck-through"] },
-    { "dot": "orange", "title": "Mock seams vs real contract", "items": ["send() is synchronous state append — no model call, no streaming", "decodeToken is a deterministic substring decode (user/svc, grc/labs, admin/pub/view, full/partial)", "Real path: POST /v1/agents/:id/invoke (caller token, SSE) — playground preview & published invoke share one body + code path (runtime.invoke)", "Server resolves effective access = agent config ∩ caller grants ∩ tenant (RLS) ∩ resource policy", "Source: components/playground.tsx · lib/runtime-access.ts · lib/access-policy.ts"] }
+    { "dot": "orange", "title": "Mock seams vs real contract", "items": ["send() is synchronous state append — no model call, no streaming", "decodeToken is a deterministic substring decode (user/svc, grc/labs, full/partial) — a caller resolves to role=executer only", "Real path: POST /v1/agents/:id/invoke (caller token, SSE) — playground preview & published invoke share one body + code path (runtime.invoke)", "Server resolves effective access = agent config ∩ caller grants ∩ tenant (RLS) ∩ resource policy", "Source: components/playground.tsx · lib/runtime-access.ts · lib/access-policy.ts"] }
   ]
 }

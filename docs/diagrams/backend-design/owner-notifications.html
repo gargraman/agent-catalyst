@@ -5560,7 +5560,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
         </div>
         <ul>
           <li>Default: the agent owner (agents.owner_subject — hard dependency on doc 14 for a routable subject)</li>
-          <li>+ platform-admins + members of the workspace group whose member_role = publisher</li>
+          <li>owner floor (always) + fan-out to publishers + admins via the group_members projection cache (18 §4)</li>
           <li>One event fans to N notification rows (one per recipient, same dedupe_key)</li>
           <li>Scoped by RLS (workspace) AND by recipient_subject = the signed-in principal</li>
         </ul>

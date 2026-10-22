@@ -25,7 +25,6 @@ erDiagram
   WORKSPACE ||--o{ PROVIDER_KEY : vaults
   WORKSPACE ||--o{ KNOWLEDGE_BASE : owns
   WORKSPACE ||--o{ SKILL : owns
-  WORKSPACE ||--o{ MEMBERSHIP : grants
   AGENT ||--o{ AGENT_VERSION : has
   AGENT_VERSION ||--o{ RETRIEVAL_BINDING : retrieves_via
   AGENT_VERSION ||--o{ TOOL_BINDING : uses
@@ -55,8 +54,9 @@ erDiagram
   AGENT_VERSION ||--o| AGENT_SIGNATURE : dedup_embedding
 ```
 
-> **P0 additions (14/15/16):** `AGENT_SIGNATURE` (dedup embeddings), `NOTIFICATION` (owner-facing), and the
-> non-tenant `platform_admins` roster are detailed in §4.9. `AGENT.registered_at` gates registration (14).
+> **P0 additions (14/15/16):** `AGENT_SIGNATURE` (dedup embeddings) and `NOTIFICATION` (owner-facing) are
+> detailed in §4.9. The app-wide `admin` is an Okta group claim (`ap-platform-admin`), **not** a table (§4.9).
+> `AGENT.registered_at` gates registration (14).
 >
 > **P2 additions (tools/approvals):** `SUBAGENT_CONFIG` (a `kind='subagent'` tool delegating to another agent)
 > and `TOOL_APPROVAL` (human-in-the-loop gate on a `requires_approval` tool call) are detailed in §4.6.
@@ -78,17 +78,15 @@ create type run_status        as enum ('success','error','blocked');
 create type provider_name     as enum ('anthropic','openai','google','mistral','meta','azure','bedrock');
 -- DEPRECATED: ingestion status uses job_status via the generic `jobs` table (§4.8); this enum is unused. Kept only to avoid a migration churn; do not reference in new DDL.
 create type ingest_status     as enum ('queued','running','completed','failed');
--- ⚠️ REVERSED (2026-10-20 group-driven pivot; scope.md): membership + role are now Okta-GROUP-driven, not an
---    app-managed roster. Each workspace binds ONE Okta group conferring a single base role (workspaces.okta_group
---    + workspaces.member_role); platform_admins (§4.9) are admin everywhere. CONSEQUENCES below:
---    • `workspace_access` enum + `workspaces.access_mode` → REMOVED (no open/restricted; visibility = group membership).
---    • `memberships` table → no longer the system of record; a read-only roster is projected from the group.
---    • `workspace_invites` table + `invite_status` → REMOVED (no invites / self-join; membership managed in Okta).
---    • member_role stays, but is a per-WORKSPACE property (the group's conferred role), not per-user; 'admin' is
---      reserved for platform_admins. [See 09 §2.1, 15; FE iam.ts]
-create type member_role       as enum ('admin','publisher','builder','viewer');  -- now a per-workspace conferred role (admin reserved for platform_admins)
-create type workspace_access   as enum ('open','restricted');                    -- REMOVED (group-driven pivot); kept only to avoid migration churn — do not reference
-create type invite_status      as enum ('pending','accepted','revoked','expired'); -- REMOVED with workspace_invites (group-driven pivot)
+-- Claim-based + IdP-agnostic model (2026-10-22; scope.md, 09 §1-§2.1, adapter spec in 18): workspace
+--    membership + role come from PER-WORKSPACE IdP group/role claims, mapped to a role by the active identity
+--    ADAPTER (18) via workspaces.idp_binding — NOT an app roster, and NOT tied to one IdP. (Okta is one
+--    adapter; its `ap-<prefix>-<role>` naming is that adapter's convention, not the universal rule — 18 §3.)
+--    • workspace_role = the three per-workspace console roles. `executer` (caller) and `admin` (app-wide) are
+--      NOT workspace-membership values: executer rides on api_tokens / channel tokens; admin is the adapter's
+--      admin_group_ref (§4.9, 18 §6).
+--    • NO memberships / workspace_invites tables; NO access_mode / open-restricted / self-join. [09 §2.1, 15, 18; FE iam.ts]
+create type workspace_role     as enum ('viewer','builder','publisher');  -- per-workspace console roles (viewer ⊂ builder ⊂ publisher); viewer = read-only
 create type tool_kind         as enum ('http','builtin','subagent','mcp');       -- mcp used P2
 create type tool_risk_tier    as enum ('read','write','destructive');           -- risk tier driving the approval gate (P2)
 create type approval_status   as enum ('pending','approved','denied','expired'); -- human-in-the-loop tool approval lifecycle (P2)
@@ -115,15 +113,17 @@ create table workspaces (
   id          uuid primary key default gen_random_uuid(),
   org_id      uuid not null references orgs(id),
   slug        text not null,                    -- "trellix-xdr", "trellix-people-ops" (matches FE). Immutable: it is the published-endpoint URL segment.
-  name        text not null,                    -- display name (app-editable, admin)
-  access_mode workspace_access not null default 'restricted',  -- FE Workspace.access — open = joinable by any org member; restricted = invite-only (09 §2.1, §3)
-  okta_group  text,                             -- FE Workspace.oktaGroup — OPTIONAL backing Okta group that auto-grants membership; NULL = pure invite/join. Not authoritative; roster below is SoR.
-  default_provider provider_name,              -- FE WorkspaceSettings.defaultProvider (app-editable, admin; PATCH /workspaces/:id)
+  name        text not null,                    -- display name (app-editable by admin)
+  idp_binding jsonb not null default '{}',      -- FE: Workspace.groupPrefix + the idpBinding(ws) helper — per-workspace role→native-group map the
+                                                --   active identity adapter resolves (18 §3): {viewer,builder,publisher,teams}.
+                                                --   Replaces the Okta-only `group_prefix` (which survives as Okta-adapter sugar).
+                                                --   IdP-authoritative; app-owned CONFIG, not a per-user roster (09 §2.1, 18).
+  default_provider provider_name,              -- FE WorkspaceSettings.defaultProvider (app-editable by admin; PATCH /workspaces/:id)
   default_model text,                           -- FE WorkspaceSettings.defaultModel (app-editable, admin)
   archived_at   timestamptz,                   -- set by POST /workspaces/:id/archive (unpublishes the workspace's endpoints)
   request_timeout_s int not null default 30,   -- FE Limits.requestTimeoutS; per-workspace RunContext.deadline_s default (00 §4)
   -- eval policy (FE EvalPolicy; GET/PUT …/eval-policy — 08). The drift verdict + publish gate (05) read these
-  -- for this workspace instead of global constants; set by the Space Manager (eval.govern — 09 §4).
+  -- for this workspace instead of global constants; set by admin (eval.govern — 09 §4).
   eval_min_cases        int     not null default 10,    -- FE EvalPolicy.minCases — below → low_confidence
   eval_quality_threshold numeric(5,2) not null default 90, -- FE qualityThreshold — PASS requires quality ≥ this
   eval_efficiency_budget_pct numeric(5,2) not null default 10, -- FE efficiencyBudgetPct — FAIL if cost over baseline by more
@@ -132,39 +132,22 @@ create table workspaces (
   unique (org_id, slug)
 );
 
--- Membership is APP-MANAGED (the system of record): a row is created by a space admin's invite acceptance
--- or by a user self-joining an `access_mode = 'open'` space (09 §2.1, §3). Identity (subject/email) comes
--- from org Okta; the roster + per-workspace role live here. An optional `workspaces.okta_group` may auto-
--- upsert rows at the default join role, but is not authoritative.
--- Scope: this table is workspace access + role ONLY. The `teams` dimension is NOT stored here (or anywhere):
--- teams are Okta groups read live from the OIDC `groups` claim per request (09 §2.1) / the channel-minted
--- token (12 §4). So "team" membership has no row — do not add a teams column or join table for it.
-create table memberships (
-  id            uuid primary key default gen_random_uuid(),
-  workspace_id  uuid not null references workspaces(id),
-  subject_id    text not null,                  -- OIDC subject (org Okta user id)
-  email         text not null,
-  display_name  text not null,
-  role          member_role not null,
-  invited_by    text,                           -- subject of the admin who invited (null for self-join / backing-group)
-  joined_at     timestamptz not null default now(),
-  last_active_at timestamptz,
-  unique (workspace_id, subject_id)
-);
+-- NO `memberships` / `workspace_invites` tables (claim-based model, 2026-10-22; 09 §2.1, 18). Workspace
+-- membership and per-workspace role come from the IdP group/role claims, mapped by the active adapter via
+-- `workspaces.idp_binding` (18 §3) — no per-user roster. The app-wide `admin` is the adapter's admin_group_ref
+-- (§4.9). Teams (functional IdP groups) ride the same claim and are also not stored. The Members tab
+-- (08 `GET /members`) is a read-only PROJECTION resolved through the adapter — no system-of-record row in
+-- Postgres for who belongs to a workspace or at what role.
 
--- Pending invitations to join a restricted (or any) space, issued by a space admin (09 §4). On accept, a
--- `memberships` row is created at `role` and the invite is marked accepted. FE: Invite (data.ts).
-create table workspace_invites (
-  id            uuid primary key default gen_random_uuid(),
-  workspace_id  uuid not null references workspaces(id),
-  email         text not null,                  -- invitee (org Okta email)
-  role          member_role not null,           -- role granted on accept
-  invited_by    text not null,                  -- admin subject
-  status        invite_status not null default 'pending',
-  token_hash    text,                           -- sha256 of the accept token (we store only the hash)
-  expires_at    timestamptz,
-  created_at    timestamptz not null default now(),
-  unique (workspace_id, email)
+-- Read-model CACHE for async recipient fan-out only (notifications, 16; adapter spec 18 §4). NOT the authz
+-- system of record — authz reads live claims from the token. Populated by the adapter's members_of() where the
+-- IdP supports it, else upserted from tokens on login; stale/empty degrades to the owner-only floor (16).
+create table group_members (
+  group_ref  text not null,                      -- native IdP group ref (matches an idp_binding / admin_group_ref value)
+  subject    text not null,                       -- OIDC subject
+  source     text not null,                       -- 'members_of' | 'login_seen'
+  seen_at    timestamptz not null default now(),
+  primary key (group_ref, subject)
 );
 ```
 
@@ -258,9 +241,11 @@ bound skill's frozen content — the **instruction-text hash + every bundled-res
 version** (pinned in `skill_bindings.skill_content_hash`). A skill is injected into the prompt like
 `system_prompt` (03 §4), so editing its instructions or resources is a behavior change exactly like editing
 the prompt. If it did **not** fold into `snapshot_hash`, the eval verdict cache (05 §6) would serve a stale
-PASS on a skill edit and the publish re-eval gate would be silently bypassed — the RAG/`kb_index_version`
-failure mode, repeated. So the skill content hash is part of the version identity, mirroring the KB
-`kb_index_version` and tool-schema snapshot coverage.
+PASS on a skill edit and the publish re-eval gate would be silently bypassed. So the skill content hash is
+part of the version identity, alongside tool-schema snapshot coverage. **Note the deliberate asymmetry with
+KBs:** skill content **is** pinned into `snapshot_hash` (instructions = pinned, like the prompt); **KB content
+is NOT** — KB content is live & independent of the agent version (04 §9), so `kb_index_version` does **not**
+fold into `snapshot_hash` (whether a content refresh gets an eval signal is a parked decision, 05 / review-fixes C3).
 
 ### 4.3 Provider keys (vaulted — never plaintext here)
 
@@ -415,9 +400,12 @@ create table skill_resources (                    -- bundled files in MinIO; mod
   created_at    timestamptz not null default now()
 );
 
--- Which skill(s) a version applies, with the skill content SNAPSHOTTED — modelled EXACTLY on retrieval_bindings
--- (which pins kb_index_version). The pinned skill_content_hash is what folds into agent_versions.snapshot_hash
--- (§4.2) so a skill edit busts the eval verdict cache and re-arms the publish gate (05 §6).
+-- Which skill(s) a version applies, with the skill content SNAPSHOTTED. Binding structure mirrors
+-- retrieval_bindings, but with a DELIBERATE ASYMMETRY on hash coverage (04 §9): skill content IS pinned into
+-- the version — the pinned skill_content_hash folds into agent_versions.snapshot_hash (§4.2) so a skill edit
+-- busts the eval verdict cache and re-arms the publish gate (05 §6). KB content is NOT (it is live &
+-- independent of the agent version); kb_index_version is recorded on the binding but does not fold into
+-- snapshot_hash (whether a KB refresh carries an eval signal is a parked decision — 05, review-fixes C3).
 create table skill_bindings (
   id                 uuid primary key default gen_random_uuid(),
   workspace_id       uuid not null references workspaces(id),
@@ -612,7 +600,7 @@ create table api_tokens (                         -- caller tokens for published
   name          text not null,
   prefix        text not null,                   -- shown in UI (FE prefix)
   token_hash    text not null,                   -- sha256 of secret; secret shown ONCE (09)
-  scopes        jsonb not null default '{}',     -- tenant/role/teams/scopes claims (runtime-access)
+  scopes        jsonb not null default '{}',     -- tenant/teams/scope claims (runtime-access); role is always 'executer' (09 §1/§6)
   created_at    timestamptz not null default now(),
   last_used_at  timestamptz,
   expires_at    timestamptz,                      -- FE Create dialog: none | 30d | 90d (FE ApiToken.expires)
@@ -679,7 +667,7 @@ create table audit_logs (                         -- spec B12: publish, re-point
   workspace_id  uuid references workspaces(id),    -- NULLABLE: org-level actions (e.g. 'org.report.read', 15) have
                                                    --   no workspace. A NULL row is invisible to the per-workspace RLS
                                                    --   policy (NULL = app.workspace_id is false) — the §6 carve-out
-                                                   --   lets ONLY the platform-admin elevated path (15 §2) read them.
+                                                   --   lets ONLY the admin elevated path (15 §2) read them.
   actor         text not null,
   action        text not null,                    -- "publish","repoint","baseline.freeze","token.mint",
                                                    --   "agent.register","agent.import","dedup.override" (14),
@@ -752,13 +740,10 @@ create index on notifications (workspace_id, created_at desc);
 -- only one person is ever notified.
 create unique index on notifications (workspace_id, recipient_subject, dedupe_key) where read_at is null;
 
--- Platform-admin roster (15 §1). One deployment = one org (13 §4), so this is a single platform-wide role,
--- NOT workspace- or org_id-scoped. Deliberately no `org_memberships` table. Elevated; read-only governance.
-create table platform_admins (
-  subject     text primary key,                   -- OIDC subject
-  granted_at  timestamptz not null default now(),
-  granted_by  text                                -- subject of the granting platform_admin (NULL = deploy-seeded)
-);
+-- No `platform_admins` table (claim-based model, 2026-10-22). The app-wide `admin` (15 §1) is the
+-- `ap-platform-admin` Okta group claim, read live from the OIDC token (09 §1/§2.1): grant/revoke happens in
+-- Okta (audited there), and every admin action in-app is audited via `audit_logs`. One deployment = one org
+-- (13 §4): there is no `org_memberships` table. admin is elevated + read-only on the cross-tenant path (§6, 15 §2).
 ```
 
 ## 5. SQLAlchemy ORM (shape, not every line)
@@ -846,12 +831,13 @@ Caveats, stated plainly:
   RLS loop + the §7 CI check automatically too — no carve-out.
 - **Elevated carve-outs (the only tables that intentionally cross or skip tenant scope):**
   - Cross-workspace reads (the **org governance report**, 15) use a separate, explicitly-elevated,
-    **audited** path (a `SECURITY DEFINER` function callable only by the platform-admin plane, 15 §2) — the
+    **audited** path (a `SECURITY DEFINER` function callable only by the app-wide `admin` claim, 15 §2) — the
     single sanctioned exception to the isolation suite (09 §8).
   - `audit_logs` rows with `workspace_id = NULL` (org-level actions, e.g. `org.report.read`) are invisible to
     the per-workspace policy and readable only via that same elevated path.
-  - `platform_admins` (§4.9) is **not** `WorkspaceScoped` (deployment-wide role) → excluded from the loop;
-    access is gated at the application/auth layer (15 §1), not by RLS.
+  - The app-wide `admin` claim (`ap-platform-admin`, §4.9) is **not** `WorkspaceScoped` (deployment-wide, no
+    table) → nothing to add to the RLS loop; the elevated cross-tenant path is gated at the application/auth
+    layer (15 §1) + the `SECURITY DEFINER` EXECUTE grant, not by RLS.
 - pgvector queries must *also* filter `kb_id` + `workspace_id` in the query — RLS covers the row read
   but you still want the index to prune by namespace (performance, §4.4).
 

@@ -5569,7 +5569,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
         </div>
         <ul>
           <li>Organization = the deploying customer (Trellix); owns branding; ONE deployment per org; resolved once at build/deploy</li>
-          <li>Workspace = a tenant within the org (trellix-xdr, …); owns agents/knowledge/members; resolved per request</li>
+          <li>Workspace = a tenant within the org (trellix-xdr, …); owns agents/knowledge; resolved per request</li>
           <li>orgs is branding-only — it is NOT a tenant dimension (no org_id-scoped logic; see doc 15 §1)</li>
         </ul>
       </div>
@@ -5604,7 +5604,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           <h3>Not branding · caveat</h3>
         </div>
         <ul>
-          <li>Workspaces, members, roles, metrics stay backend-owned (09, 01); the trellix-* seeds are demo content (@backend remove)</li>
+          <li>Workspaces + metrics stay backend-owned (09, 01); membership/roles are IdP claims; the trellix-* seeds are demo content (@backend remove)</li>
           <li>Status colors + the dataviz s2–s8 series are brand-neutral — never themed per org</li>
           <li>Caveat: the typeface can&#39;t be pure config — next/font needs a static import, so a font change edits layout.tsx</li>
           <li>Source: docs/backend/13-branding.md · frontend/src/lib/org.ts · frontend/src/app/brand.css</li>

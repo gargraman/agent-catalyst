@@ -594,7 +594,7 @@ sequenceDiagram
     client->>api: POST /v1/agents/:id/invoke · Bearer
     api->>db: lookup api_tokens · sha256(token)
     Note over api,db: reject if revoked / expired
-    db-->>api: CallerCtx {tenant, role, teams, scopes}
+    db-->>api: CallerCtx {tenant, role=executer, teams, scopes}
     api->>redis: rate-limit + spend reserve
     Note over api,redis: 429 / 402 · SET LOCAL pins RLS tenant
     api->>db: load VersionSnapshot (pinned_version)
@@ -614,7 +614,7 @@ sequenceDiagram
 
 - Strip 'Bearer ', sha256 the secret → lookup api_tokens.token_hash (only the hash is ever stored)
 - Reject on revoked_at or expires_at; per-token rate-limit via a Redis sliding window
-- CallerCtx carries {workspace_id, token_id, role, teams, scopes} — the FE runtime-access decode, now server-authoritative
+- CallerCtx carries {workspace_id, token_id, role=executer, teams, scopes} — the FE runtime-access decode, now server-authoritative
 
 **Admit & isolate**
 
@@ -625,7 +625,7 @@ sequenceDiagram
 **Effective access (fail-closed)**
 
 - canUse runs BEFORE any provider call: access = agent config ∩ caller grants ∩ tenant ∩ resource policy
-- A token/channel caller carries no owner subject → private resources deny for everyone but an admin token
+- A token/channel caller carries no owner subject → private resources deny for every caller (admin is a console claim, not a token)
 - Denied tools / KBs / skills are dropped from the run, not errored
 
 **Same core, fully recorded**
@@ -679,8 +679,8 @@ sequenceDiagram
 **Federated identity (membership-independent)**
 
 - Verified platform email → okta.lookup_subject (email is the join key); unmapped → in-chat denial
-- Mint a short-lived platform token: role = CHANNEL_INVOKE_ROLE (fixed baseline 'viewer'), teams = Okta groups
-- Teams uses Entra OBO exchange; federated users need NO memberships row
+- Mint a short-lived platform token: role = CHANNEL_INVOKE_ROLE (fixed baseline 'executer'), teams = Okta groups
+- Teams uses the adapter exchange_obo; federated users are membership-independent (no roster row, identity is claim-derived)
 - Channel is pinned to one workspace_id; RLS partitions everything
 
 **Two access gates**
@@ -874,7 +874,7 @@ flowchart LR
 **Recipients (fan-out)**
 
 - Default: the agent owner (agents.owner_subject — hard dependency on doc 14 for a routable subject)
-- + platform-admins + members of the workspace group whose member_role = publisher
+- owner floor (always) + fan-out to publishers + admins via the group_members projection cache (18 §4)
 - One event fans to N notification rows (one per recipient, same dedupe_key)
 - Scoped by RLS (workspace) AND by recipient_subject = the signed-in principal
 
@@ -892,7 +892,7 @@ flowchart LR
 
 ## Org Governance — the platform-admin reporting plane
 
-*A 4th plane above the tenant planes: one SECURITY DEFINER read across every workspace, audited, metadata-only for private (doc 15)*
+*The app-wide admin plane (one of 3 planes): one SECURITY DEFINER read across every workspace, audited, metadata-only for private (doc 15)*
 
 `sequence` · source: `org-governance-reporting.json` / `org-governance-reporting.html`
 
@@ -905,7 +905,7 @@ sequenceDiagram
     participant db as Postgres<br/>all workspaces
     participant audit as audit_logs<br/>org-level (ws NULL)
     admin->>api: GET /api/v1/org/agents (OIDC session)
-    Note over admin,api: require_platform_admin · platform_admins roster · 403 else
+    Note over admin,api: require admin (app-wide claim) · 403 else
     api->>fn: org_report_agents()
     fn->>db: read EVERY workspace
     Note over fn,db: the ONE sanctioned crossing — bypasses RLS, no SET LOCAL
@@ -917,11 +917,11 @@ sequenceDiagram
     Note over api,admin: private: existence/owner/verdict/spend — NOT system_prompt / IO
 ```
 
-**A 4th plane, read-only**
+**The app-wide admin plane, read-only**
 
-- The three auth planes (console / token / channel) are all tenant-scoped to one workspace_id
+- The two tenant planes (console roles + the executer caller) are tenant-scoped to one workspace_id
 - Org governance is deliberately NOT tenant-scoped — it sees across every workspace at once
-- Modeled as a 4th plane above them: OIDC session + platform_admins roster → permission org.report.read
+- The app-wide admin plane (one of 3 planes): OIDC session + the app-wide admin claim → permission org.report.read
 - Deployment-wide (one org per deploy), never mutates — governance, not publish/edit/invoke
 
 **The one sanctioned crossing**
@@ -947,7 +947,7 @@ sequenceDiagram
 **Source**
 
 - docs/backend/15-org-governance-reporting.md §1 plane /§2 crossing+audit+metadata /§3 reports
-- tables: platform_admins · audit_logs (workspace_id now nullable) · agents.registered_at/owner_subject (14)
+- admin = the adapter's app-wide claim (not a table) · tables: audit_logs (workspace_id now nullable) · agents.registered_at/owner_subject (14)
 
 
 ---
@@ -983,7 +983,7 @@ flowchart LR
 **Organization ≠ workspace**
 
 - Organization = the deploying customer (Trellix); owns branding; ONE deployment per org; resolved once at build/deploy
-- Workspace = a tenant within the org (trellix-xdr, …); owns agents/knowledge/members; resolved per request
+- Workspace = a tenant within the org (trellix-xdr, …); owns agents/knowledge; resolved per request
 - orgs is branding-only — it is NOT a tenant dimension (no org_id-scoped logic; see doc 15 §1)
 
 **Where org config lives (FE)**
@@ -1000,7 +1000,7 @@ flowchart LR
 
 **Not branding · caveat**
 
-- Workspaces, members, roles, metrics stay backend-owned (09, 01); the trellix-* seeds are demo content (@backend remove)
+- Workspaces + metrics stay backend-owned (09, 01); membership/roles are IdP claims; the trellix-* seeds are demo content (@backend remove)
 - Status colors + the dataviz s2–s8 series are brand-neutral — never themed per org
 - Caveat: the typeface can't be pure config — next/font needs a static import, so a font change edits layout.tsx
 - Source: docs/backend/13-branding.md · frontend/src/lib/org.ts · frontend/src/app/brand.css
@@ -1028,8 +1028,7 @@ erDiagram
         uuid org_id FK
         text slug "unique"
         text name
-        text okta_group
-        member_role member_role
+        jsonb idp_binding
         provider_name default_provider
         text default_model
         int request_timeout_s
@@ -1499,22 +1498,6 @@ erDiagram
         timestamptz created_at
         timestamptz read_at
     }
-    platform_admins {
-        text subject PK
-        timestamptz granted_at
-        text granted_by
-    }
-    memberships {
-        uuid id PK
-        uuid workspace_id FK
-        text subject_id
-        text email
-        text display_name
-        member_role role
-        text invited_by
-        timestamptz joined_at
-        timestamptz last_active_at
-    }
     mcp_user_connections {
         uuid id PK
         uuid workspace_id FK
@@ -1575,4 +1558,4 @@ erDiagram
 
 - docs/backend/01-data-model.md §4 (DDL) · 09 (tokens, Vault, audit) · 10 (runs/spans) · 14 (adoption) · 16 (notifications)
 - Part 2 of 2 — anchors agents/agent_versions shown compact; full columns in Part 1 (schema-core-authoring)
-- memberships is a read-only roster projected from the workspace Okta group (not the system of record)
+- Members view is a read-only projection of per-workspace IdP role claims (ap-<prefix>-<role>); no roster table (not the system of record)

@@ -38,8 +38,10 @@ containers); where it **extends or pushes back**, the delta is argued inline (se
 | 12 | [12-channels.md](12-channels.md) | **(P2)** Messaging channels (Slack/Teams/Google Chat) — inbound adapter, Okta federation, channel DDL, a fourth `invoke()` caller |
 | 13 | [13-branding.md](13-branding.md) | **White-labeling** — "organization" vs "workspace", per-deployment org config (`lib/org.ts` ↔ branding source), theme tokens (`app/brand.css`), how to onboard a new org |
 | 14 | [14-adoption-enforcement.md](14-adoption-enforcement.md) | **P0** — key-custody enforcement spine (+ egress/cloud-IAM prerequisite), create-time registration gate, similarity/dedup scanner, import/migration of hand-wired agents |
-| 15 | [15-org-governance-reporting.md](15-org-governance-reporting.md) | **P0** — platform-admin plane, elevated audited cross-tenant read path, org-wide estate/spend/compliance report (metadata-only for private) |
+| 15 | [15-org-governance-reporting.md](15-org-governance-reporting.md) | **P0** — the app-wide `admin` claim, elevated audited cross-tenant read path, org-wide estate/spend/compliance report (metadata-only for private) |
 | 16 | [16-notifications.md](16-notifications.md) | **P0** — owner-facing notifications (drift/budget/model-deprecated/eval-failed), emit points, model-deprecation detector, delivery routes |
+| 17 | [17-mcp-identity.md](17-mcp-identity.md) | **P2+ (proposed)** — per-user MCP identity: caller connects their own OAuth account; `connect_required` for token callers; vaulted refresh tokens |
+| 18 | [18-identity-adapters.md](18-identity-adapters.md) | **P1** — IdP-agnostic identity: `IdentityProvider` adapter boundary, `idp_binding` role mapping, `members_of`/projection cache, per-adapter notes (Okta/Entra/Ping/Cognito/custom) |
 
 ## The two ideas that shape everything
 

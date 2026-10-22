@@ -204,6 +204,14 @@ def on_version_change(version, changed: set[str]):
         version.publishable = False          # must re-eval; publish → 409 until PASS
 ```
 
+> **Hash-coverage property test (C2 — CI gate).** The verdict cache keys on `candidate_hash = snapshot_hash`,
+> so correctness depends on every `DRIFT_TRIGGERS` field folding into `snapshot_hash` — stated as prose "MUST"s
+> today, which rot silently. Enforce it: one **property test per trigger** mutates that field on a fixture
+> version and asserts `snapshot_hash` changes; CI fails red if any trigger (or a newly-added frozen field) does
+> not. This makes "a stale PASS served from the cache bypasses the gate" a caught regression, not a latent hole.
+> *(Note: `kb_index_version` is **not** in this set — KB content is live & independent, 04 §9 / C3; whether a
+> content refresh re-arms the gate is the parked eval-signal decision.)*
+
 > **Frozen binding columns.** The new `tool_bindings.{risk_tier, requires_approval, subagent_config_id}` (01) ride inside the `tool_bindings` snapshot above, so a risk-tier change is a behavior change that forces re-eval — consistent with tool-schema-snapshot drift and covered by the `snapshot_hash` note below.
 
 > **Owner notification (16).** Flipping `publishable` / an agent's `drift` state used to tell no one —
@@ -214,7 +222,11 @@ def on_version_change(version, changed: set[str]):
 
 ```python
 # the gate, enforced at publish AND re-point (08):
-def assert_publishable(version) -> None:
+def assert_publishable(version, db) -> None:
+    # C2 (close the publish TOCTOU): take a per-version advisory lock held for the WHOLE gate-check + publish
+    # write, so no behavior-changing edit (trigger) or concurrent publish can interleave between the two reads
+    # below. Alternative: one query joining "latest run" against "latest trigger time". Either removes the race.
+    db.execute(text("select pg_advisory_xact_lock(hashtextextended(:v, 0))"), {"v": str(version.id)})
     last_trigger = latest_trigger_time(version)
     latest = latest_eval_run(version)                      # most recent run, ANY verdict (not pre-filtered)
     if latest is None or latest.started_at < last_trigger:
@@ -256,20 +268,27 @@ def judge_cache_key(case, baseline_snap, candidate_snap) -> str:
     return sha256(f"{case.id}:{baseline_snap}:{candidate_snap}:{JUDGE_VERSION}")
 ```
 
-> **Snapshot-hash coverage (RAG).** Because the verdict cache keys on `candidate_hash = snapshot_hash`,
-> `snapshot_hash` MUST incorporate the frozen `retrieval_config` **and** each binding's `kb_index_version`
-> (alongside model/params/prompt/guardrails/tools). Otherwise a retrieval change — a re-ingest that bumps
-> `kb_index_version`, or a `top_k`/`threshold` edit — leaves the hash unchanged, so a stale PASS is served
-> from the cache and the publish gate is bypassed silently. This is the hashing counterpart to adding
-> `retrieval_config` to `DRIFT_TRIGGERS` above.
+> **Snapshot-hash coverage (RAG).** `snapshot_hash` MUST incorporate the frozen **binding** — `retrieval_config`
+> + which KB + `embedding_model` — so that a **binding** change (`top_k`/`threshold` edit, re-point to a
+> different KB, embedding-model change) busts the verdict cache and re-arms the publish gate. This is the
+> hashing counterpart to adding `retrieval_config` to `DRIFT_TRIGGERS`.
+>
+> **⚠️ PARKED (open decision — 2026-10-22; review-fixes C3).** Whether a KB **content refresh** also busts the
+> cache — i.e. whether each binding's `kb_index_version` folds into `snapshot_hash` — is **deferred**, because
+> KB content is now live & independent of the agent version (04 §9): folding it in would bump the snapshot on
+> every refresh, which contradicts "the agent version does not change on refresh." The replacement drift signal
+> for a content refresh (flag `needsReEval` + notify on regression, vs. no signal) is the parked decision. Until
+> resolved, `kb_index_version` is **NOT** part of `snapshot_hash`; this paragraph covers the **binding** only.
 
 > **Snapshot-hash coverage (Skills).** Identically, `snapshot_hash` MUST incorporate each bound skill's
 > frozen content — the **instruction-text hash + every bundled-resource content hash + the skill version**
 > (pinned in `skill_bindings.skill_content_hash`, 01 §4.2/§4.4). A skill is an instruction fragment injected
 > into the prompt (03 §4), so editing its instructions or resources is a behavior change exactly like editing
 > `system_prompt`. If the skill content hash did not fold into `snapshot_hash`, the verdict cache would serve
-> a **stale PASS** on a skill edit and the publish re-eval gate would be silently bypassed — the same failure
-> mode as `kb_index_version`. This is the hashing counterpart to adding `skill_bindings` to `DRIFT_TRIGGERS`
+> a **stale PASS** on a skill edit and the publish re-eval gate would be silently bypassed. **Note the
+> deliberate asymmetry with KBs:** a skill's content **is** pinned into the snapshot (instructions = pinned,
+> like the prompt), whereas a KB's content is **live & independent** (04 §9) and is **not** — see the parked
+> RAG decision above. This is the hashing counterpart to adding `skill_bindings` to `DRIFT_TRIGGERS`
 > above. Because a skill lives entirely in the snapshot and **does not execute code** (no sandbox, egress, or
 > tool-call side effects — 01 §4.4, 03 §4), it is exercised in eval identically to production: the eval worker
 > runs the same `runtime.invoke` over the same frozen skill content, so there is nothing non-reproducible to
