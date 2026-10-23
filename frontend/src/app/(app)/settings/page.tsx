@@ -23,7 +23,7 @@ import {
   updateWorkspaceSettings, updateWorkspace, setWorkspaceActive, deleteWorkspace, updateLimits, setEvalPolicy,
   genId, nowIso,
 } from "@/lib/store";
-import { ROLE_ORDER, ROLE_LABEL, ROLE_PERMISSIONS, type Permission, type Role } from "@/lib/permissions";
+import { ROLE_ORDER, ROLE_LABEL, ROLE_PERMISSIONS, type Permission } from "@/lib/permissions";
 import { useWorkspace, useAuth } from "@/lib/auth";
 import { AccessPolicyEditor } from "@/components/access-policy-editor";
 import { ORG } from "@/lib/org";
@@ -58,8 +58,7 @@ function Workspace() {
       key={wsId}
       wsId={wsId}
       wsName={workspace?.name ?? ""}
-      wsOktaGroup={workspace?.oktaGroup ?? ""}
-      wsMemberRole={workspace?.memberRole ?? "builder"}
+      wsGroupPrefix={workspace?.groupPrefix ?? ""}
       settings={settings}
       active={active}
       canEdit={can("settings.manage")}
@@ -68,15 +67,12 @@ function Workspace() {
   );
 }
 
-const BASE_ROLES: Role[] = ROLE_ORDER.filter((r) => r !== "admin"); // admin is reserved for platform-admins
-
-function WorkspaceForm({ wsId, wsName, wsOktaGroup, wsMemberRole, settings, active, canEdit, canManageRaw }: {
-  wsId: string; wsName: string; wsOktaGroup: string; wsMemberRole: Role;
+function WorkspaceForm({ wsId, wsName, wsGroupPrefix, settings, active, canEdit, canManageRaw }: {
+  wsId: string; wsName: string; wsGroupPrefix: string;
   settings: WorkspaceSettings; active: boolean; canEdit: boolean; canManageRaw: boolean;
 }) {
   const [name, setName] = React.useState(wsName);
-  const [okta, setOkta] = React.useState(wsOktaGroup);
-  const [memberRole, setMemberRole] = React.useState<Role>(wsMemberRole);
+  const [groupPrefix, setGroupPrefix] = React.useState(wsGroupPrefix);
   const [provider, setProvider] = React.useState(settings.defaultProvider);
   const [model, setModel] = React.useState(settings.defaultModel);
   const [deleteOpen, setDeleteOpen] = React.useState(false);
@@ -90,13 +86,16 @@ function WorkspaceForm({ wsId, wsName, wsOktaGroup, wsMemberRole, settings, acti
   const channelCount = useChannels().length;
   const skillCount = useSkills().length;
 
-  const identityDirty = name.trim() !== wsName || okta.trim() !== wsOktaGroup || memberRole !== wsMemberRole;
+  const identityDirty = name.trim() !== wsName || groupPrefix.trim() !== wsGroupPrefix;
+  // Both identity fields are required — don't let a cleared name/prefix silently no-op (store keeps the old value).
+  const identityValid = name.trim().length > 0 && groupPrefix.trim().length > 0;
   const settingsDirty = provider !== settings.defaultProvider || model !== settings.defaultModel;
-  const dirty = identityDirty || settingsDirty;
+  // Settings-only changes can save even while the name/prefix is mid-edit; identity saves only when valid.
+  const canSave = settingsDirty || (identityDirty && identityValid);
   const editable = canEdit; // platform-admin AND active (false when frozen)
 
   const save = () => {
-    if (identityDirty) updateWorkspace(wsId, { name: name.trim(), oktaGroup: okta, memberRole });
+    if (identityDirty && identityValid) updateWorkspace(wsId, { name: name.trim(), groupPrefix });
     if (settingsDirty) updateWorkspaceSettings(wsId, { defaultProvider: provider, defaultModel: model });
   };
   const closeDelete = () => { setDeleteOpen(false); setConfirmText(""); };
@@ -118,13 +117,8 @@ function WorkspaceForm({ wsId, wsName, wsOktaGroup, wsMemberRole, settings, acti
           <Field label="Slug" hint="Published endpoint URL segment. Immutable — set at creation.">
             <Input value={wsId} readOnly />
           </Field>
-          <Field label="Backing Okta group" hint="Being in this group grants access to the workspace. Membership is managed in Okta.">
-            <Input value={okta} onChange={(e) => setOkta(e.target.value)} disabled={!editable} placeholder="e.g. ap-acme-soc" />
-          </Field>
-          <Field label="Member role" hint="Role the group confers to its members. Admin is reserved for platform admins.">
-            <Select value={memberRole} onChange={(e) => setMemberRole(e.target.value as Role)} disabled={!editable}>
-              {BASE_ROLES.map((r) => <option key={r} value={r}>{ROLE_LABEL[r]}</option>)}
-            </Select>
+          <Field label="IdP group prefix" hint="Per-role access claims are derived from this prefix (e.g. the Okta adapter expands it to ap-<prefix>-viewer/-builder/-publisher). Membership is managed in the IdP.">
+            <Input value={groupPrefix} onChange={(e) => setGroupPrefix(e.target.value)} disabled={!editable} placeholder="e.g. acme-soc" />
           </Field>
           <Field label="Default provider">
             <Select value={provider} onChange={(e) => setProvider(e.target.value)} disabled={!editable}>
@@ -137,7 +131,7 @@ function WorkspaceForm({ wsId, wsName, wsOktaGroup, wsMemberRole, settings, acti
             </Select>
           </Field>
           <div className="flex items-end sm:col-span-2">
-            <GateButton permission="settings.manage" variant="primary" disabled={!dirty} onClick={save}>
+            <GateButton permission="settings.manage" variant="primary" disabled={!canSave} onClick={save}>
               Save changes
             </GateButton>
           </div>
@@ -215,10 +209,9 @@ function WorkspaceForm({ wsId, wsName, wsOktaGroup, wsMemberRole, settings, acti
 function Members() {
   const members = useMembers();
   const { workspace } = useWorkspace();
-  // The group confers ONE role to all its members, so render the workspace's memberRole for every row
-  // (rather than the illustrative per-person seed role) to match the group-driven model.
-  const roleLabel = workspace ? ROLE_LABEL[workspace.memberRole] : "—";
-  const roleBadgeTone = (roleTone[roleLabel as Member["role"]] ?? "neutral");
+  // Claim-based roster (backend/18 §4): each member's role is the per-workspace role claim THEY hold, so render
+  // each row's own role — not the signed-in viewer's resolved role. (A real roster projects each row's role from
+  // its own claims; the seeded `Member.role` stands in for that here. Platform admins show as Admin everywhere.)
 
   return (
     <div className="space-y-6">
@@ -227,9 +220,9 @@ function Members() {
           <div>
             <CardTitle>Sign-in &amp; identity</CardTitle>
             <CardDescription>
-              Everyone signs in through {ORG.idpName} (org-level SSO). Membership in <em>this</em> space is
-              granted by its backing Okta group
-              {workspace?.oktaGroup && <> (<code className="rounded bg-elevated px-1 py-0.5 text-xs text-ink-2">{workspace.oktaGroup}</code>)</>}
+              Everyone signs in through {ORG.idpName} (org-level SSO). Access to <em>this</em> space is granted
+              by its per-role access claims, derived from the group prefix
+              {workspace?.groupPrefix && <> (<code className="rounded bg-elevated px-1 py-0.5 text-xs text-ink-2">{workspace.groupPrefix}</code>)</>}
               {" "}— add or remove people in {ORG.idpName}, not here.
             </CardDescription>
           </div>
@@ -245,8 +238,8 @@ function Members() {
               <Badge tone="neutral">Managed in {ORG.idpName}</Badge>
             </div>
             <CardDescription>
-              Read-only roster projected from the workspace&apos;s Okta group. Everyone in the group holds the
-              workspace&apos;s member role; platform admins are admins everywhere.
+              Read-only roster projected from the workspace&apos;s per-role access claims. Each person&apos;s
+              role comes from the claims they hold; platform admins are admins everywhere.
             </CardDescription>
           </div>
         </CardHeader>
@@ -265,7 +258,7 @@ function Members() {
                     </div>
                   </TD>
                   <TD className="text-muted">{m.email}</TD>
-                  <TD><Badge tone={roleBadgeTone}>{roleLabel}</Badge></TD>
+                  <TD><Badge tone={roleTone[m.role]}>{m.role}</Badge></TD>
                   <TD className="text-muted tnum">{relative(m.lastActive)}</TD>
                 </TR>
               ))}
@@ -962,7 +955,7 @@ function RolesAccess() {
 
 /* @backend integration points (this page):
  *  - @backend GET /v1/workspaces/:id - workspace config (slug read-only; name/access/provider/model editable) [via useWorkspace + useWorkspaceSettings]
- *  - @backend PATCH /v1/workspaces/:id - save identity name/access_mode/okta_group (admin) [via updateWorkspace] + default provider/model [via updateWorkspaceSettings]
+ *  - @backend PATCH /v1/workspaces/:id - save identity name/idp_binding group prefix (admin, backend/18 §3) [via updateWorkspace] + default provider/model [via updateWorkspaceSettings]
  *  - @backend POST /v1/workspaces/:id/archive (deactivate) + NEW reactivate endpoint - reversible Inactive toggle (admin, bypasses the read-only freeze) [via setWorkspaceActive]
  *  - @backend NO hard-delete endpoint (backend archives) - mock-only cascade removes the space + all its resources (admin) [via deleteWorkspace]
  *  - @backend GET /v1/workspaces/:id/limits - per-workspace spend/concurrency/timeout [via useLimits]
@@ -973,8 +966,9 @@ function RolesAccess() {
  *  - @backend GET /v1/agents/:id/tokens - API tokens list [via useTokens]
  *  - @backend POST /v1/agents/:id/tokens - create token bound to a published endpoint, shown once (publisher+) [via addToken]
  *  - @backend DELETE /v1/tokens/:id - revoke token (publisher+) [via revokeToken]
- *  - @backend GET /v1/members?workspace=:id - READ-ONLY roster [via useMembers]; membership is Okta-group-
- *    driven (the workspace's backing group confers its memberRole). No in-app invite/remove — managed in Okta.
+ *  - @backend GET /v1/members?workspace=:id - READ-ONLY roster [via useMembers]; membership is CLAIM-driven
+ *    (each person's role comes from their per-workspace role claims, adapter projection backend/18 §4). No
+ *    in-app invite/remove — managed in the IdP.
  *  - @backend PUT /v1/{agents|knowledge|tools|mcp|channels|skills}/:id/access-policy - Roles & access now edits per-resource policies across all 6 kinds (admin) [via setAccessPolicy / AccessPolicyEditor]
  *  - @backend the cURL sample is illustrative; the Authentication note describes the IAM/OIDC integration
  * See src/lib/store.ts markers + docs/backend-integration-map.md for the authoritative contracts.

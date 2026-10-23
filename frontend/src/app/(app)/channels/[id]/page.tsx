@@ -67,7 +67,7 @@ export default function ChannelDetailPage() {
   // resolves to a real principal, then is gated by the agent's own access policy.
   const ctx: RunCtx = {
     mode: "channel", platform: channel.platform, identityMode: channel.identityMode,
-    user: user.name, tenant, role: principal.role, teams: principal.teams,
+    user: user.name, tenant, teams: principal.teams,
   };
   const session: Session = { tenant, role: principal.role, teams: principal.teams };
   const resolution = target ? resolveRun(ctx, target, session, mcpServers, skills) : null;

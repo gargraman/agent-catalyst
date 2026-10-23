@@ -15,10 +15,14 @@ export type AccessPolicy = {
   owner?: string;
 };
 
+// A caller's role at invoke is the execute-only `executer` baseline (token/channel planes, backend/09 §1),
+// NOT a console RBAC tier; the console session keeps its console `Role`. One Principal type spans both.
+export type CallerRole = Role | "executer";
+
 // `subject` is the caller's identity (email/OIDC subject). Present on the console (from the session);
 // absent at invoke time (token/channel callers have no owner identity) — so `private` resources are
-// denied to run-time callers except admin tokens, which is the intended fail-closed behavior.
-export type Principal = { role: Role; teams: string[]; subject?: string };
+// denied to every runtime caller (fail closed). `admin` is a console claim, never a caller role.
+export type Principal = { role: CallerRole; teams: string[]; subject?: string };
 
 export function defaultPolicy(): AccessPolicy {
   return { visibility: "workspace", useRoles: [], useTeams: [], manageRoles: [], manageTeams: [] };
@@ -28,7 +32,11 @@ function matches(roles: Role[], teams: string[], p: Principal): boolean {
   // A "restricted" policy that names neither a role nor a team grants no one — fail closed
   // rather than silently open (otherwise "Restricted" would be a no-op visible to everyone).
   if (roles.length === 0 && teams.length === 0) return false;
-  // A single empty list is not a constraint on its own (restrict by the other dimension).
+  // Caller plane (executer): `useRoles` gate CONSOLE principals only; a caller has no console role, so it is
+  // gated on TEAMS alone — a role-only policy (no team) therefore denies callers (fail closed). Keeps the FE
+  // preview aligned with backend/09 §5 and the channel model "channel okta_group ∩ agent accessPolicy".
+  if (p.role === "executer") return teams.length > 0 && p.teams.some((t) => teams.includes(t));
+  // Console principal: role AND team (a single empty list = unconstrained on that dimension).
   const roleOk = roles.length === 0 || roles.includes(p.role);
   const teamOk = teams.length === 0 || p.teams.some((t) => teams.includes(t));
   return roleOk && teamOk;

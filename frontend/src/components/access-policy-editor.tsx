@@ -147,6 +147,11 @@ export function AccessPolicyEditor({
             onTeams={(t) => patch({ manageTeams: toggle(draft.manageTeams, t) })}
             disabled={readOnly}
           />
+          <p className="text-xs text-ink-2">
+            <span className="text-ink">Roles</span> restrict console users; <span className="text-ink">teams</span> restrict
+            everyone, including channel / API (<code>executer</code>) callers. A role-only restriction is <span className="text-ink">not</span>{" "}
+            invokable from a channel or token — add a team to expose it there.
+          </p>
         </>
       )}
 

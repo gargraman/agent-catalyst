@@ -8,7 +8,7 @@ import {
   LogOut, Menu, MessageSquare, MessagesSquare, Plug, Plus, Search, Settings, ShieldCheck, Sparkles, X,
 } from "lucide-react";
 import { ThemeToggle } from "./theme-toggle";
-import { Avatar, Button, Field, Input, Select } from "./ui";
+import { Avatar, Button, Field, Input } from "./ui";
 import { Dialog } from "./dialog";
 import { GateButton } from "./gate";
 import { cn } from "@/lib/utils";
@@ -120,18 +120,15 @@ function WorkspaceSwitcher() {
   // Create-workspace dialog — platform-admins only (they can see/manage every space).
   const [createOpen, setCreateOpen] = React.useState(false);
   const [name, setName] = React.useState("");
-  const [oktaGroup, setOktaGroup] = React.useState("");
-  const [memberRole, setMemberRole] = React.useState<Role>("builder");
+  const [groupPrefix, setGroupPrefix] = React.useState("");
   const slug = slugify(name);
-  const canCreate = name.trim().length > 0 && oktaGroup.trim().length > 0;
-  const openCreate = () => { setOpen(false); setName(""); setOktaGroup(""); setMemberRole("builder"); setCreateOpen(true); };
+  const canCreate = name.trim().length > 0 && groupPrefix.trim().length > 0;
+  const openCreate = () => { setOpen(false); setName(""); setGroupPrefix(""); setCreateOpen(true); };
   const submitCreate = () => {
     if (!canCreate) return;
-    addWorkspace({ name, oktaGroup, memberRole });
+    addWorkspace({ name, groupPrefix });
     setCreateOpen(false);
   };
-  // Base role a workspace's group can confer — admin is reserved for platform-admins.
-  const BASE_ROLES: Role[] = ROLE_ORDER.filter((r) => r !== "admin");
 
   return (
     <div className="relative" ref={ref}>
@@ -179,7 +176,7 @@ function WorkspaceSwitcher() {
         open={createOpen}
         onClose={() => setCreateOpen(false)}
         title="Create workspace"
-        description="An isolated tenant backed by an Okta group. Members of that group get the base role you pick; it starts with a default config and a small starter kit."
+        description="An isolated tenant. Its per-role access claims are derived from this group prefix in the IdP; it starts with a default config and a small starter kit."
         footer={
           <>
             <Button variant="ghost" onClick={() => setCreateOpen(false)}>Cancel</Button>
@@ -191,13 +188,8 @@ function WorkspaceSwitcher() {
           <Field label="Workspace name" hint={slug ? `Slug: ${slug} — set now, immutable` : "Used to derive the immutable slug."}>
             <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Acme SOC" autoFocus />
           </Field>
-          <Field label="Backing Okta group" hint="Being in this group grants access to the workspace. Membership is managed in Okta.">
-            <Input value={oktaGroup} onChange={(e) => setOktaGroup(e.target.value)} placeholder="e.g. ap-acme-soc" />
-          </Field>
-          <Field label="Member role" hint="Role the group confers to its members. Admin is reserved for platform admins.">
-            <Select value={memberRole} onChange={(e) => setMemberRole(e.target.value as Role)}>
-              {BASE_ROLES.map((r) => <option key={r} value={r}>{ROLE_LABEL[r]}</option>)}
-            </Select>
+          <Field label="IdP group prefix" hint="Role claims are derived from this prefix (e.g. the Okta adapter expands it to ap-<prefix>-viewer/-builder/-publisher). Membership is managed in the IdP.">
+            <Input value={groupPrefix} onChange={(e) => setGroupPrefix(e.target.value)} placeholder="e.g. acme-soc" />
           </Field>
         </div>
       </Dialog>

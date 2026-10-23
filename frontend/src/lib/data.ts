@@ -41,8 +41,9 @@ export const MODELS: ModelRef[] = [
   { provider: "Meta", model: "llama-3.3-70b (self-host)", inUsd: 0, outUsd: 0, context: "128K" },
 ];
 
-// @backend GET /v1/members?workspace=:id — READ-ONLY roster projected from the workspace's backing Okta
-//   group. Membership + role come from Okta (role = the workspace's memberRole); no in-app invite/remove.
+// @backend GET /v1/members?workspace=:id — READ-ONLY roster projected from the workspace's per-role access
+//   claims (adapter projection, backend/18 §4). Each person's role = the highest claim they hold; no in-app
+//   invite/remove (managed in the IdP).
 export type Member = { name: string; email: string; role: "Admin" | "Publisher" | "Builder" | "Viewer"; lastActive: string };
 export const MEMBERS: Member[] = [
   { name: "Raman Garg", email: `raman.garg@${ORG.emailDomain}`, role: "Admin", lastActive: "2026-10-04T09:12:00Z" },

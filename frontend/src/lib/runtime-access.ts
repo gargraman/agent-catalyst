@@ -1,7 +1,7 @@
 import type { Agent, McpServer, Skill } from "./data";
 import type { ChannelPlatform } from "./channels";
 import type { Role } from "./permissions";
-import { canUse, type Principal } from "./access-policy";
+import { canUse, type Principal, type CallerRole } from "./access-policy";
 import { parseMcpRef } from "./tools";
 import { DEFAULT_WORKSPACE_ID } from "./iam";
 
@@ -11,11 +11,15 @@ export type RunCtx =
   // A messaging channel: the platform-asserted user has already been federated to an Okta identity and a
   // short-lived token minted server-side (see docs/channels-design.md §2, backend/12 §4). So a federated
   // human arrives as a real "user" principal and a service account as "service" — no new subject class.
-  // `teams` are the user's Okta groups (same model as the console, lib/iam.ts); `role` is a fixed baseline
-  // invoke role, NOT a console RBAC tier. The channel user needs NO workspace membership — authorization is
-  // channel okta_group ∩ agent accessPolicy.
-  | { mode: "channel"; platform: ChannelPlatform; identityMode: "federated" | "service"; user?: string; tenant: string; role: Role; teams: string[] };
+  // `teams` are the user's Okta groups (same model as the console, lib/iam.ts). The channel caller resolves
+  // to the execute-only `executer` role (set in resolveRun, NOT carried on the ctx); it needs NO workspace
+  // membership — authorization is channel okta_group ∩ agent accessPolicy.
+  | { mode: "channel"; platform: ChannelPlatform; identityMode: "federated" | "service"; user?: string; tenant: string; teams: string[] };
 export type Session = { tenant: string; role: Role; teams: string[] };
+
+// Caller role (backend/09 §1): the token + channel planes resolve to the execute-only `executer` baseline
+// (a fixed invoke role, NOT a console RBAC tier); session ("run as me") keeps the console role. This is a
+// Playground PREVIEW — the server is authoritative. See access-policy.ts `CallerRole`.
 
 export type RunStatus = "ok" | "expired" | "revoked" | "tenant_mismatch" | "policy_denied";
 export type Denied = { name: string; reason: string };
@@ -23,7 +27,7 @@ export type Denied = { name: string; reason: string };
 export type RunResolution = {
   subjectType: "user" | "service";
   tenant: string;
-  role: Role;
+  role: CallerRole;   // "executer" for token/channel callers; the console Role for a session ("run as me")
   teams: string[];
   scopes: string[];
   expiry: string;
@@ -50,7 +54,7 @@ function decodeToken(token: string, agent: Agent): Omit<RunResolution, "grantedT
   const t = token.toLowerCase();
   const subjectType: "user" | "service" = t.includes("user") ? "user" : "service";
   const tenant = t.includes("grc") ? "trellix-grc" : t.includes("labs") ? "trellix-labs" : (agent.workspaceId ?? DEFAULT_WORKSPACE_ID);
-  const role: Role = t.includes("admin") ? "admin" : t.includes("pub") ? "publisher" : t.includes("view") ? "viewer" : "builder";
+  const role: CallerRole = "executer";   // a caller token always resolves to the execute-only role (09 §1) — never a console tier
   const teams = t.includes("soc") ? ["SOC"] : t.includes("grc") ? ["GRC"] : t.includes("plat") ? ["Platform"] : [];
   const status: RunStatus = t.includes("expired") ? "expired" : t.includes("revoked") ? "revoked"
     : tenant !== (agent.workspaceId ?? DEFAULT_WORKSPACE_ID) ? "tenant_mismatch" : "ok";
@@ -76,14 +80,15 @@ export function resolveRun(ctx: RunCtx, agent: Agent, session: Session, mcpServe
         // gated by the agent's accessPolicy below (and by the channel's Okta group upstream), not by a
         // partial token. The channel okta_group ∩ agent accessPolicy is the end-user access rule.
         subjectType: (ctx.identityMode === "service" ? "service" : "user") as "user" | "service",
-        tenant: ctx.tenant, role: ctx.role, teams: ctx.teams,
+        tenant: ctx.tenant, role: "executer" as CallerRole, teams: ctx.teams,
         scopes: ["*"], expiry: ctx.identityMode === "service" ? "service account" : "minted · 15m",
         status: (ctx.tenant === agentTenant ? "ok" : "tenant_mismatch") as RunStatus,
       }
     : decodeToken(ctx.token, agent);
 
-  // Run-time callers (token/channel) carry no `subject`, so a `private` agent (owner-only) is denied
-  // here for everyone except an admin token — the intended fail-closed behavior (access-policy.ts).
+  // Run-time callers (token/channel) resolve to `executer` and carry no `subject`, so a `private` agent
+  // (owner-only) is denied here for every caller — the intended fail-closed behavior (access-policy.ts).
+  // (admin is a console claim, not a caller role, so there is no admin-token bypass at invoke.)
   const principal: Principal = { role: base.role, teams: base.teams };
   const tools = agent.tools ?? [];
   const kbs = agent.knowledgeBases ?? [];

@@ -16,18 +16,19 @@ import {
   useWorkspaces, usePlatformAdminOverride, useWorkspaceActiveFor,
 } from "./store";
 
-// @backend session - replace MOCK_PROFILE with the signed-in OIDC session (Auth.js + org Okta): name/email
-//   from the session; `groups` = the OIDC `groups` claim (workspace backing groups + PLATFORM_ADMIN_GROUP);
-//   `teams` = the functional Okta groups. Role per workspace is DERIVED from the workspace's group → memberRole
-//   (backend/09 §2.1, backend/15). The useAuth/useWorkspace/usePrincipal surface stays identical; only this
-//   source changes, and the dev role/team/platform-admin overrides are dropped. [ref: frontend-auth-access-plan.md]
+// @backend session - replace MOCK_PROFILE with the signed-in OIDC session (Auth.js + the active IdP adapter):
+//   name/email from the session; `groups` = the OIDC `groups` claim (per-workspace role claims +
+//   PLATFORM_ADMIN_GROUP); `teams` = the functional groups. Role per workspace is DERIVED from the highest
+//   role claim the user holds for it (idpBinding resolves role→native claim via the adapter; backend/09 §2.1,
+//   backend/18 §3). The useAuth/useWorkspace/usePrincipal surface stays identical; only this source changes,
+//   and the dev role/team/platform-admin overrides are dropped. [ref: frontend-auth-access-plan.md]
 const profile = MOCK_PROFILE;
 
 export type AuthUser = { name: string; email: string; role: Role; teams: string[] };
 
 export type Auth = {
   user: AuthUser;
-  /** Effective role = dev override (preview) if set, else derived from the active workspace's group. */
+  /** Effective role = dev override (preview) if set, else the highest role claim held for the active workspace. */
   role: Role;
   /** True when the dev role switcher is forcing a role different from IAM. */
   overridden: boolean;
@@ -70,10 +71,10 @@ export function useAuth(): Auth {
 }
 
 export type WorkspaceCtx = {
-  /** Workspaces visible to the user: platform-admins see all, else those whose Okta group they're in. */
+  /** Workspaces visible to the user: platform-admins see all, else those they hold any role claim for. */
   workspaces: Workspace[];
   workspace: Workspace | undefined;
-  /** Role conferred by the active workspace's group (ignores the dev preview override). */
+  /** Highest role claim held for the active workspace (ignores the dev preview override). */
   membershipRole: Role;
   /** False when the active workspace is Inactive (read-only freeze). */
   active: boolean;

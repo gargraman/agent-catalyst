@@ -109,8 +109,9 @@ type State = {
   runs: Run[];
   tokens: ApiToken[];
   providerKeys: ProviderKey[];
-  // @backend read-only in the mock - the roster is derived from the workspace's Okta group; shown read-only
-  //   (no invite/remove). Real source: GET /v1/members?workspace=:id (group membership projection).
+  // @backend read-only in the mock - the roster is a projection of the workspace's role claims (idp_binding);
+  //   shown read-only (no invite/remove). Real source: GET /v1/members?workspace=:id (adapter projection,
+  //   backend/18 §4 group_members cache).
   members: Member[];
   channels: Channel[];
   toolApprovals: ToolApproval[];
@@ -220,11 +221,11 @@ export function setWorkspaceActive(wsId: string, active: boolean) {
 // @backend NO create endpoint today — workspaces are org-provisioned (backend/08 has no POST /v1/workspaces).
 //   Mock-only convenience: provision a space, make the creator its admin, and scaffold baseline config +
 //   a starter kit so it's immediately usable. A real deploy would add POST /v1/workspaces or keep this out-of-band.
-export function addWorkspace(input: { name: string; oktaGroup: string; memberRole: Role }): string {
+export function addWorkspace(input: { name: string; groupPrefix: string }): string {
   const name = input.name.trim();
   let id = slugify(name) || genId("ws");
   if (state.workspaces.some((w) => w.id === id)) id = `${id}-${genId("ws").split("-")[1]}`; // de-dupe
-  const ws: Workspace = { id, name, short: shortOf(name), oktaGroup: input.oktaGroup.trim(), memberRole: input.memberRole };
+  const ws: Workspace = { id, name, short: shortOf(name), groupPrefix: input.groupPrefix.trim() };
 
   // Starter kit — explicit workspaceId so these land in the NEW space (not the active one). tagResource
   // stamps the default access policy. Bound counts are unaffected (the starter agent binds nothing).
@@ -260,9 +261,9 @@ export function addWorkspace(input: { name: string; oktaGroup: string; memberRol
   toast(`Workspace "${name}" created`);
   return id;
 }
-// @backend PATCH /v1/workspaces/:id - update workspace identity (name, backing Okta group, member base role;
-//   slug/id immutable — the endpoint URL segment). Platform-admin only. [ref: backend/01 §4.1, backend/08]
-export function updateWorkspace(wsId: string, patch: { name?: string; oktaGroup?: string; memberRole?: Role }) {
+// @backend PATCH /v1/workspaces/:id - update workspace identity (name, idp_binding group prefix; slug/id
+//   immutable — the endpoint URL segment). Platform-admin only. [ref: backend/01 §4.1, backend/08, backend/18 §3]
+export function updateWorkspace(wsId: string, patch: { name?: string; groupPrefix?: string }) {
   set({
     workspaces: state.workspaces.map((w) => {
       if (w.id !== wsId) return w;
@@ -271,8 +272,7 @@ export function updateWorkspace(wsId: string, patch: { name?: string; oktaGroup?
         ...w,
         name,
         short: patch.name ? shortOf(name) : w.short,
-        oktaGroup: patch.oktaGroup?.trim() || w.oktaGroup,
-        memberRole: patch.memberRole ?? w.memberRole,
+        groupPrefix: patch.groupPrefix?.trim() || w.groupPrefix,
       };
     }),
   });
@@ -416,8 +416,9 @@ export function setAccessPolicy(
 }
 
 /* ------------------------------------------------------------- members (read-only)
-   @backend membership is Okta-GROUP-driven — the roster is a read-only projection of the workspace's backing
-   group (GET /v1/members?workspace=:id). No invite/remove in-app: add/remove happens in Okta. */
+   @backend membership is CLAIM-driven — the roster is a read-only projection of the workspace's per-role
+   claims (GET /v1/members?workspace=:id, adapter projection). No invite/remove in-app: add/remove happens
+   in the IdP. [ref: backend/18 §4] */
 
 /* --------------------------------------------------------------- actions */
 // @backend POST /v1/agents - create a draft agent in the active workspace; returns the created id.
