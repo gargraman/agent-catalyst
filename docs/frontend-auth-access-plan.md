@@ -1,57 +1,37 @@
-# Frontend auth & access model (Trellix IAM)
+# Frontend auth & access model
 
-> Companion to `docs/spec.md`, `docs/scope.md`, `docs/backend-integration-plan.md`. Frontend-scoped;
-> mock IAM now, shaped to swap to real Trellix IAM (OIDC) with no UI changes.
+> Companion to `docs/spec.md`, `docs/scope.md`, `docs/backend-integration-plan.md`. **Frontend-surface
+> scoped** — the FE files/hooks/components that render auth & access. Mock identity now, shaped to swap to a
+> real IdP (OIDC) with no UI changes.
 
-## Context
+> **The authoritative auth/access *model* lives elsewhere — this doc does not restate it.** Membership +
+> role are **claim-based and IdP-agnostic** (per-workspace IdP role claims, mapped by the active identity
+> adapter; teams are functional IdP groups; console roles `viewer < builder < publisher`, one app-wide
+> `admin` claim, and a caller-only `executer`; no app roster / invite / self-join). The model and its *why*
+> are owned by **`backend/09 §1–§2.1`**, the identity-adapter spec **`backend/18`**, and the **`scope.md`
+> decision log** (revs 1/2/5). Read those for the model; this doc only maps it onto the **frontend surface**
+> (files, hooks, components, journeys) and the two access *contexts* below. Where this doc and `09`/`18`
+> disagree, `09`/`18` win.
 
-Agent Platform is registered in **Trellix IAM** as a separate product; the console's authentication and
-authorization come from IAM. There are **two distinct access contexts**:
+## Context — the two access contexts (FE framing)
+
+There are **two distinct access contexts** the console surfaces:
 
 1. **Console access (build time)** - who can use the app and what they can do (create, edit, publish,
-   manage keys/members). Driven by the signed-in user's **IAM role (per workspace)**. Gates the UI.
+   manage keys). Driven by the signed-in user's **per-workspace role claim**. Gates the UI.
 2. **Runtime access (agent execution)** - which tools / knowledge / MCP an agent can use at run time is
-   governed by the **token the running user provides**, not the builder's.
+   governed by the **token the running caller provides**, not the builder's.
 
 **Key principle:** build-time visibility is not run-time access.
 `effective access = agent config ∩ caller grants ∩ caller tenant ∩ resource access policy`.
 
-**Boundary with the IdP (claim-based):** **authentication** is the org **IdP** (OIDC; Okta is the reference
-adapter, `18`). **Workspace membership and the per-workspace role come from per-workspace IdP role claims**
-(`ap-<prefix>-<role>`, mapped via `idp_binding` / FE `groupPrefix`) — there is **no** app roster, invite, or
-self-join. **Teams are functional IdP groups**, carried in the OIDC **`groups` claim** and normalized to team
-slugs at request time (not stored) — see `backend/09 §2.1`. What admins configure **in this app** is the
-**per-resource access policy** — which roles/teams, or the owner, may use or manage each agent, KB, tool, MCP
-server, and channel.
-
-> ⚠️ **CURRENT MODEL: claim-based & IdP-agnostic (2026-10-22; scope.md rev 1/2/5, `backend/09 §1-§2.1`, `18`).**
-> Both the 2026-10-15 app-roster model *and* the 2026-10-20 one-group-per-workspace model below are
-> **superseded**. Membership + role come from **per-workspace IdP role claims** (`ap-<prefix>-<role>`, mapped by
-> the active **identity adapter** via `workspaces.idp_binding` / FE `groupPrefix` — not tied to one IdP). A user
-> can be publisher in one workspace and builder in another. Console roles: **`viewer` < `builder` < `publisher`**
-> (viewer = read-only), an app-wide **`admin`** claim (the adapter's admin group; does workspace CRUD + all
-> governance across every workspace), and a caller-only **`executer`** (invoke). **Removed:** `oktaGroup` +
-> single `memberRole`, invites, self-join, `access` open/restricted, the per-user roster, the `platform_admins`
-> table. Visibility = holding any role claim for the workspace (platform-admins see all); Members view is a
-> read-only projection of the per-role claim holders. `teams` (functional IdP groups) are unchanged. **FE is
-> migrated** (scope.md rev 5). Both historical notes are kept below for the decision trail.
->
-> **Historical (2026-10-15, SUPERSEDED — kept for the decision trail):** an earlier revision gave workspaces
-> an `access` mode (`open`/`restricted`) with an app-managed invite/self-join roster + an optional backing Okta
-> group. It was replaced first by one-group-per-workspace (2026-10-20) and then by the claim-based model above
-> (2026-10-22). Only the **teams** dimension (functional IdP groups for resource access + the channel gate)
-> carried through unchanged.
-
 **Caller token vs provider key (do not conflate):** the caller token governs **tools/knowledge/MCP**
 access; the **LLM provider key stays the workspace's vaulted key** (server-side), never the caller's.
-
-Everything is **tenant-scoped**: a user's per-workspace role comes from their IdP role claims, so a user can
-hold **different roles in different workspaces** (publisher in one, viewer in another).
 
 ### Access contexts
 ```mermaid
 flowchart LR
-  CU[Console user] -->|Trellix IAM SSO| C[Console RBAC<br/>role per workspace]
+  CU[Console user] -->|Org IdP SSO| C[Console RBAC<br/>role per workspace]
   RU[Running user / service account] -->|provides token| RT[Runtime access]
   POL[Per-resource<br/>access policy] --> EFF
   AG[Agent config<br/>tools + knowledge] --> EFF
@@ -91,7 +71,7 @@ team, or owner)** · **policy granularity = roles + IdP teams + `private` owner*
 >   persistence is deferred to the backend session (`@backend` marker in `store.ts`).
 > - **Four workspaces** now ship: `trellix-xdr`, `trellix-grc`, `trellix-labs`, and
 >   **`trellix-people`** (Trellix People Ops, the non-security persona — see
->   `people-ops-workspace-plan.md`); `TEAMS` gained **"People"**.
+>   `archive/people-ops-workspace-plan.md`); `TEAMS` gained **"People"**.
 > - **Standalone `/playground` route** (not only the agent-detail tab) carries the same run-context
 >   model (my-session vs provided token) described in Part C.
 
@@ -148,7 +128,7 @@ team, or owner)** · **policy granularity = roles + IdP teams + `private` owner*
 - **Playground run context:** Run as `My session` (default) or `Provide token` (decoded chip: tenant,
   subject type, scopes, expiry). Bound tools/KBs annotated granted vs denied (scope or policy reason);
   whole-run blocked for cross-tenant / policy_denied / expired / revoked.
-- **Publish & Export:** snippet token labeled the caller's (service-account) Trellix IAM token; access
+- **Publish & Export:** snippet token labeled the caller's (service-account) IdP-issued token; access
   note that run-time access is scoped to that token + tenant, not the publisher.
 
 ## Part D - Surface the model + Settings
@@ -158,10 +138,11 @@ team, or owner)** · **policy granularity = roles + IdP teams + `private` owner*
   access** tab that edits per-resource access policies.
 - Runs: show caller **subject + tenant** attribution.
 
-## Part E - Real IAM wiring (later, not in scope)
-- Auth.js + Trellix IAM OIDC provider (product client id + scopes); server login/callback/refresh;
-  middleware protects `(app)/*`; roles from IAM claims. `useAuth()`/`can()` surface unchanged, so
-  Parts A0-D (incl. B2) do not change when real IAM lands - only the identity source does.
+## Part E - Real IdP wiring (later, not in scope)
+- Auth.js + org IdP OIDC provider via the active identity adapter (`18`; product client id + scopes);
+  server login/callback/refresh; middleware protects `(app)/*`; roles from per-workspace IdP role claims.
+  `useAuth()`/`can()` surface unchanged, so Parts A0-D (incl. B2) do not change when the real IdP lands -
+  only the identity source does.
 
 ---
 
@@ -196,7 +177,5 @@ team, or owner)** · **policy granularity = roles + IdP teams + `private` owner*
 
 ## Open decisions (recommended first)
 1. Viewer may use the playground read-only *(recommended)* vs builders+ only.
-2. ~~Members read-only "manage in IAM" vs in-app invite mock.~~ **Final (2026-10-22): read-only, managed in
-   the IdP** — membership + role are per-workspace IdP role claims; no in-app invite/self-join. (The
-   2026-10-15 "in-app invite/join-open" decision was superseded by the claim-based model.)
+2. **Members: read-only, managed in the IdP** — resolved; see the `scope.md` decision log and `backend/18 §3`.
 3. Sign out = reset role + toast *(recommended)* vs full stub login screen.

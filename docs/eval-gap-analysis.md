@@ -86,18 +86,15 @@ wiring for the two-layer gate; a production-failure → eval-case triage + drift
 
 ## 5. Correctness issues to resolve (independent of build order)
 
-1. **Judge-selector contradicts the design.** The FE lets the user pick the judge per run (opus/sonnet,
-   `evaluations/page.tsx:28`); the design mandates a **fixed, versioned** judge ("a drift-detector must
-   never drift itself", `backend/05 §2`). Decide: drop the selector (recommended) or redefine the design.
-2. **`drift` is dead.** Agent `drift` (stable/watch/regressed, `data.ts:90`) is only seeded or reset to
-   "none"; nothing computes/writes it from an eval — yet the "published regressions surface via drift"
-   story depends on it. Needs a real source (trigger + re-eval, or production proxies, `backend/10 §7`).
-3. **Verdict-cache bypass trap.** `snapshot_hash` MUST fold in `retrieval_config` + each binding's
-   `kb_index_version` (`backend/05 §6`), else a retrieval change serves a stale PASS and silently skips
-   the gate.
-4. **Phasing tension.** `spec` tags the eval-suite/case/eval-run/baseline routes `[P2]`, but the
-   eval/drift harness + publish gate are `[P1]`. Reconcile before sequencing — you can't run a suite you
-   can't author.
+1. ~~**Judge-selector contradicts the design**~~ and ~~**verdict-cache / `snapshot_hash` bypass**~~ — raised as
+   review F2/C2 and now **RESOLVED** (fixed+versioned judge enforced; `snapshot_hash` folds in
+   `retrieval_config` + `kb_index_version` per the parked-KB caveat). See `review-fixes.md` C2 + `backend/05 §5–6`.
+2. **`drift` is dead (partially addressed).** Agent `drift` (stable/watch/regressed, `data.ts:90`) was only
+   seeded/reset; the FE mock now writes it (see the 2026-10-18 status update below), but the **backend** still
+   needs the real source wired — the eval worker's drift-transition write + owner notification (`backend/05 §5`,
+   `16`) and/or production proxies (`backend/10 §7`). Confirm when the backend is built.
+3. **Phasing tension.** `spec` tags the eval-suite/case/eval-run/baseline routes `[P2]`, but the eval/drift
+   harness + publish gate are `[P1]`. Reconcile before sequencing — you can't run a suite you can't author.
 
 ## 6. Review findings (verified against code)
 

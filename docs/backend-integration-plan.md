@@ -7,7 +7,7 @@
 
 The frontend console is built and runs on **mock data**, but no longer reads `data.ts` directly: reads
 and writes go through a client store (`frontend/src/lib/store.ts`) seeded from `frontend/src/lib/data.ts`,
-auth/tenancy is a mock Trellix-IAM profile (`auth.tsx` + `iam.ts` + `permissions.ts` + `access-policy.ts`),
+auth/tenancy is a mock IdP profile — claim-based, IdP-agnostic (`auth.tsx` + `iam.ts` + `permissions.ts` + `access-policy.ts`),
 and the runtime token check is a deterministic decode (`runtime-access.ts`). This plan turns that into a
 real product: build the backend per `docs/spec.md` (Python/FastAPI + LangGraph + LiteLLM +
 Postgres/pgvector + Redis + Vault + Langfuse + MinIO, portable containers), wire the existing UI to it,
@@ -19,7 +19,7 @@ endpoint for every store hook/action and lib mock (`grep -rn "@backend" frontend
 own the detail this roadmap deliberately does not duplicate:
 - **`docs/backend-integration-map.md`** — authoritative code-location → endpoint/contract index.
 - **`docs/frontend-auth-access-plan.md`** — the dual (console vs runtime) auth/access model.
-- **`docs/people-ops-workspace-plan.md`** — the multi-workspace seed (security + People Ops).
+- **`docs/archive/people-ops-workspace-plan.md`** (archived; historical) — the multi-workspace seed (security + People Ops).
 - **`docs/backend/00`–`11`** — the detailed backend "HOW" beneath this plan's "WHAT"
   (`08-api-surface.md` is the authority for endpoint paths).
 
@@ -170,9 +170,10 @@ reverse proxy.
    signatures* (`useAgents`, `useAgent`, `useKnowledgeBases`, …) so pages don't change; add
    `NEXT_PUBLIC_API_URL`, reverse-proxy `/api` to the backend (avoids CORS), and buffer-off SSE.
 3. **Auth & access (two planes)** — the FE already models both in mock:
-   - *Console session:* Auth.js (NextAuth) + **Trellix IAM OIDC**; middleware-protect `(app)/*`; the
-     signed-in user's **role per workspace** drives `can()` gating. Replaces `MOCK_PROFILE` and the
-     dev role/team switcher (deleted when real IAM lands).
+   - *Console session:* Auth.js (NextAuth) + **org IdP OIDC** via the active identity adapter (claim-based,
+     IdP-agnostic — see `backend/18`); middleware-protect `(app)/*`; the signed-in user's **per-workspace
+     role claim** drives `can()` gating. Replaces `MOCK_PROFILE` and the dev role/team switcher (deleted
+     when the real IdP lands).
    - *Caller token (runtime):* `runtime-access.ts`'s decode is a **Playground preview only**; the server
      validates the caller JWT and computes effective access at invoke.
    - *Per-resource access policies:* persisted via `PUT /api/v1/{agents|knowledge|tools|mcp|channels|skills}/:id/access-policy`
@@ -188,24 +189,8 @@ reverse proxy.
    mock as a test fixture.
 
 **Mapping (frontend `store.ts`/lib → API)** — `/api/v1/*` = console session · `/v1/*` = caller token.
-
-| Frontend (store hook / symbol) | Endpoint(s) |
-|---|---|
-| `useAgents`, `useAgent`, `getAgent`, per-agent dashboard | `GET /api/v1/agents?workspace=:id`, `GET /api/v1/agents/:id`, `GET /api/v1/agents/:id/dashboard` |
-| `addAgent`, `updateAgent` (fields/bind), `updateAgentConfig` (model params, prompt, **input variables → io_contract**, memory, retrieval, guardrails, spend), `publishAgent`/`unpublishAgent`/`archiveAgent`/`restoreAgent` (guarded lifecycle), `rollbackVersion`, `deleteAgent` (cascade), `duplicateAgent` | `POST /api/v1/agents`, `PATCH /api/v1/agents/:id`, `DELETE /api/v1/agents/:id` (cascades versions server-side), `POST /api/v1/agents/:id/duplicate` |
-| `getVersions`, Versions tab (save-as-new / clone), rollback | `GET /api/v1/agents/:id/versions`, `POST /api/v1/agents/:id/versions`, `POST /api/v1/versions/:vid/clone`, `POST /api/v1/agents/:id/repoint` |
-| `MODELS` / model picker | `GET /api/v1/models` (provider catalog + capability profiles + pricing) |
-| `useKnowledgeBases`, `useKnowledgeBase`, `addKnowledgeBase`, `addDataSource`, `reingest`, `useIngestionJobs`, `source-picker` | `GET /api/v1/knowledge-bases[?workspace=:id` \| `/:id]`, `POST /api/v1/knowledge-bases`, `POST …/:id/sources` (async), `POST …/:id/reingest` (async), `GET /api/v1/ingestion-jobs` (poll/SSE), `GET /api/v1/connectors` (connector registry / field specs) + `POST /api/v1/connectors/credentials` (secret/file → vault → `{masked,vaultPath}`) + presigned upload, `POST /api/v1/versions/:vid/retrieval-bindings` |
-| `useTools`, `addTool`, `useMcpServers`, `useMcpServer`, `addMcpServer` **(MCP P2)** | `GET`/`POST /api/v1/tools` (HTTP tool carries `httpConfig`; secret → vault, only `authRef` persisted), `GET /api/v1/mcp-servers[/:id]`, `POST /api/v1/mcp-servers` (connect + discover), `POST …/:id/discover`, `POST /api/v1/versions/:vid/tools` |
-| `useSkills`, `useSkill`, `addSkill`, `updateSkill`, `publishSkill`, `deleteSkill`, bind via `updateAgent({skills})` **(Skills P2 — mocked)** | `GET /api/v1/skills[?workspace=:id` \| `/:id]`, `POST /api/v1/skills`, `PUT /api/v1/skills/:id`, `POST /api/v1/skills/:id/publish` (sign → bindable), `DELETE /api/v1/skills/:id`, `POST /api/v1/skills/:id/resources` (bundled files → MinIO/ingestion), `POST /api/v1/versions/:vid/skills` (bind→freeze; pins `skill_content_hash` into `snapshot_hash`). **No test-invoke / risk-tier / approval** — skills don't execute code (`backend/01 §4.4`, `08 Skills`). |
-| `useEvalRuns`/`useEvalRunsForAgent`, `addEvalRun`, baseline, suites/cases, starter-set + rollback remedies | `GET /api/v1/evals` · `GET /api/v1/agents/:id/evals`, `POST /api/v1/agents/:id/evals` (async), `GET /api/v1/jobs/:id`, `POST /api/v1/agents/:id/eval-suites`·`/cases`, `POST /api/v1/versions/:vid/baseline` |
-| `useRuns`/`useRunsForAgent`, dashboard/runs charts + stat tiles | `GET /api/v1/runs[?workspace=:id` \| `/:id]`, `GET /api/v1/metrics/{spend,volume,latency,activity}` |
-| Publish & Export, endpoint OpenAPI/snippets | `POST /api/v1/versions/:vid/publish` (**409** if no PASS eval), `POST /api/v1/agents/:id/repoint`, `GET /api/v1/endpoints/:eid/export?format=curl\|ts\|python`, `GET …/openapi.json` |
-| `useTokens`, `addToken`, `revokeToken` | `GET`/`POST /api/v1/agents/:id/tokens` (secret shown once), `DELETE /api/v1/tokens/:id` |
-| `useProviderKeys`, `addProviderKey` (+rotate/revoke), `useMembers` | `GET /api/v1/provider-keys?workspace=:id`, `POST /api/v1/provider-keys` (+`/rotate`,`/revoke`; admin), `GET /api/v1/members?workspace=:id` (**read-only** roster projected from IdP role claims via the adapter, 18 §3 — no invite/self-join endpoints; membership managed in the IdP) |
-| `setAccessPolicy`, `canUse`/`canManage` | `PUT /api/v1/{agents\|knowledge\|tools\|mcp\|channels\|skills}/:id/access-policy` (admin; server-enforced) |
-| Guardrails tab, topbar/list search | `GET`/`PUT /api/v1/agents/:id/guardrails`, `GET /api/v1/search?q=` |
-| Playground `send()` / published invoke, run feedback | `POST /v1/agents/:id/invoke` (SSE; token or session; `run_source`), `POST /v1/runs/:id/feedback` |
+Full FE code-location → endpoint/contract mapping: see `backend-integration-map.md` +
+`backend/08-api-surface.md`.
 
 **Client-only (no backend):** the ML glossary tooltips (`glossary.ts` + `term.tsx`), the eval-onboarding
 *explainer copy* (`eval-explainer.tsx`), and the dev role/team switcher are pure-FE affordances — the
@@ -255,7 +240,7 @@ per-resource policy (visibility `workspace|restricted` + use/manage by role and 
 (People Ops / HR, the non-security persona) — each with per-workspace metrics. The runtime grant is
 `effective = agent config ∩ caller token ∩ tenant ∩ resource policy`. The backend's job is to
 **enforce** this server-side (RLS + policy re-check at invoke), not to invent it. See
-`frontend-auth-access-plan.md` and `people-ops-workspace-plan.md`.
+`frontend-auth-access-plan.md` and `archive/people-ops-workspace-plan.md`.
 
 | Dimension | Approach |
 |---|---|
@@ -375,7 +360,8 @@ single-tenant) is demoable in ~15-19 pw; multi-tenant + security hardening (M6-M
 ---
 
 ## Open decisions (recommended first; confirm before M1)
-1. **Auth:** Auth.js + **Trellix IAM OIDC** — **locked** (FE already built against this model; see
+1. **Auth:** Auth.js + **org IdP OIDC**, claim-based and IdP-agnostic via the identity adapter (Okta is the
+   reference adapter — `backend/18`) — **locked** (FE already built against this model; see
    `frontend-auth-access-plan.md`). Keycloak / in-house superseded.
 2. **Deploy:** Compose-on-VM now, k8s-ready *(recommended)* · k8s from day one.
 3. **FE integration:** OpenAPI-generated typed client *(recommended; the `@backend` markers + the

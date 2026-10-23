@@ -1,6 +1,6 @@
 # Review Fixes — the five fix-before-building items
 
-> Companion to `docs/architecture-review-v2.md` (§5 register, §10 fix-options, §12 roadmap). This is the
+> Companion to `docs/archive/architecture-review-v2.md` (§5 register, §10 fix-options, §12 roadmap). This is the
 > durable, actionable cut: the five findings that must be resolved *before* building the affected module,
 > each with evidence, the decisions still open, concrete fix steps with options, and acceptance criteria.
 > **Status date:** 2026-10-22. **Nothing here is built yet** — these are design/DDL/spec fixes.

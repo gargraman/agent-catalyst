@@ -23,6 +23,13 @@ server-side**; binding = **one channel → one workspace → many agents**.
 
 ## 2. Identity — federate, don't forward (the load-bearing part)
 
+> ⚠️ **Superseded on the load-bearing details — build from `backend/12 §4` + `18` (canonical).** The flow
+> below is the original Okta-specific sketch. The current model is **IdP-agnostic** (identity behind the
+> `IdentityProvider` adapter, `18`), and the **H1 hardening lives in `12 §4`, not here**: the join key
+> requires an **`email_verified`** claim + a **corporate-domain bind** (reject guest/Slack-Connect email
+> collisions), plus inbound **event-id idempotency** + a dead-letter path; Teams OBO is the adapter's
+> `exchange_obo`; the minted caller role is **`executer`** (not a console role). Treat this §2 as background.
+
 Each platform authenticates the user against **its own** IdP and hands the bot **its own** credential
 (a Google/Entra/Slack token whose audience is the bot) — never an Okta token, never valid at Agent Platform.
 So we federate on the *verified identity*, and mint our own token:
