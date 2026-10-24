@@ -23,7 +23,8 @@ import {
   updateWorkspaceSettings, updateWorkspace, setWorkspaceActive, deleteWorkspace, updateLimits, setEvalPolicy,
   genId, nowIso,
 } from "@/lib/store";
-import { ROLE_ORDER, ROLE_LABEL, ROLE_PERMISSIONS, type Permission } from "@/lib/permissions";
+import { ROLE_ORDER, ROLE_LABEL, ROLE_PERMISSIONS, type Permission, type Role } from "@/lib/permissions";
+import { memberRoleFor } from "@/lib/iam";
 import { useWorkspace, useAuth } from "@/lib/auth";
 import { AccessPolicyEditor } from "@/components/access-policy-editor";
 import { ORG } from "@/lib/org";
@@ -97,6 +98,9 @@ function WorkspaceForm({ wsId, wsName, wsGroupPrefix, settings, active, canEdit,
   const save = () => {
     if (identityDirty && identityValid) updateWorkspace(wsId, { name: name.trim(), groupPrefix });
     if (settingsDirty) updateWorkspaceSettings(wsId, { defaultProvider: provider, defaultModel: model });
+    // Reconcile the identity inputs to the stored values when they weren't persisted (e.g. a settings-only
+    // save while name/prefix was cleared) — don't leave an invalid empty box lingering over the real value.
+    if (!(identityDirty && identityValid)) { setName(wsName); setGroupPrefix(wsGroupPrefix); }
   };
   const closeDelete = () => { setDeleteOpen(false); setConfirmText(""); };
 
@@ -209,9 +213,13 @@ function WorkspaceForm({ wsId, wsName, wsGroupPrefix, settings, active, canEdit,
 function Members() {
   const members = useMembers();
   const { workspace } = useWorkspace();
-  // Claim-based roster (backend/18 §4): each member's role is the per-workspace role claim THEY hold, so render
-  // each row's own role — not the signed-in viewer's resolved role. (A real roster projects each row's role from
-  // its own claims; the seeded `Member.role` stands in for that here. Platform admins show as Admin everywhere.)
+  // Claim-based roster (backend/18 §4): project each member onto THIS workspace — resolve their role from the
+  // claims they hold (memberRoleFor) and drop anyone with no claim here. Switching workspaces changes both the
+  // roster and each row's role; platform admins show as Admin everywhere. (The server does this projection
+  // per-workspace via GET /members?workspace; the mock resolves client-side from Member.groups.)
+  const roster = members
+    .map((m) => ({ m, role: memberRoleFor(m.groups, workspace) }))
+    .filter((x): x is { m: Member; role: Role } => x.role !== null);
 
   return (
     <div className="space-y-6">
@@ -249,19 +257,22 @@ function Members() {
               <TR><TH>Member</TH><TH>Email</TH><TH>Role</TH><TH>Last active</TH></TR>
             </THead>
             <tbody>
-              {members.map((m) => (
-                <TR key={m.email}>
-                  <TD>
-                    <div className="flex items-center gap-2.5">
-                      <Avatar name={m.name} />
-                      <span className="font-medium text-ink">{m.name}</span>
-                    </div>
-                  </TD>
-                  <TD className="text-muted">{m.email}</TD>
-                  <TD><Badge tone={roleTone[m.role]}>{m.role}</Badge></TD>
-                  <TD className="text-muted tnum">{relative(m.lastActive)}</TD>
-                </TR>
-              ))}
+              {roster.map(({ m, role }) => {
+                const label = ROLE_LABEL[role] as Member["role"];   // Title-case for display + the roleTone key
+                return (
+                  <TR key={m.email}>
+                    <TD>
+                      <div className="flex items-center gap-2.5">
+                        <Avatar name={m.name} />
+                        <span className="font-medium text-ink">{m.name}</span>
+                      </div>
+                    </TD>
+                    <TD className="text-muted">{m.email}</TD>
+                    <TD><Badge tone={roleTone[label]}>{label}</Badge></TD>
+                    <TD className="text-muted tnum">{relative(m.lastActive)}</TD>
+                  </TR>
+                );
+              })}
             </tbody>
           </Table>
         </CardContent>

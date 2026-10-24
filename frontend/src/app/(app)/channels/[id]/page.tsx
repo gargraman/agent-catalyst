@@ -17,7 +17,7 @@ import { useAuth, usePrincipal, useWorkspace } from "@/lib/auth";
 import { DEFAULT_WORKSPACE_ID } from "@/lib/iam";
 import { canManage } from "@/lib/access-policy";
 import { CHANNEL_DEFS } from "@/lib/channels";
-import { resolveRun, statusLabel, type RunCtx, type Session } from "@/lib/runtime-access";
+import { resolveRun, statusLabel, type RunCtx } from "@/lib/runtime-access";
 import { addRun, deleteChannel, genId, nowIso, toast, updateChannel, useAgents, useChannel, useMcpServers, useSkills } from "@/lib/store";
 import type { Channel } from "@/lib/data";
 import { dateShort, relative } from "@/lib/format";
@@ -69,8 +69,9 @@ export default function ChannelDetailPage() {
     mode: "channel", platform: channel.platform, identityMode: channel.identityMode,
     user: user.name, tenant, teams: principal.teams,
   };
-  const session: Session = { tenant, role: principal.role, teams: principal.teams };
-  const resolution = target ? resolveRun(ctx, target, session, mcpServers, skills) : null;
+  // No session here: a channel caller resolves to `executer` inside resolveRun from the ctx (the old
+  // `session` was dead — resolveRun ignores it in channel mode).
+  const resolution = target ? resolveRun(ctx, target, undefined, mcpServers, skills) : null;
 
   function sendTest() {
     if (!target || !channel) return;

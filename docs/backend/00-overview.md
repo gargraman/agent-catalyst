@@ -126,6 +126,9 @@ class RunContext:
     idempotency_key: str | None
     budget: "BudgetGuard"           # per-run + per-tenant spend guard  (07)
     trace_id: str
+    session_id: str | None = None   # checkpointer thread_id key f"{ws}:{agent}:{session}" (03 §6); added 2026-10-24 (LLD review)
+    principal: "Principal | None" = None  # resolved identity (role/teams/subject) for per-caller access checks
+                                    #   (04 retrieval ACL, 03 tool gate, invoke access-policy); 2026-10-24 LLD review
     # sub-agent delegation (P2) — a sub-agent run is a child invoke() spawned from a tool_binding
     #   (kind=subagent, 01). These bound the recursion the spec B12 "depth/fan-out caps" require:
     depth: int = 0                  # 0 = top-level run; a sub-agent invoke increments it

@@ -44,14 +44,26 @@ export const MODELS: ModelRef[] = [
 // @backend GET /v1/members?workspace=:id — READ-ONLY roster projected from the workspace's per-role access
 //   claims (adapter projection, backend/18 §4). Each person's role = the highest claim they hold; no in-app
 //   invite/remove (managed in the IdP).
-export type Member = { name: string; email: string; role: "Admin" | "Publisher" | "Builder" | "Viewer"; lastActive: string };
+// `role` is the member's display role for the CURRENTLY-ACTIVE workspace — the server resolves it per
+// workspace from the member's claims (GET /members?workspace). In the mock, `groups` holds the raw
+// per-workspace claims and the roster resolves `role` from them for the active workspace (memberRoleFor,
+// iam.ts), so switching workspaces changes both the roster and each row's role.
+// @backend remove `groups` — the real roster is a per-workspace projection; the server returns each member
+//   already resolved to their role for the requested workspace (claim resolution is server-side, 18 §4).
+export type Member = {
+  name: string;
+  email: string;
+  role: "Admin" | "Publisher" | "Builder" | "Viewer";   // resolved for the active workspace (display)
+  groups: string[];                                      // mock-only raw per-workspace role claims (ap-<prefix>-<role> + maybe ap-platform-admin)
+  lastActive: string;
+};
 export const MEMBERS: Member[] = [
-  { name: "Raman Garg", email: `raman.garg@${ORG.emailDomain}`, role: "Admin", lastActive: "2026-10-04T09:12:00Z" },
-  { name: "Priya Nair", email: `priya.nair@${ORG.emailDomain}`, role: "Publisher", lastActive: "2026-10-04T07:40:00Z" },
-  { name: "Diego Fuentes", email: `diego.fuentes@${ORG.emailDomain}`, role: "Builder", lastActive: "2026-10-03T18:22:00Z" },
-  { name: "Mei-Ling Chen", email: `meiling.chen@${ORG.emailDomain}`, role: "Builder", lastActive: "2026-10-03T14:05:00Z" },
-  { name: "Omar Haddad", email: `omar.haddad@${ORG.emailDomain}`, role: "Viewer", lastActive: "2026-10-01T11:48:00Z" },
-  { name: "Sofia Rossi", email: `sofia.rossi@${ORG.emailDomain}`, role: "Publisher", lastActive: "2026-10-02T16:30:00Z" },
+  { name: "Raman Garg", email: `raman.garg@${ORG.emailDomain}`, role: "Admin", groups: ["ap-platform-admin"], lastActive: "2026-10-04T09:12:00Z" },
+  { name: "Priya Nair", email: `priya.nair@${ORG.emailDomain}`, role: "Publisher", groups: ["ap-xdr-publisher", "ap-grc-builder"], lastActive: "2026-10-04T07:40:00Z" },
+  { name: "Diego Fuentes", email: `diego.fuentes@${ORG.emailDomain}`, role: "Builder", groups: ["ap-xdr-builder", "ap-labs-publisher"], lastActive: "2026-10-03T18:22:00Z" },
+  { name: "Mei-Ling Chen", email: `meiling.chen@${ORG.emailDomain}`, role: "Builder", groups: ["ap-xdr-builder"], lastActive: "2026-10-03T14:05:00Z" },
+  { name: "Omar Haddad", email: `omar.haddad@${ORG.emailDomain}`, role: "Viewer", groups: ["ap-grc-viewer", "ap-labs-builder"], lastActive: "2026-10-01T11:48:00Z" },
+  { name: "Sofia Rossi", email: `sofia.rossi@${ORG.emailDomain}`, role: "Publisher", groups: ["ap-people-publisher", "ap-xdr-builder"], lastActive: "2026-10-02T16:30:00Z" },
 ];
 
 export type Version = {

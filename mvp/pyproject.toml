@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-catalyst-mvp"
+version = "0.1.0"
+description = "Throwaway viability MVP for agent-catalyst — pure no-model-call core (Phase 1)."
+requires-python = ">=3.12"
+# Phase 1 is stdlib-only; no third-party runtime deps. Providers/judge (Phase 2+) will add deps.
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[tool.setuptools]
+# flat layout: top-level modules + packages, installed from this (mvp/) dir
+py-modules = ["ir", "cost", "log", "run"]
+
+[tool.setuptools.packages.find]
+include = ["profiles*", "evals*", "providers*", "experiments*"]
+
+[tool.setuptools.package-data]
+profiles = ["*.json"]
+
+[tool.pytest.ini_options]
+# run pytest from inside mvp/; put this dir on sys.path so `import ir` / `from evals...` resolve
+# whether or not the editable install is active.
+pythonpath = ["."]
+testpaths = ["tests"]

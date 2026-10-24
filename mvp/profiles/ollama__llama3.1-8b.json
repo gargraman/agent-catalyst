@@ -1,0 +1,26 @@
+{
+  "provider": "ollama",
+  "model": "llama3.1:8b",
+  "api_version": null,
+  "availability": "active",
+  "sunset_at": null,
+  "pricing_usd_per_mtok": {
+    "input": 0.0,
+    "output": 0.0,
+    "cached_input": 0.0,
+    "cache_write": 0.0,
+    "reasoning": 0.0,
+    "batch_multiplier": 1.0
+  },
+  "limits": {
+    "context_tokens": 128000,
+    "max_output_tokens": 8192
+  },
+  "features": {
+    "structured_output": true,
+    "forced_tool_choice": false,
+    "reasoning_control": false,
+    "prompt_caching": false,
+    "tool_call_format": "openai"
+  }
+}

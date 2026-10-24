@@ -65,14 +65,17 @@ function decodeToken(token: string, agent: Agent): Omit<RunResolution, "grantedT
   return { subjectType, tenant, role, teams, scopes, expiry, status };
 }
 
-export function resolveRun(ctx: RunCtx, agent: Agent, session: Session, mcpServers: McpServer[] = [], skills: Skill[] = []): RunResolution {
+// `session` is only read by the "session" (run-as-me) arm — the playground passes it; token/channel callers
+// pass nothing (their identity is on the ctx), so it's optional to avoid a dead construction at the call site.
+export function resolveRun(ctx: RunCtx, agent: Agent, session?: Session, mcpServers: McpServer[] = [], skills: Skill[] = []): RunResolution {
   const agentTenant = agent.workspaceId ?? DEFAULT_WORKSPACE_ID;
   const base = ctx.mode === "session"
     ? {
-        subjectType: "user" as const, tenant: session.tenant, role: session.role, teams: session.teams,
+        // session mode always supplies `session` (playground "run as me"); assert it for the session arm only.
+        subjectType: "user" as const, tenant: session!.tenant, role: session!.role, teams: session!.teams,
         scopes: ["*"], expiry: "session",
         // Even run-as-me must match the agent's tenant (e.g. opening another workspace's agent by URL).
-        status: (session.tenant === agentTenant ? "ok" : "tenant_mismatch") as RunStatus,
+        status: (session!.tenant === agentTenant ? "ok" : "tenant_mismatch") as RunStatus,
       }
     : ctx.mode === "channel"
     ? {

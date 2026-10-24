@@ -110,7 +110,10 @@ def adapter_for(provider: str) -> ProviderAdapter:
 A profile per `(provider, model, api_version)`: pricing + feature flags. These are **data files**
 (`providers/profiles/*.json`), hot-reloadable, and a resolved copy is **snapshotted into each
 AgentVersion** (`agent_versions.profile_snapshot`, 01) so a profile change can't silently alter a
-published agent — it becomes a drift trigger (05).
+published agent — it becomes a drift trigger (05). **When the version pins a `model_config.fallback`, the
+fallback model's profile is snapshotted too** (`profile_snapshot.fallback`) so the fallback path (§6) is
+immutable on the same terms — a fallback-model reprice is a drift trigger, not a silent cost change (LLD
+review A1, 2026-10-24).
 
 ```jsonc
 // services/runtime/providers/profiles/anthropic__claude-opus-5-5.json
@@ -254,7 +257,10 @@ async def stream(req, *, api_key, profile) -> AsyncIterator[NormalizedStreamEven
     # exhausted or breaker open → versioned fallback model (spec A0 #2, #12)
     if fb := req_fallback(req):                       # from model_config.fallback (01)
         yield FallbackStarted(fb)                     # recorded on the Run
-        async for ev in stream(fb, api_key=api_key, profile=resolve_profile(fb.provider, fb.model)):
+        # A published run uses the FROZEN fallback profile (profile_snapshot.fallback, 01/§4) so a fallback
+        # reprice can't silently alter a live agent; resolve_profile is only the pre-publish/eval fallback (A1).
+        fb_profile = snapshot_fallback_profile(req) or resolve_profile(fb.provider, fb.model)
+        async for ev in stream(fb, api_key=api_key, profile=fb_profile):
             yield ev
     else:
         raise ProviderUnavailable(req.provider)
