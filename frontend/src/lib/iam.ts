@@ -117,6 +117,19 @@ export const roleFor = (
   return "viewer";
 };
 
+/** A roster member's resolved role for a workspace, from the claims THEY hold: admin for platform-admins;
+    else the highest per-workspace role claim; else null (not a member of this workspace → omit from the
+    roster). Mirrors roleFor but for an arbitrary member's claim set, so the Members tab projects per-workspace.
+    @backend the server returns this already resolved per-workspace (GET /members?workspace, 18 §4). */
+export const memberRoleFor = (groups: string[], workspace: Workspace | undefined): Role | null => {
+  if (isPlatformAdmin(groups)) return "admin";
+  if (!workspace) return null;
+  const binding = idpBinding(workspace);
+  let held: ConsoleRole | undefined;
+  for (const r of WS_ROLE_RANK) if (groups.includes(binding[r])) held = r;  // keep the highest match
+  return held ?? null;
+};
+
 /** Derive a URL-safe slug/id from a workspace name (kebab-case).
     @backend the server assigns the immutable slug at creation (workspaces.slug, backend/01 §4.1); this
     mirrors it client-side for the mock create flow. */
