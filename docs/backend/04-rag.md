@@ -121,7 +121,8 @@ async def search(snapshot, query: str, ctx) -> list[Chunk]:
     # caller's entitlements. Per-chunk/doc-level ACLs remain P2 (§10).
     if ctx.run_source != "eval":
         kb_policy = await resolve_kb_access_policy(binding.kb_id)   # live read of knowledge_bases.access_policy (NOT a snap field)
-        if not can_use(kb_policy, ctx.principal):
+        if not can_use(kb_policy, ctx.principal):         # HLD shorthand — precise keyword-only signature is
+                                                          #   can_use(policy, *, role=, teams=, subject=) (04 LLD §2.1 / 09 §5)
             return []                                    # policy_denied → no retrieval from this KB
     qvec = await embed_one(query, binding.embedding_model)
     rows = await pgvector_knn(                            # namespace-pruned (01 §4.4, 09 §7)

@@ -35,7 +35,10 @@ of this builder/runtime catalog; it mints its own identity (teams = the end user
 |---|---|---|
 | `ValidationError` (input contract) | 400 | `input.invalid` |
 | unauthenticated | 401 | `auth.required` |
+| channel webhook signature verification failed | 401 | `channel.bad_signature` (12 §5; the only channel failure surfaced as an HTTP body) |
 | not a member / RBAC / access-policy deny | 403 | `access.denied` |
+| workspace BYO provider-key write under enforcement | 403 | `enforcement.byo_disabled` (`ByoDisabled(AccessDenied)`; 14 §3) |
+| non-interactive caller invokes an agent binding a per-user MCP with no connection | 403 | `mcp.connect_required` (`McpConnectRequired(AccessDenied)`; 17 §8 pre-stream preflight) |
 | missing row (post-tenant-scope) | 404 | `not_found` |
 | publish without passing eval | **409** | `publish.eval_gate` |
 | low-confidence suite blocks publish | 409 | `publish.low_confidence` (unless the workspace `eval.govern` override is on — 05 §5) |

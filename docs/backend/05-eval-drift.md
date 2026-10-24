@@ -198,6 +198,7 @@ DRIFT_TRIGGERS = {
     "prompt_hash",                           # system prompt text (01)
     "guardrail_config",                      # guardrails change behavior (06)
     "tool_bindings",                         # tool set / schema snapshot (01, spec B7)
+    "auth_mode", "mcp_scopes", "config_snapshot",  # tool-binding identity/behavior sub-fields listed EXPLICITLY (not folded into the coarse tool_bindings trigger): a shared_service↔per_user flip (17 §2), an MCP OAuth-scope change, or a tool endpoint/egress change (config_snapshot, 01 §4.6) each arms the gate — names match the 01 §4.2 snapshot_hash entry
     "skill_bindings", "skill_content_hash",  # bound skills: instruction fragment + resources injected into the prompt (03 §4); editing a skill = a prompt change (01 §4.4)
     "embedding_model", "kb_binding",         # RAG affects quality — a hidden lever (04)
     "retrieval_config",                      # top_k/threshold/injection/reranker/hybrid also move retrieval (04)
@@ -218,6 +219,18 @@ def on_version_change(version, changed: set[str]):
 > content refresh re-arms the gate is the parked eval-signal decision.)*
 
 > **Frozen binding columns.** The new `tool_bindings.{risk_tier, requires_approval, subagent_config_id}` (01) ride inside the `tool_bindings` snapshot above, so a risk-tier change is a behavior change that forces re-eval — consistent with tool-schema-snapshot drift and covered by the `snapshot_hash` note below.
+
+> **Tool-binding trigger granularity (pinned — 2026-10-25).** The three identity/behavior sub-fields
+> `auth_mode`, `mcp_scopes`, and `config_snapshot` are listed as **their own** `DRIFT_TRIGGERS` entries
+> rather than being collapsed into the coarse `tool_bindings` trigger. **Decision: list them explicitly**, so
+> the gate arms on *exactly* these changes — a `shared_service→per_user` on-behalf-of flip (17 §2), a
+> requested-OAuth-scope change, or a tool endpoint/egress change (`config_snapshot`, 01 §4.6) — and the
+> `changed` set carries the precise field for incremental-eval selection (`cases_to_run`, lld/05 §8) and the
+> audit trail. (The older `risk_tier`/`requires_approval`/`subagent_config_id` columns stay inside the coarse
+> `tool_bindings` snapshot above; only these three identity/behavior fields are promoted to explicit triggers.)
+> These names match the `01 §4.2` `snapshot_hash` tool-binding entry **exactly**, so the verdict-cache-bust
+> path (hash) and this gate-arming path (`DRIFT_TRIGGERS`) cover the same fields — the two enforcement paths
+> can't silently diverge on tool-binding identity.
 
 > **Owner notification (16).** Flipping `publishable` / an agent's `drift` state used to tell no one —
 > the founding "nobody notices it got worse" problem. The eval worker (§7) now emits an owner-facing
@@ -246,6 +259,25 @@ def assert_publishable(version, db) -> None:
                                  "admin must enable the workspace low-confidence override.")
     # verdict == "pass" and newer than the last trigger → publishable. (codes mirror 08 error table)
 ```
+
+> **`latest_trigger_time(version)` — the gate's real dependency (defined in `lld/05 §7.1`).** It is the
+> newest behavior-changing-edit time for the version: the **max edit timestamp across the version's
+> `DRIFT_TRIGGERS`-covered fields** (the instant `on_version_change` last set `publishable=False`), surfaced
+> as the version's `last_trigger_at`. The gate arms **iff `last_pass_at ≥ latest_trigger_time`**, where
+> `last_pass_at` is the `started_at` of the most recent PASS run: the checks above implement exactly that —
+> the `latest.started_at < last_trigger` branch rejects "no eval newer than the last edit," and the verdict
+> branches reject anything but a PASS, so the only surviving state is a PASS whose `started_at`
+> (= `last_pass_at`) is ≥ `latest_trigger_time`. This is a **separate enforcement path from the verdict
+> cache**: the C2 hash-coverage test proves each trigger busts `snapshot_hash`, but a **sibling CI property
+> test MUST prove each trigger also advances `latest_trigger_time`** (disarms the gate) — otherwise a trigger
+> could bust the cache yet leave the gate open on a stale PASS. See `lld/05 §7.1`.
+
+> **Typed gate exceptions (supersede the string codes in the snippet above).** The
+> `raise ConflictError(409, "publish.eval_gate: …")` / `"publish.low_confidence: …"` forms shown here are
+> **superseded** by the typed `EvalGateError` / `LowConfidenceError` (`lld/00 §1.3`, constructed at the gate
+> in `lld/05 §7`). Same `409` status and same `code`s (`publish.eval_gate` / `publish.low_confidence`) — the
+> `code` is now a first-class field the `08` envelope reads, not parsed out of the message. The prose above is
+> kept for the HLD-only reader; the buildable gate raises the typed classes.
 
 > **This is the single most important behavioral guarantee in the product.** "Publish" and "roll
 > forward" are the only moments a version becomes live; gating exactly those two on a fresh PASS is what

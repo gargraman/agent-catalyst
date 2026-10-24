@@ -80,7 +80,7 @@ create or replace function org_report_agents()
     agent_id uuid, workspace_id uuid, owner_subject text, status agent_status,
     active_version_id uuid, drift drift_state, visibility text, registered_at timestamptz
   )
-  language sql stable security definer set search_path = public
+  language sql stable security definer set search_path = pg_catalog, public   -- hardened (09 §4 / 15 LLD §2.3)
 as $$
   select a.id, a.workspace_id, a.owner_subject, a.status, a.active_version_id, a.drift,
          a.access_policy->>'visibility',            -- policy tier; drives the metadata-only redaction below
@@ -134,9 +134,14 @@ async def write_org_audit(db, *, actor: str, action: str, target: str, meta: dic
     # workspace_id NULL = an ORG-LEVEL action, not a tenant action. This is a deliberate RLS carve-out:
     # the per-workspace audit surface (09 §12) must NEVER return these rows (its policy filters by
     # workspace_id = current_setting(...), which excludes NULL). They are readable only via this plane.
+    #
+    # ⚠️ The plain `INSERT … values (NULL, …)` shown here is NOT buildable against the audit_logs FORCE-RLS
+    # WITH CHECK (09 §2.2): a NULL post-image fails the check (NULL = <anything> is never true) and the insert
+    # is rejected. The buildable form is a SECURITY DEFINER function `org_write_audit()` owned by the BYPASSRLS
+    # definer role (15 LLD §5 / §2.2), GRANTed to platform_report only — the only form that can land a
+    # NULL-workspace row. See the 15 LLD for the function DDL; the carve-out + nullable column below are unchanged.
     await db.execute(
-        text("insert into audit_logs (workspace_id, actor, action, target, meta) "
-             "values (NULL, :actor, :action, :target, :meta)"),
+        text("select org_write_audit(:actor, :action, :target, cast(:meta as jsonb))"),
         {"actor": actor, "action": action, "target": target, "meta": Json(meta or {})},
     )
 ```

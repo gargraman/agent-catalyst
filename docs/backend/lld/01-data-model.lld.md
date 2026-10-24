@@ -68,11 +68,19 @@ class ToolBindingSnap:
     binding_id: str
     name: str                       # resolved display name (the FE 'http-enrich-ip' / 'mcp:<srv>/<tool>' ref)
     kind: str                       # tool_kind: http|builtin|subagent|mcp
-    schema_snapshot: dict           # frozen JSON-schema args (drift source if the server changes)
-    config_snapshot: dict
+    schema_snapshot: dict           # frozen JSON-schema args (drift source if the server changes). ⚠️ raw jsonb dict:
+                                    #   by-contract READ-ONLY (I6) — the runtime never mutates it; frozen=True on the
+                                    #   dataclass pins the reference, not the dict's interior (see §3.2 note).
+    config_snapshot: dict           # frozen tool endpoint URL / egress policy etc. (01 §4.6). Behavior-defining →
+                                    #   folds into snapshot_hash (§4.2, I3). Same by-contract read-only rule as above.
     risk_tier: str                  # read|write|destructive — frozen at bind (01 §4.6)
     requires_approval: bool         # derived at bind: destructive⇒true; write⇒per workspace policy
     subagent_config_id: str | None = None
+    # MCP identity snapshot (17 §2/§7); None/() for non-MCP bindings. SHARED NAMES: auth_mode / mcp_scopes.
+    auth_mode: str | None = None    # 'shared_service' | 'per_user' — the MCP on-behalf-of mode, frozen at bind;
+                                    #   None for non-MCP. A flip is a DRIFT_TRIGGER (§4.2/§4.3).
+    mcp_scopes: tuple[str, ...] = ()  # the requested OAuth scopes, frozen at bind; () for non-MCP. A scope change
+                                    #   is a DRIFT_TRIGGER (§4.2/§4.3).
 
 
 @dataclass(frozen=True)
@@ -169,6 +177,8 @@ def to_snapshot(
                 binding_id=str(b.id), name=_binding_name(b), kind=b.kind, schema_snapshot=b.schema_snapshot,
                 config_snapshot=b.config_snapshot, risk_tier=b.risk_tier,
                 requires_approval=b.requires_approval, subagent_config_id=_opt_str(b.subagent_config_id),
+                # MCP identity, frozen from the bound MCP tool (01 §4.6 columns); None/() for non-MCP bindings.
+                auth_mode=b.auth_mode, mcp_scopes=tuple(b.mcp_scopes or ()),
             ) for b in av.tool_bindings
         ),
         skills=tuple(
@@ -195,7 +205,19 @@ from dataclasses import dataclass, field, replace
 import time
 
 from runtime.budget import BudgetGuard          # 07 §3
-from access_policy import Principal              # {role, teams, subject?} — access-policy.ts mirror (09)
+# Principal is the access_policy.Principal defined just below (lives in access_policy.py; RunContext references it).
+
+
+# The invoke-time access Principal (access_policy.Principal). DISTINCT from the auth Principal in 09 §2
+# ({subject_id, email, workspace_roles, is_admin, teams}) — that one is the authenticated identity; THIS one is
+# the resolved access-policy input (role + teams + optional subject) the invoke seam checks `can_use` against.
+# Mirrors frontend access-policy.ts (NOT the 09 auth class). The auth→access conversion that produces this type
+# happens at the invoke seam (18 §6, Agent E); defined here because RunContext.principal carries it.
+@dataclass(frozen=True)
+class Principal:
+    role: str                       # the access/caller role: viewer|builder|publisher|admin|executer (access-policy.ts CallerRole)
+    teams: list[str]                # the caller's teams (IdP groups) — the team gate for `restricted`/`private`
+    subject: str | None = None      # owner subject for `private` access; None fail-closed for subject-less callers
 
 
 @dataclass(frozen=True)
@@ -204,13 +226,18 @@ class RunContext:
     run_source: str                 # run_source enum: playground|api|eval|channel|tool_test|subagent (01 §3)
     trace_id: str
     budget: BudgetGuard             # per-run + per-tenant spend guard (07)
-    principal_id: str | None = None     # console user (playground); None for token/channel callers
+    principal_id: str | None = None     # console user (playground) OIDC sub; None for token callers; the IdP/Okta
+                                        #   subject for channel-federated callers (12 §5/§7 per-user cost attribution).
+                                        #   Distinct from principal.subject (which stays None for fail-closed private access).
     caller_token_id: str | None = None  # published-token caller; None for console
     principal: Principal | None = None  # RESOLVED identity (role + teams + subject?) for per-caller access checks
                                         #   (03 tool gate, 04 retrieval ACL, invoke access-policy). Resolved once at
                                         #   invoke from the session/token/channel identity. 2026-10-24 review (04 needs it).
     idempotency_key: str | None = None
     session_id: str | None = None   # ⚠️ see amendment below — needed for the checkpointer thread_id (03 §6)
+    # observability (10 LLD §1): spans are buffered on ctx and flushed WITH the run at _close_run (not per-span)
+    span_buffer: list["SpanRecord"] = field(default_factory=list)   # mutable list — fine on a frozen dataclass; span() appends
+    run_id: str | None = None       # runs.id (01 §4.7), stamped at _open_run (via replace()); distinct from the text trace_id
     # feature switches the callers set differently:
     allow_cache: bool = True        # eval sets False (05 §7)
     stream: bool = True
@@ -236,6 +263,15 @@ class RunContext:
             self, depth=self.depth + 1, parent_run_id=self.trace_id,
             subagent_budget=_decrement(self.subagent_budget),
         )
+
+    def caller_subject(self) -> str | None:
+        """The acting subject across the 3 caller planes (17 LLD §3), a pure derivation over existing fields:
+        session/user → principal.subject (18 adapter); api token → the token's subject claim; channel →
+        the federated subject. None is first-class — a subject-less service token / eval run has no connectable
+        identity (never silently resolves to someone else's). Keyed by per-user MCP connections (17 §4/§5)."""
+        if self.principal is not None and self.principal.subject:
+            return self.principal.subject
+        return self.principal_id         # console fallback; None for a subject-less token/service/eval caller
 ```
 
 ```python
@@ -293,8 +329,10 @@ from typing import Literal
 
 
 class _Cfg(BaseModel):
-    """Base: accept camelCase (FE) or snake_case, forbid unknown keys (catch typos at the boundary)."""
-    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+    """Base: accept camelCase (FE) or snake_case, forbid unknown keys (catch typos at the boundary), and
+    `frozen=True` so a parsed config model is immutable — nested config can't be mutated mid-run (I6; the
+    "immutable snapshot" guarantee, 00 §1, must be deep, not just the top-level dataclass)."""
+    model_config = ConfigDict(populate_by_name=True, extra="forbid", frozen=True)
 
 
 class ParamsConfig(_Cfg):
@@ -405,6 +443,14 @@ class AccessPolicy(_Cfg):
 `StageConfig.params` into a typed union per stage id; here it stays `dict` so every column has a validator
 today without pulling the whole guardrail catalog into the data-model layer.
 
+> **Immutability depth (I6).** `frozen=True` on `_Cfg` makes every parsed config model (§3.2) immutable, and
+> `@dataclass(frozen=True)` pins the snapshot fields (§1). Neither deep-freezes a raw `dict`/`list` interior —
+> and `ToolBindingSnap.schema_snapshot`/`config_snapshot` are raw jsonb dicts that bypass the §3 models.
+> **Chosen approach: by-contract read-only** (not a deep-freeze). The runtime treats these dicts as read-only
+> (they feed the hash and the provider request builder, never a mutation); a deep-freeze wrapper was judged not
+> worth the overhead for server-assembled, already-validated rows. This is the explicit contract the §1
+> `ToolBindingSnap` field comments restate.
+
 ---
 
 ## 4. Canonical hash serialization
@@ -481,11 +527,24 @@ def compute_snapshot_hash(av: AgentVersion) -> str:
         "memory_config": av.memory_config,
         "context_config": av.context_config,
         "tool_bindings": [
-            {"kind": b.kind, "schema": b.schema_snapshot, "risk_tier": b.risk_tier,
-             "requires_approval": b.requires_approval, "subagent_config_id": _opt_str(b.subagent_config_id)}
-            # sort by STABLE identity (the bound tool), NOT the per-bind row UUID — else a clone of an identical
-            # version hashes differently and needlessly busts the verdict cache.
-            for b in sorted(av.tool_bindings, key=lambda b: str(b.tool_id or b.mcp_tool_id))
+            {"kind": b.kind, "schema": b.schema_snapshot, "config_snapshot": b.config_snapshot,
+             # config_snapshot IS behavior (I3): the frozen tool endpoint URL / egress policy change the run's
+             # effect, so a config edit MUST bust the verdict cache + re-arm the publish gate. Hashed whole —
+             # no volatile/non-behavioral subset was identified (contrast kb_index_version, excluded below).
+             "risk_tier": b.risk_tier,
+             "requires_approval": b.requires_approval, "subagent_config_id": _opt_str(b.subagent_config_id),
+             # MCP on-behalf-of mode + the requested OAuth scopes are DRIFT_TRIGGERS (17 §2/§7, 08 LLD §7): a
+             # shared_service→per_user flip (or a scope change) changes behavior AND downstream identity, so it
+             # MUST bust the verdict cache + re-arm the publish gate — else the flip bypasses it. None/() for
+             # non-MCP bindings (H3 — 17 LLD §7 reconciliation).
+             "auth_mode": b.auth_mode, "mcp_scopes": list(b.mcp_scopes or ())}
+            # sort by a TOTAL, STABLE key — the binding kind + the bound tool/mcp_tool/subagent identity, NOT the
+            # per-bind row UUID (else a clone of an identical version hashes differently and needlessly busts the
+            # verdict cache). All three FKs are null for... never — but a subagent binding has tool_id/mcp_tool_id
+            # both null, so include subagent_config_id (I5: `str(None)` alone collides to "None" across subagents →
+            # a nondeterministic hash). The ORM also pins load order via relationship(order_by=...) (parent 01 §5).
+            for b in sorted(av.tool_bindings,
+                            key=lambda b: (b.kind, str(b.tool_id or b.mcp_tool_id or b.subagent_config_id)))
         ],
         "skill_bindings": [
             {"skill_id": str(b.skill_id), "content_hash": b.skill_content_hash}
@@ -518,7 +577,9 @@ def compute_snapshot_hash(av: AgentVersion) -> str:
 | `context_config` | `context_config` (A4 — window limit/truncation; a behavior change, 03 §7) |
 | `prompt_hash` | `prompt_hash` |
 | `guardrail_config` | `guardrail_config` |
-| `tool_bindings` | `tool_bindings[]` (+ frozen `risk_tier`/`requires_approval`/`subagent_config_id`, 01 §4.6) |
+| `tool_bindings` | `tool_bindings[]` (`kind` + frozen `schema`/`risk_tier`/`requires_approval`/`subagent_config_id`, 01 §4.6) |
+| `tool_bindings[].config_snapshot` (tool endpoint URL / egress policy) | `tool_bindings[].config_snapshot` **hashed whole** (I3 — config IS behavior; a URL/egress edit busts the cache + re-arms the gate. No non-behavioral subset excluded) |
+| `auth_mode`, requested MCP scopes (17 §2/§7, 08 LLD §7) | `tool_bindings[].auth_mode` **+ `.mcp_scopes`** (H3 — a `shared_service`↔`per_user` flip or scope change is a DRIFT_TRIGGER; `None`/`()` for non-MCP bindings) |
 | `skill_bindings`, `skill_content_hash` | `skill_bindings[].content_hash` |
 | `embedding_model`, `kb_binding` | `retrieval_bindings[].embedding_model` / `.kb_id` |
 | `retrieval_config` (incl. `injection`, per 05 §5) | `retrieval_bindings[].config` **+ `.injection`** (separate column, hashed explicitly — review H2) |

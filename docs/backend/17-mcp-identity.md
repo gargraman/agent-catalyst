@@ -40,7 +40,7 @@ create table mcp_user_connections (
   workspace_id  uuid        not null references workspaces(id),
   mcp_server_id uuid        not null references mcp_servers(id) on delete cascade,
   user_subject  text        not null,                 -- OIDC sub: console principal, channel-federated, or token subject
-  vault_path    text        not null,                 -- Vault Transit pointer to the refresh token (per-user DEK) — secret never stored here
+  vault_path    jsonb       not null,                 -- the VaultEnvelope dict {wrapped_dek,nonce,ct,key} for the refresh token (per-user DEK, 09 LLD §3.2) — secret never stored here
   scopes        jsonb       not null default '[]',
   status        text        not null default 'connected',  -- connected | expired | revoked
   connected_at  timestamptz not null default now(),

@@ -158,7 +158,7 @@ root token — **dev only**; prod uses AppRole + sealed storage (§5, 09).
 # deploy/docker-compose.yml  (dev)
 x-app-env: &app-env
   AC_ENV: dev
-  AC_DATABASE_URL: postgresql+psycopg://app:app@postgres:5432/catalyst
+  AC_DATABASE_URL: postgresql+asyncpg://app:app@postgres:5432/catalyst   # asyncpg driver (00-conv §4.1 / 11 LLD §2)
   AC_REDIS_URL: redis://redis:6379/0
   AC_VAULT_ADDR: http://vault:8200
   AC_VAULT_ROLE: dev

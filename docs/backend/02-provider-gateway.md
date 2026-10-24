@@ -297,7 +297,8 @@ Per `spec.md §D`, the headline Phase-1 test lives here:
 - **Cross-provider contract test:** the same `NormalizedRequest` runs on Anthropic + OpenAI, yields the
   same event *types*, and recorded substitutions are correct.
 - **Cost test:** for each profile, `compute_cost` matches a hand-calc from the profile pricing within
-  rounding; cached/reasoning tokens priced correctly.
+  rounding; cached tokens priced at their own rate and reasoning **not double-counted** (output billed on
+  `output - reasoning`, §4.1).
 - **Resilience test:** injected 429 → retried; persistent 5xx → breaker opens → fallback fires and is
   recorded.
 - **Leak test:** a provider-specific feature on a model without it produces the right `Substitution`,

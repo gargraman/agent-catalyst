@@ -38,6 +38,15 @@ foundation dependency map.
 | 8 | [`07-cost-cogs.lld.md`](07-cost-cogs.lld.md) | `07` | P2 | **done** |
 | 9 | [`04-rag.lld.md`](04-rag.lld.md) | `04` | P3 | **done** |
 | 10 | [`09-security-tenancy.lld.md`](09-security-tenancy.lld.md) — tenancy GUC, RLS DDL, per-user DEK (C4), org-plane boundary (C4) | `09` | P1 | **done** |
+| 11 | [`10-observability-monitoring.lld.md`](10-observability-monitoring.lld.md) — four-sink spans, Langfuse trace, spec-A2 log line, redaction | `10` | P2 | **done** |
+| 12 | [`11-deployment.lld.md`](11-deployment.lld.md) — process boundaries, shared DB layer, boot & migrations | `11` | P2 | **done** |
+| 13 | [`12-channels.lld.md`](12-channels.lld.md) — inbound messaging adapter (the 4th caller of `invoke`) | `12` | P2 | **done** |
+| 14 | [`13-branding.lld.md`](13-branding.lld.md) — branding / white-labeling (**intentional stub**, plain config) | `13` | P2 | **done (stub)** |
+| 15 | [`14-adoption-enforcement.lld.md`](14-adoption-enforcement.lld.md) — enforcement modes, shadow-usage measurement, exemptions | `14` | P0 | **done** |
+| 16 | [`15-org-governance-reporting.lld.md`](15-org-governance-reporting.lld.md) — admin-plane cross-tenant read, `SECURITY DEFINER` report fns | `15` | P0 | **done** |
+| 17 | [`16-notifications.lld.md`](16-notifications.lld.md) — in-app record vs external delivery, prefs, reliable fan-out | `16` | P0 | **done** |
+| 18 | [`17-mcp-identity.lld.md`](17-mcp-identity.lld.md) — per-user MCP identity (delegated connected accounts) | `17` | P2+ | **done** |
+| 19 | [`18-identity-adapters.lld.md`](18-identity-adapters.lld.md) — IdP-agnostic authN → `Principal` | `18` | P1 | **done** |
 
 ## Conventions shared across every LLD doc
 

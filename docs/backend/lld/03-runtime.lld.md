@@ -82,6 +82,7 @@ budget → run the graph, draining its emit queue → reconcile → persist. The
 ```python
 from __future__ import annotations
 import asyncio
+from dataclasses import replace
 from collections.abc import AsyncIterator
 
 
@@ -91,10 +92,16 @@ async def invoke(snapshot, inputs, ctx) -> AsyncIterator["NormalizedStreamEvent"
     # 2. budget pre-check + reservation (07 §3) — raises BudgetExceeded (402) before any model call.
     #    reserve() is async (07 §2, Redis-backed) — MUST be awaited or the 402 check never runs.
     reservation = await ctx.budget.reserve(ctx.workspace_id, est_usd=_estimate(snapshot, inputs))
-    state = _initial_state(snapshot, inputs, ctx)
+    # 3. open the runs row (01 §4.7), status pending — AsyncSession (00-conventions §4.1). This MUST happen
+    #    BEFORE _initial_state: _open_run mints run_rec.id, which is stamped onto the frozen RunContext via
+    #    replace() (01 LLD §2). ctx is @dataclass(frozen=True), so the graph must hold the stamped copy — a
+    #    state built from the pre-stamp ctx would carry run_id=None for the whole run.
+    run_rec = await _open_run(ctx, snapshot)
+    ctx = replace(ctx, run_id=run_rec.id)               # stamp run_id; span_buffer is the SAME list ref (replace
+                                                        #   shallow-copies), so span() buffering still shares one list
+    state = _initial_state(snapshot, inputs, ctx)       # built from the STAMPED ctx → graph sees a real ctx.run_id
     queue: asyncio.Queue = asyncio.Queue()
     graph = build_graph()                               # 03 §4 (compiled with the checkpointer)
-    run_rec = await _open_run(ctx, snapshot)            # runs row (01 §4.7), status pending — AsyncSession (00-conventions §4.1)
 
     async def _run():
         # bind the emit queue so node emit() calls land here; config carries the checkpointer thread_id (§6)
@@ -125,6 +132,12 @@ async def invoke(snapshot, inputs, ctx) -> AsyncIterator["NormalizedStreamEvent"
         await ctx.budget.reconcile(reservation, actual_usd=_actual_cost(acc_usage))
 ```
 
+- **`run_id` stamped before the graph runs** (fixes the frozen-ctx gap): `_open_run` is called **before**
+  `_initial_state`, and `ctx = replace(ctx, run_id=run_rec.id)` stamps the id onto the frozen `RunContext`
+  (`01` LLD §2) the graph will hold — so `ctx.run_id` is a real id, never `None`, for the whole run. Live
+  per-span telemetry (`10` LLD §1 `_emit_langfuse`) now mirrors spans under the correct `run_id` instead of a
+  null parent. `replace()` shallow-copies, so `ctx.span_buffer` stays the same list object — buffered spans are
+  not split across two lists.
 - **Emit-queue drain** (`03 §5`): nodes `emit()` into the queue; `invoke` yields from it as events arrive, so
   first-token streams before the node finishes (p95 < 2s).
 - **Deadline** wraps the graph task (`asyncio.timeout`), sized to the *remaining* budget from `ctx` creation
@@ -141,6 +154,11 @@ async def invoke(snapshot, inputs, ctx) -> AsyncIterator["NormalizedStreamEvent"
   **awaited** (never a blocking sync `Session` inside this async generator — it would stall the event loop); the
   run persist (Postgres, the cost SoR) is ordered **before** the Redis reconcile so a crash between them fails
   safe. The session model + the persist/reconcile atomicity rule are pinned in **`00-conventions.lld.md §4`**.
+- **Spans flush *with* the run, not per-span.** `span()` appends each `SpanRecord` to `ctx.span_buffer`
+  (`01` LLD §2 `RunContext.span_buffer`/`run_id`); `_close_run` inserts the `runs` row **and** the whole buffered
+  span list in the **one** `AsyncSession` transaction (`00-conventions.lld.md §4.2` atomicity; `10` LLD §1). A
+  crashed run loses its buffered spans *and* its `pending` run row together — never a half-written run. Only the
+  best-effort telemetry mirrors (Langfuse/Prometheus/JSONL) fire per-span, so ops dashboards still update live.
 
 ---
 
@@ -317,11 +335,12 @@ async def apply_memory_window(messages: list[dict], mc: "MemoryConfig", *, snaps
 - **`drop_oldest`** is the lossy fallback (`MemoryConfig.compaction`); default is `summarize`.
 - A `context_truncation` span attr is recorded either way (`03 §7`).
 
-> ⚠️ **Amendment to `03 §4`:** `build_messages` calls `apply_memory_window(state["messages"],
+> ⚠️ **Amendment to `03 §4`:** `build_messages` originally called `apply_memory_window(state["messages"],
 > state["snapshot"].memory_config)` **synchronously**. Since compaction may summarize via the cheap model, the
-> helper is `async` and needs `snapshot`+`ctx` — so `build_messages` must become
+> helper is `async` and needs `snapshot`+`ctx` — so `build_messages` becomes
 > `history = await apply_memory_window(state["messages"], mc, snapshot=state["snapshot"], ctx=state["ctx"])`.
-> Flagged for the `03` parent reconciliation, not edited there.
+> **(Now folded into parent `03 §4` — `build_messages` awaits the async helper, per the async convention in
+> `00-conventions.lld.md §4`, 2026-10-24.)**
 
 ---
 

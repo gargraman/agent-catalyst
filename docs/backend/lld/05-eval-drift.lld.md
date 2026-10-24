@@ -16,6 +16,7 @@
 | judge may return non-JSON / out-of-range; `JudgeVerdict` has no validation or error path | §5 — output validation, one strict-reprompt retry, `JudgeError`, close-call ε |
 | `eval_failed` notification named; no eval error taxonomy (judge/batch/runtime failure) | §6 — the worker error model (job + notification, **not** HTTP) |
 | two queued runs on one version racing to set `publishable` not addressed | §7 — the per-version advisory lock on the worker write path |
+| `latest_trigger_time(version)` called by the gate (`05 §5`) and the worker (§7) but **defined nowhere** | §7.1 — its precise definition (max `DRIFT_TRIGGERS` edit time), the `last_pass_at ≥ trigger` gate equivalence, and the CI gate-arming property test |
 | "incremental eval (tagged cases)" — tagging mechanism undefined | §8 — `cases_to_run`, case tags, the honest P1 scope |
 | `generateStarterEval` behavior described, no signature/logic | §9 — signature + generation approach |
 | no validation bounds on `EvalPolicy` values | §10 — the Pydantic model with ranges |
@@ -288,9 +289,54 @@ async def finalize_eval_run(version_id: str, run, db) -> None:
     # a FAIL / low_confidence / stale PASS leaves publishable untouched (default False after a trigger)
 ```
 
+### 7.1 `latest_trigger_time` — the gate's real correctness dependency
+
+`finalize_eval_run` (above) and `assert_publishable` (`05 §5`) both call `latest_trigger_time(version)`, but
+neither doc defined it. It — not `snapshot_hash` — is what actually arms the publish gate, so it is pinned here:
+
+```python
+def latest_trigger_time(version) -> "datetime":
+    """The newest behavior-changing-edit time for this version: the MAX edit timestamp across the version's
+    DRIFT_TRIGGERS-covered fields (05 §5). Operationally this is the version's `last_trigger_at`, written by
+    `on_version_change` (05 §5) on every edit that touches a DRIFT_TRIGGERS field — the same instant it sets
+    `publishable=False`. Falls back to the version's `created_at` when no trigger has fired. Reconstructible
+    from the audit_logs trail (01 §4.9) if the denormalized column is ever lost."""
+```
+
+**How the gate uses it.** Let `last_pass_at(version)` = the `started_at` of the most recent **PASS** eval run
+(`None` if none). The gate arms **iff `last_pass_at is not None and last_pass_at >= latest_trigger_time(version)`**.
+`assert_publishable` (`05 §5`) implements exactly this through its latest-run + verdict branches: a latest run
+older than `latest_trigger_time` → `EvalGateError` ("nothing newer than the last edit"); a latest run that is
+not a PASS → the fail / low-confidence branches; the only surviving state is a PASS whose `started_at`
+(= `last_pass_at`) is ≥ `latest_trigger_time`. `finalize_eval_run` (above) writes the flag with the mirror
+predicate `run.verdict == "pass" and run.started_at >= last_trigger`, so the HTTP gate and the worker agree by
+construction — and the shared advisory lock (`hashtextextended(version_id, 0)`) keeps the gate-read and the
+flag-write from interleaving. The `EvalGateError` `detail` keys (`last_trigger_at`, `last_pass_at`, §7 below)
+are these two values verbatim.
+
+**CI — gate-arming coverage (sibling to the C2 hash test).** `05 §5`'s C2 property test proves every
+`DRIFT_TRIGGERS` field busts `snapshot_hash` — the **verdict-cache** path only. That test does **not** exercise
+this gate: the hash and `latest_trigger_time` are **two independent enforcement paths**. Add a second property
+test — for each field in `DRIFT_TRIGGERS` (including the newly explicit `auth_mode` / `mcp_scopes` /
+`config_snapshot`, §5), mutating it on a fixture version MUST advance `latest_trigger_time` (equivalently, flip
+`publishable` → False via `on_version_change`), so a newly-added trigger that forgets to bump `last_trigger_at`
+fails CI red. Without it, a trigger could bust the cache yet silently leave the gate **open** — a stale PASS
+from before the edit still satisfies `last_pass_at >= latest_trigger_time` and publishes.
+
 Using the **same lock key** (`hashtextextended(version_id, 0)`) as `assert_publishable` means publish and
 finalize fully serialize on a version: no finalize can set `publishable=True` while a publish is mid-check, and
 no two finalizes interleave. This closes the worker-side half of the TOCTOU the parent only closed at publish.
+
+**Publish-gate exceptions (adopts `00-conventions.lld.md §1.3`).** The publish gate `assert_publishable`
+(`05 §5`) — the HTTP-path counterpart this lock serializes against — raises the typed `00-conventions §1`
+classes rather than the string-coded `ConflictError(409, "publish.eval_gate: …")` the parent sketched: when
+no PASS is newer than the last behavior-changing edit,
+`raise EvalGateError("no PASS eval newer than the last config change", detail={"last_trigger_at": …, "last_pass_at": None})`;
+when `n_cases < policy.min_cases` and no `allow_low_confidence_override`,
+`raise LowConfidenceError("eval ran too few cases to be confident", detail={"n_cases": …, "min_cases": policy.min_cases})`.
+Both are `ConflictError` subclasses (409); `code` (`publish.eval_gate` / `publish.low_confidence`) is now a
+first-class field the `08` envelope reads, not parsed from the message. **No behavior change** — same status,
+same code, cleaner construction.
 
 ---
 
@@ -395,5 +441,10 @@ same `0..100` bound.
    camelCase fields.
 4. **Two amendments, now reconciled** — the `verdict()` pairwise branch (§4, A2) and `eval_cases.tags` (§8) are
    **folded into the parents** (`05 §3`, `01 §4.5`); the callouts remain as the finding/rationale trail.
+5. **Gate-arming dependency pinned** — `latest_trigger_time` (§7.1) is now defined where `assert_publishable`
+   (`05 §5`) and `finalize_eval_run` (§7) both use it; the `last_pass_at ≥ latest_trigger_time` equivalence and
+   the sibling CI property test (distinct from the C2 hash test) close the gate-arming path. The three explicit
+   tool-binding triggers (`auth_mode`/`mcp_scopes`/`config_snapshot`, parent `05 §5`) use the exact field names
+   of the `01 §4.2` `snapshot_hash` entry, so cache-bust and gate-arm cover the same fields.
 
 → Next LLD: `03-runtime.lld.md` (subtask 5, the shared spine).

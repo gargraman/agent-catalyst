@@ -10,7 +10,7 @@
 
 `spec.md A2` is a hard contract: **every model call logs `{model, prompt_version, input, output,
 latency, cost, success}`.** The only way that stays true across playground, eval, and published invoke
-is to emit it from the *shared* runtime (00 §1), never from the three callers. There is exactly one
+is to emit it from the *shared* runtime (00 §1), never from the four callers (playground, eval, published, channel; 12 §1). There is exactly one
 span-emission helper, and every graph node (03) and every gateway call (02) goes through it.
 
 ```python

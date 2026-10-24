@@ -136,7 +136,7 @@ class RunContext:
     subagent_budget: "BudgetGuard | None" = None  # child spend/fan-out guard, derived from subagent_configs
                                     #   (max_depth / max_fan_out / budget). invoke() refuses to spawn past
                                     #   the cap → stop_reason="subagent_depth_exceeded" (03 §4, 10 counter).
-    # feature switches the three callers set differently:
+    # feature switches the four callers (playground / published / channel / eval; 12 §1 amends 00 §1) set differently:
     allow_cache: bool = True        # eval sets False for non-cacheable judge paths  (07)
     stream: bool = True
     deadline_s: float = 30.0        # hard wall-clock budget for the whole run — the latency

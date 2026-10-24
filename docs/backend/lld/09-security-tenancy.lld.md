@@ -135,15 +135,24 @@ create policy agents_tenant on agents
 ### 2.2 The generation loop (one migration)
 
 ```python
-# migrations/versions/xxxx_rls.py — Alembic. One source of truth so a new WorkspaceScoped table can't be
-# forgotten (the §2.4 CI check backstops it).
-WORKSPACE_SCOPED = [            # kept in sync with the ORM WorkspaceScoped mixin registry (01 §5/§6)
-    "agents", "agent_versions", "retrieval_bindings", "tool_bindings", "skill_bindings",
-    "knowledge_bases", "documents", "chunks", "eval_suites", "eval_cases", "eval_runs", "eval_results",
-    "runs", "spans", "api_tokens", "jobs", "notifications", "agent_signatures", "skills", "skill_resources",
-    "subagent_configs", "tool_approvals", "audit_logs",   # audit_logs: workspace rows; the NULL-ws org rows are §4
-    # …every WorkspaceScoped table (01 §4). The CI check (§2.4) fails if this list ≠ the mixin registry.
-]
+# migrations/versions/xxxx_rls.py — Alembic. The loop is DERIVED from the ORM WorkspaceScoped mixin registry at
+# migration time (01 §5/§6) — the list IS the registry, not a hand-kept copy, so a new WorkspaceScoped table
+# CANNOT be forgotten. The §2.4 CI check is the backstop (asserts deployed policies == registry).
+WORKSPACE_SCOPED = [m.__tablename__ for m in workspace_scoped_models()]   # single source of truth (01 §5/§6)
+
+# As of this migration the registry resolves to the tables below — every one carries `workspace_id` in the
+# canonical 01 DDL, so each gets the standard §2.1 column policy. Listed for the reader ONLY; the code above does
+# not hand-maintain this (that is the whole point — enumerating it here would reintroduce the drift §2.4 guards):
+#   agents, agent_versions, retrieval_bindings, tool_bindings, skill_bindings,
+#   knowledge_bases, documents, chunks, data_sources,
+#   eval_suites, eval_cases, eval_runs, eval_results, eval_baselines,
+#   runs, spans, api_tokens, jobs,
+#   notifications, notification_deliveries, notification_prefs,
+#   agent_signatures, skills, skill_resources, subagent_configs,
+#   provider_keys, tools, tool_approvals, mcp_servers, mcp_tools, mcp_user_connections,   # mcp_user_connections: per-(workspace,user) MCP grants (17 §3)
+#   published_endpoints, spend_limits, concurrency_limits,
+#   channels, channel_agents, channel_events,                                             # channel tables — WorkspaceScoped w/ workspace_id in canonical 01 (12)
+#   audit_logs                                                                            # per-workspace rows; the NULL-ws org rows (§4) are invisible to the policy
 
 def upgrade() -> None:
     for t in WORKSPACE_SCOPED:
@@ -193,11 +202,17 @@ every tenant table, a repo issuing a bare `await db.get(Model, id)` is safe by c
 splits custody into **three scopes** but leaves the **per-user** scheme — the one new in C4 — as a named bullet.
 This specifies it, consistent with the base scheme.
 
-### 3.1 The three DEK scopes (one envelope, three key names)
+### 3.1 The three DEK scopes (one envelope, scope-derived key names)
+
+The custody split is **three scopes** — `platform`, `per-workspace`, `per-user` (`09 §9.1`). The `platform`
+scope is not a single key: it holds **named sub-keys** (`platform-<ref>`), one per platform-held secret class,
+each its own Transit key for blast-radius isolation.
 
 | Secret class | DEK scope | Vault Transit key name | Why |
 |---|---|---|---|
-| **Provider keys** | **platform pool** | `transit/keys/platform-pool` | custody spine — the pool key is never exposed to any workspace (`09 §9.1`) |
+| **Provider keys** | **platform** (`pool` sub-key) | `transit/keys/platform-pool` | custody spine — the pool key is never exposed to any workspace (`09 §9.1`) |
+| **IdP / Graph API creds** (`18 §7.3`) | **platform** (`idp` sub-key) | `transit/keys/platform-idp` | deployment-wide IdP/Graph secrets; a key separate from `platform-pool` for blast-radius isolation (`18 §7.3`) |
+| **Connect signing key** | **platform** (`connect-signing` sub-key) | `transit/keys/platform-connect-signing` | platform-held connect-flow signing material; its own sub-key, never per-workspace |
 | Tool / connector / channel creds | **per-workspace** | `transit/keys/ws-<workspace_id>` | tenant-isolated; the base scheme (`09 §9`) |
 | **Per-user MCP creds** | **per-user** (C4) | `transit/keys/user-<subject_hash>` | least-privilege: a user's connected-account token is readable only as that user (`17 §3`) |
 
@@ -220,8 +235,12 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM   # AES-256-GCM, 
 
 
 def _key_name(scope: str, ref: str | None) -> str:
-    # scope ∈ {"platform", "workspace", "user"}; ref = workspace_id | subject_hash | None (platform)
-    return {"platform": "platform-pool", "workspace": f"ws-{ref}", "user": f"user-{ref}"}[scope]
+    # scope ∈ {"platform", "workspace", "user"}:
+    #   platform  → ref names the sub-key → platform-<ref> ("pool" provider keys | "idp" 18 §7.3 | "connect-signing");
+    #               ref=None keeps the legacy provider-key spine (platform-pool)
+    #   workspace → ref = workspace_id    → ws-<workspace_id>
+    #   user      → ref = subject_hash    → user-<subject_hash>
+    return {"platform": f"platform-{ref or 'pool'}", "workspace": f"ws-{ref}", "user": f"user-{ref}"}[scope]
 
 
 class VaultEnvelope:
@@ -284,7 +303,7 @@ cannot invoke the cross-tenant function.
 
 | Role | Owns | `BYPASSRLS`? | Used by |
 |---|---|---|---|
-| `ac_migrate` | all DDL (tables, policies, functions) | n/a (owner) | Alembic only, offline |
+| `ac_migrate` | all DDL (tables, policies, functions) | **yes** — required to overcome the §2 `FORCE` RLS (offline DDL/migration role only; never on the request path) | Alembic only, offline |
 | `ac_app` | nothing | **no** | every request/worker connection (§1) — RLS applies, policies force-on |
 | `platform_report` | nothing | **no** (crosses tenants only *inside* the `SECURITY DEFINER` fn, which runs as its definer `ac_migrate`) | the **org plane only** (§4.3), a separate engine |
 
@@ -292,12 +311,24 @@ cannot invoke the cross-tenant function.
 `EXECUTE` on the org-report functions; it still has no `BYPASSRLS` of its own — the cross-tenant reach comes
 *solely* from the `SECURITY DEFINER` function running as its owner.
 
+> **Why the definer owner must hold `BYPASSRLS`.** Under §2's universal `FORCE` RLS the table owner is **not**
+> exempt, so a `SECURITY DEFINER` function owned by `ac_migrate` would be forced under RLS too — and with
+> `app.workspace_id` unset on the org-plane connection (§4.3), the policy predicate is `workspace_id = NULL` →
+> **zero rows**. The cross-tenant org read would then *silently return nothing*. Granting `BYPASSRLS` to the
+> definer **owner** (`ac_migrate`) overrides `FORCE` so the functions actually cross tenants; it is safe because
+> `ac_migrate` is offline/DDL-only and never reachable on a request path. `platform_report` deliberately keeps
+> **no** `BYPASSRLS` — its only cross-tenant reach is `EXECUTE` on the definer fns. This is the mechanism
+> `15` LLD §2.2 depends on.
+
 ### 4.2 The `SECURITY DEFINER` function + the grant/revoke boundary
 
 ```sql
 -- Owned by ac_migrate (the definer). SECURITY DEFINER → the body runs with ac_migrate's rights, so it reads
 -- ACROSS tenants (it does NOT set app.workspace_id). This is the single sanctioned exception to §2 (09 §7/§8).
-create function org_report_estate()
+-- Illustrative shape only — the canonical, enriched org_report_agents() (full column set + joins) is defined in
+-- 15 LLD §2.3; shown here solely to demonstrate the §4 template (definer + pinned search_path + revoke/grant
+-- boundary) that the §4.4 DB-boundary test exercises against the real function.
+create or replace function org_report_agents()
   returns table (workspace_id uuid, agents bigint, spend_usd numeric)
   language sql
   security definer
@@ -309,9 +340,9 @@ as $$
 $$;
 
 -- The boundary: NOBODY executes it by default, then grant ONLY the reader role.
-revoke all on function org_report_estate() from public;
-revoke all on function org_report_estate() from ac_app;     -- the normal app role explicitly cannot call it
-grant  execute on function org_report_estate() to platform_report;
+revoke all on function org_report_agents() from public;
+revoke all on function org_report_agents() from ac_app;     -- the normal app role explicitly cannot call it
+grant  execute on function org_report_agents() to platform_report;
 ```
 
 - **`security definer` + pinned `search_path`** is the standard hardening — the function reads cross-tenant, but
@@ -335,7 +366,7 @@ async def read_estate(principal: "Principal") -> list[dict]:
     if not principal.is_admin:                               # app-wide admin claim ONLY (09 §1/§4)
         raise Forbidden("org.report.read")
     async with _org_engine.begin() as conn:                 # platform_report connection — NO app.workspace_id set
-        rows = (await conn.execute(text("select * from org_report_estate()"))).mappings().all()
+        rows = (await conn.execute(text("select * from org_report_agents()"))).mappings().all()
     await _write_org_audit(action="org.report.read", actor=principal.subject_id)   # workspace_id = NULL (09 §12)
     return [dict(r) for r in rows]
 ```
@@ -349,10 +380,10 @@ path that crosses tenants.
 # tests/isolation/test_org_plane_boundary.py — a gate (09 §8).
 def test_app_role_cannot_execute_org_functions(pg_app_role):
     with pytest.raises(InsufficientPrivilege):               # ac_app has no EXECUTE — a hard DB-level denial
-        pg_app_role.execute("select * from org_report_estate()")
+        pg_app_role.execute("select * from org_report_agents()")
 
 def test_only_platform_report_can(pg_platform_report):
-    assert pg_platform_report.query("select count(*) from org_report_estate()")[0] >= 0
+    assert pg_platform_report.query("select count(*) from org_report_agents()")[0] >= 0
 ```
 
 Together with §2's RLS proofs and §3's cross-user secret test, this is the DB half of the non-negotiable

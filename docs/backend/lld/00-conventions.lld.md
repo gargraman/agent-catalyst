@@ -120,7 +120,8 @@ class ProviderUnavailable(AppError):    # 02 §6 — provider + all fallbacks fa
   Under this hierarchy that becomes `raise EvalGateError("no PASS eval newer than the last config change",
   detail={"last_trigger_at": ..., "last_pass_at": None})`, with `code` as a first-class field the envelope
   reads. `LowConfidenceError` likewise replaces the `publish.low_confidence` string form. **No behavior
-  change** — same status, same code, cleaner construction. (Flagged for the `05` LLD to adopt.)
+  change** — same status, same code, cleaner construction. **(Adopted in `05` LLD §7, which constructs
+  `EvalGateError`/`LowConfidenceError` at the publish gate per this taxonomy.)**
 - **`02 §6`** `RetryableProviderError` / `NonRetryableError` are **category B** — caught by the gateway retry
   loop; they are *not* `AppError`s and never hit `errors.py`. Only `ProviderUnavailable` (raised when retries
   + fallback are exhausted) is category A. This doc makes `ProviderUnavailable` an `AppError`; the two

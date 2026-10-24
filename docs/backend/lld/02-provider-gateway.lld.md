@@ -318,7 +318,11 @@ def attach_cost(usage_event, profile) -> "NormalizedStreamEvent":
 Rules: **`Decimal(str(float))`** (not `Decimal(float)` — the latter carries binary noise), **`ROUND_HALF_EVEN`**
 (banker's rounding, the Postgres `numeric` default), quantize **once** at attach time. `NormalizedUsage.cost_usd`
 stays a float in the IR (`02 §2`) for the hot path; the `Decimal` is what's persisted. The `02 §8` cost test
-asserts `quantize_usd(compute_cost(...))` equals the hand-calc at 6dp.
+asserts `quantize_usd(compute_cost(...))` equals the hand-calc at 6dp **and** that reasoning tokens are **not**
+double-counted: output is billed on `billable_output = output - reasoning` while reasoning is billed separately
+at `rate_reasoning` (which defaults to `rate_output`), per the pinned token-accounting convention in `02 §4.1` /
+`cost.py`. Pricing the full `output_tokens` *and* reasoning again would double-bill reasoning — the test fails
+if a profile does that.
 
 ---
 

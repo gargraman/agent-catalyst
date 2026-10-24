@@ -95,7 +95,7 @@ create type skill_status       as enum ('draft','published','deprecated');      
 create type skill_resource_kind as enum ('instruction','reference');              -- the SKILL.md instruction body vs a bundled reference file (data, not instructions)
 create type job_kind          as enum ('ingestion','eval','mcp_discovery','reingest','model_deprecation_scan');  -- model_deprecation_scan: P0 detector (16)
 create type job_status        as enum ('queued','running','completed','failed','cancelled');
-create type notification_kind as enum ('drift','budget_threshold','model_deprecated','eval_failed','registration_gate','dedup_flag','approval_requested');  -- owner-facing notifications (16); approval_requested = pending tool approval (P2)
+create type notification_kind as enum ('drift','budget_threshold','model_deprecated','eval_failed','registration_gate','dedup_flag','approval_requested','shadow_usage');  -- owner-facing notifications (16); approval_requested = pending tool approval (P2); shadow_usage = direct-provider bypass nudge (14 §5 / 16 LLD §3)
 ```
 
 ## 4. Core DDL
@@ -565,7 +565,11 @@ create table tool_bindings (
   -- frozen-at-bind governance snapshot (joins the version-snapshot freeze discipline above — §4.2):
   risk_tier     tool_risk_tier not null default 'read',    -- snapshot of the tool/mcp_tool tier at bind
   requires_approval boolean not null default false,        -- derived at bind: destructive ⇒ true; write ⇒ per workspace policy
-  subagent_config_id uuid references subagent_configs(id)  -- nullable; set when kind='subagent'
+  subagent_config_id uuid references subagent_configs(id), -- nullable; set when kind='subagent'
+  -- frozen MCP on-behalf-of identity (17): the mode + requested OAuth scopes snapshotted at bind, so a
+  -- shared_service→per_user flip or scope change is a drift trigger folded into snapshot_hash (05, LLD §4.2/§4.3).
+  auth_mode     text,                                      -- 'shared_service' | 'per_user'; NULL for non-MCP bindings
+  mcp_scopes    text[]                                     -- requested OAuth scopes; NULL for non-MCP bindings
 );
 
 -- Human-in-the-loop approval for a gated (requires_approval) tool call, raised at invoke (WorkspaceScoped).
@@ -748,11 +752,122 @@ create index on notifications (workspace_id, created_at desc);
 -- only one person is ever notified.
 create unique index on notifications (workspace_id, recipient_subject, dedupe_key) where read_at is null;
 
+-- External-delivery fan-out (16 LLD §1/§4). The notifications row above IS the in-app delivery + system of
+-- record; these track the opt-in external fan-out (email/Slack/webhook) only. in_app is implicit (the row).
+create type delivery_channel as enum ('email','slack','webhook');
+create type delivery_status  as enum ('queued','sent','failed','dead','skipped');
+
+create table notification_deliveries (
+  id              uuid primary key default gen_random_uuid(),
+  workspace_id    uuid not null references workspaces(id),             -- WorkspaceScoped + RLS (§5/§6)
+  notification_id uuid not null references notifications(id) on delete cascade,
+  channel         delivery_channel not null,
+  target          text not null,                                      -- email addr / slack user-or-channel / webhook url
+  status          delivery_status not null default 'queued',
+  attempts        int not null default 0,
+  last_error      text,
+  dedupe_key      text not null,                                      -- = notifications.dedupe_key + channel (16 LLD §4)
+  created_at      timestamptz not null default now(),
+  sent_at         timestamptz
+);
+create unique index notification_deliveries_idem
+  on notification_deliveries (workspace_id, notification_id, channel);  -- one delivery per channel per notification
+create index on notification_deliveries (status, created_at);           -- the DLQ / retry sweep
+
+-- Per-user × per-kind × per-channel delivery preferences (16 LLD §2). NULL subject = the workspace default row.
+create table notification_prefs (
+  workspace_id uuid not null references workspaces(id),
+  subject      text,                                   -- OIDC subject; NULL = workspace default
+  kind         notification_kind not null,             -- §3; one row per kind (or '*' sentinel default)
+  in_app       boolean not null default true,
+  email        boolean not null default false,
+  slack        boolean not null default false,
+  webhook      boolean not null default false,
+  digest       boolean not null default false,         -- batch non-critical into a periodic digest (16 LLD §5)
+  primary key (workspace_id, subject, kind)
+);
+
 -- No `platform_admins` table (claim-based model, 2026-10-22). The app-wide `admin` (15 §1) is the
 -- `ap-platform-admin` Okta group claim, read live from the OIDC token (09 §1/§2.1): grant/revoke happens in
 -- Okta (audited there), and every admin action in-app is audited via `audit_logs`. One deployment = one org
 -- (13 §4): there is no `org_memberships` table. admin is elevated + read-only on the cross-tenant path (§6, 15 §2).
 ```
+
+### 4.10 Messaging channels (P2 — the 4th `runtime.invoke` caller, 12)
+
+Channels are the inbound messaging adapter (Slack/Teams/GChat) — the **fourth** `runtime.invoke` caller (12,
+amending `00 §1`). The **12 HLD §3 / 12 LLD §4 DDL is illustrative**; **`01` is canonical** (same rule as the
+notification tables above — if the two disagree, `01` wins). All three tables are `WorkspaceScoped`: `channels`
+already carries `workspace_id`; `channel_agents` and `channel_events` carry it too (**12 LLD §4 omitted it**) so
+they land in the ORM registry the `09` RLS loop (§2.2) + the §7 CI check read — the sweep/worker still resolve
+tenant via `channel_id`, but the explicit column keeps RLS uniform and the CI check green.
+
+```sql
+create type channel_platform as enum ('slack','teams','gchat');
+create type channel_status   as enum ('connected','error','disconnected','setup_pending');
+create type channel_routing  as enum ('slash','picker','default');
+create type channel_identity as enum ('federated','service');
+
+create table channels (                             -- FE Channel (channels.ts); one channel -> one workspace
+  id            uuid primary key default gen_random_uuid(),
+  workspace_id  uuid not null references workspaces(id),
+  platform      channel_platform not null,
+  name          text not null,
+  status        channel_status not null default 'setup_pending',
+  routing       channel_routing not null default 'default',
+  identity_mode channel_identity not null default 'federated',
+  default_agent_id uuid references agents(id),
+  okta_group    text,                               -- channel gate group (coarse end-user gate, 12 §4)
+  allowed_email_domains text[] not null default '{}', -- H1: corporate-domain bind for federation (12 §4)
+  service_account text,                             -- identity_mode='service': the client-credentials principal (12 §4)
+  config        jsonb not null default '{}',        -- non-secret per-platform config; config->>'channel_ref' feeds the ingress lookup (12 LLD §4)
+  credentials   jsonb not null default '{}',        -- {field: {masked, vault_path}} MULTI-SECRET; raw vaulted, never returned (09)
+  installed_by  text,                               -- OIDC subject that installed the channel (no users table — claim-based model, §4.1)
+  created_at    timestamptz not null default now(),
+  updated_at    timestamptz not null default now(),
+  last_event_at timestamptz
+);
+create unique index channels_platform_ref on channels (platform, (config ->> 'channel_ref'));  -- ingress lookup (12 LLD §4)
+create index on channels (workspace_id);
+
+-- one channel -> many agents (routing targets). WorkspaceScoped (workspace_id added here; 12 LLD §4 omitted it).
+create table channel_agents (
+  channel_id   uuid not null references channels(id) on delete cascade,
+  workspace_id uuid not null references workspaces(id),
+  agent_id     uuid not null references agents(id) on delete cascade,
+  slash        text,                                -- e.g. '/triage' (routing='slash')
+  primary key (channel_id, agent_id)
+);
+
+-- inbound-event dedup ledger + dead-letter state machine (H1.5, 12 LLD §4). WorkspaceScoped (workspace_id
+-- added here; 12 LLD §4 omitted it). The platform event id is recorded BEFORE enqueue; a duplicate hits the
+-- PK and is dropped → one event id = one runtime.invoke.
+create table channel_events (
+  channel_id        uuid not null references channels(id) on delete cascade,
+  workspace_id      uuid not null references workspaces(id),
+  platform_event_id text not null,                  -- the platform's unique event id (dedup key, 12 LLD §7)
+  status            text not null default 'received', -- received | processed | dead_letter (state machine, 12 LLD §7)
+  payload_ref       text,                           -- MinIO object key for the raw body → re-drive source (12 LLD §7)
+  attempts          smallint not null default 0,    -- worker attempts; caps retries before dead_letter
+  received_at       timestamptz not null default now(),
+  processed_at      timestamptz,
+  primary key (channel_id, platform_event_id)       -- dedup: a 2nd delivery of the same id is a no-op
+);
+create index channel_events_sweep on channel_events (status, received_at) where status = 'received';  -- dead-letter sweep (12 LLD §7)
+```
+
+- **`run_source`** already includes `'channel'` (§3); `runs.caller` carries the platform handle for attribution,
+  `subject_type` is unchanged (`user` for a federated human, `service` for a service account).
+- **RLS:** all three are `WorkspaceScoped` → covered by the `09 §2.2` RLS loop (derived from the ORM mixin
+  registry at migration time, so a new `WorkspaceScoped` table can't be forgotten) + the §7 CI check backstop. The
+  **one** read that cannot be tenant-scoped is the ingress `channels_platform_ref` lookup, which runs pre-GUC to
+  map `(platform, channel_ref) → workspace` (12 LLD §4/§5) — the single sanctioned pre-tenant read.
+
+> **Canonical home.** `notification_deliveries` / `notification_prefs` + the `delivery_channel`/`delivery_status`
+> enums were introduced by the **16 LLD** (§1/§2); `01 §4.9` is their **canonical** DDL (mirroring how the
+> `notifications` DDL is homed here). The 16 LLD defines *usage*; if the two ever disagree, **`01` wins** — same
+> rule the 16 LLD states. Both tables are `WorkspaceScoped`, so the **`09 §2.2` RLS loop (derived from the ORM
+> mixin registry at migration time) covers them automatically**, with the §7 CI check as the backstop.
 
 ## 5. SQLAlchemy ORM (shape, not every line)
 
@@ -787,7 +902,12 @@ class AgentVersion(Base, WorkspaceScoped):
     publishable: Mapped[bool] = mapped_column(default=False)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
     retrieval_bindings: Mapped[list["RetrievalBinding"]] = relationship()
-    tool_bindings: Mapped[list["ToolBinding"]] = relationship()
+    # order_by pins a deterministic load order so snapshot_hash is stable regardless of row-insert order. The
+    # hash ALSO sorts by a total key in-code (LLD §4.2) — this is belt-and-suspenders: a stable load order makes
+    # the snapshot assembly (to_snapshot) itself reproducible, not only the hash.
+    tool_bindings: Mapped[list["ToolBinding"]] = relationship(
+        order_by="(ToolBinding.kind, ToolBinding.tool_id, ToolBinding.mcp_tool_id, ToolBinding.subagent_config_id)",
+    )
     skill_bindings: Mapped[list["SkillBinding"]] = relationship()
 
     def to_snapshot(self) -> "VersionSnapshot":
@@ -837,6 +957,10 @@ Caveats, stated plainly:
   an RLS policy) enforces it.
 - The skill tables (`skills`, `skill_resources`, `skill_bindings`, §4.4) carry `workspace_id` and join the
   RLS loop + the §7 CI check automatically too — no carve-out.
+- The channel tables (`channels`, `channel_agents`, `channel_events`, §4.10) are `WorkspaceScoped` and
+  enumerated in the `09 §2.2` RLS loop + the §7 CI check. The sole exception is the pre-GUC ingress lookup
+  (`channels_platform_ref`) that maps an inbound webhook to its workspace (12 LLD §4) — a sanctioned
+  pre-tenant read, not an RLS bypass on the row path.
 - **Elevated carve-outs (the only tables that intentionally cross or skip tenant scope):**
   - Cross-workspace reads (the **org governance report**, 15) use a separate, explicitly-elevated,
     **audited** path (a `SECURITY DEFINER` function callable only by the app-wide `admin` claim, 15 §2) — the
