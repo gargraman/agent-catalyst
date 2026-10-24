@@ -190,7 +190,10 @@ create table agent_versions (
   note            text not null default '',
   -- ---- the frozen snapshot (immutable after creation) ----
   model_config    jsonb not null,               -- provider, model, api_version, params, fallback (02)
-  profile_snapshot jsonb not null,              -- resolved capability profile at freeze time (02)
+  profile_snapshot jsonb not null,              -- resolved capability profile(s) frozen at freeze time (02): the
+                                                --   primary AND, when model_config.fallback is set, the fallback
+                                                --   model's profile — so a fallback run is costed/capability-checked
+                                                --   under the same immutability guarantee (02 §6; LLD review A1, 2026-10-24)
   system_prompt   text not null default '',
   prompt_hash     text not null,                -- sha256(system_prompt) — an eval trigger (05)
   io_contract     jsonb not null default '{}',  -- typed inputs + output schema (spec B2.5); edited as
@@ -201,7 +204,11 @@ create table agent_versions (
   guardrail_config jsonb not null default '{}', -- ordered stages + thresholds (06)
   -- retrieval + tool bindings are snapshotted into child rows (§4.4, §4.6) AND denormalized here
   -- as a hash so the whole snapshot has one identity:
-  snapshot_hash   text not null,                -- sha256 over all frozen fields → version identity (05)
+  snapshot_hash   text not null,                -- sha256 over all frozen behavior-defining fields → version identity
+                                                --   (05). Covers model/params/prompt/guardrail/tool+skill bindings/
+                                                --   retrieval binding (incl. the injection column) AND memory_config/
+                                                --   context_config (added 2026-10-24, LLD review A4). Canonical
+                                                --   serialization algorithm: lld/01-data-model.lld.md §4
   publishable     boolean not null default false,  -- set by a PASS eval newer than last trigger (05). FE models the
                                                     --   INVERSE as Agent.needsReEval (FE versioning is cosmetic): a trigger
                                                     --   edit or KB re-ingest sets needsReEval=true (publishable=false); a
@@ -439,6 +446,7 @@ create table eval_cases (
   assertions    jsonb not null default '[]',     -- FE Assertion[]: [{kind, detail?, hard}] — detail REQUIRED for regex/required_fields/tool_called/exact (422 otherwise) (05 §2a)
   rubric        jsonb not null default '[]',     -- FE RubricDimension[]: [{name, weight}] — judge scores each 1–5, weighted blend = quality (05)
   expected      jsonb,                           -- OPTIONAL reference answer; omit → scored pairwise vs baseline, not vs golden (05 §2a)
+  tags          text[] not null default '{}',    -- incremental-eval tags (05 §6): which prompt section / io_contract var a case exercises; added 2026-10-24 (LLD review)
   created_at    timestamptz not null default now()
 );
 

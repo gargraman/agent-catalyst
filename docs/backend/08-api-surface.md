@@ -45,6 +45,9 @@ of this builder/runtime catalog; it mints its own identity (teams = the end user
 | over monthly budget (hard cap) | **402** | `budget.exceeded` |
 | rate limit (per-token, **P1**) / concurrency + spend quota (P2) | **429** | `rate.limited` |
 | provider/all-fallbacks failed | 502 | `provider.unavailable` |
+| concurrent request with the same `Idempotency-Key` still in flight | 409 | `idempotency.in_progress` (00-conv §3; 2026-10-24 LLD review) |
+| stale write — `If-Match` ETag no longer current (concurrent edit) | 409 | `conflict.stale` (lld/08 §6; 2026-10-24 LLD review) |
+| any unhandled server error | **500** | `internal` (generic; never leaks a stack to the client; 2026-10-24 LLD review) |
 
 > A **dry-run** (`…/test-invoke`, §2) on a tool the caller hasn't bound or isn't permitted to use reuses
 > **`403 access.denied`** — no new code. A **sub-agent depth/fan-out breach is a run `stop_reason`**
@@ -263,9 +266,9 @@ class AgentPatch(BaseModel):             # updateAgent / updateAgentConfig (all 
     name: str | None = None
     description: str | None = None
     tags: list[str] | None = None        # editable on the Configure → General section
-    status: str | None = None            # publish/unpublish/archive → may trigger eval gate (§6).
-                                         #   The console routes these through guarded wrappers
-                                         #   (publishAgent/archiveAgent/…), not a free-form status set.
+    # status is NOT patchable (2026-10-24 LLD review A3): a generic PATCH {status:"published"} would BYPASS the
+    #   eval gate (§6). Lifecycle transitions go ONLY through the dedicated endpoints (POST …/publish, …/repoint,
+    #   …/archive), which enforce the 01 §4.2 state machine + the eval gate. (lld/08 §4)
     active_version: str | None = None    # rollback / re-point
     knowledge_bases: list[str] | None = None
     tools: list[str] | None = None

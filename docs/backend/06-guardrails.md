@@ -92,8 +92,9 @@ is both a safety property and a **COGS lever** (07): a request that trips the ti
 # services/runtime/guardrails/runner.py
 async def run_input_stages(messages, cfg, ctx) -> PipelineOutcome:
     text = concat_user(messages)
+    fail_mode = cfg.get("fail_mode") or settings.guardrails_fail_mode   # per-version override else global (00 §6)
     for stage in sorted(load_stages(cfg, "input"), key=lambda s: s.cost_tier):
-        r = await stage.check(text, ctx)
+        r = await run_stage(stage, text, ctx, fail_mode)  # fail-mode wrapper (lld/06 §3): a stage error → BLOCK (closed) / ALLOW+alert (open); 2026-10-24
         emit_span("guardrail", stage.name, r, ctx)    # trace every stage (10)
         if r.decision is Decision.BLOCK:
             return PipelineOutcome(blocked=True, label=r.label)      # short-circuit → no model call
@@ -115,13 +116,15 @@ prefix, keep the tail.
 ```python
 # services/runtime/guardrails/streaming.py
 class RedactingStream:
-    def __init__(self, stages, window=160):           # window ≥ longest matchable pattern
-        self.stages, self.window, self.buf = stages, window, ""
+    def __init__(self, stages, ctx, window=None):     # ctx needed by _scrub; window derived from patterns (lld/06 §4), 2026-10-24
+        self.stages = [s for s in stages if s.phase == "output" and s.cost_tier == 0]  # tier-0 output redactors only (hot path)
+        self.ctx, self.window, self.buf = ctx, window or required_window(self.stages), ""
     async def feed(self, delta: str):
         self.buf += delta
         if len(self.buf) > self.window:
-            head, self.buf = self.buf[:-self.window], self.buf[-self.window:]
-            yield await self._scrub(head)             # flush safe prefix, redacted
+            scrubbed = await self._scrub(self.buf)    # scrub the WHOLE buffer — a match straddling the flush
+            yield scrubbed[:-self.window]             #   boundary is caught (lld/06 §4), not just the head; 2026-10-24
+            self.buf = self.buf[-self.window:]        # retain the RAW tail for re-scrubbing with the next delta
     async def flush(self):
         yield await self._scrub(self.buf)             # final tail
     async def _scrub(self, s):

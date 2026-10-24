@@ -109,7 +109,10 @@ class RetrievalConfig:
     metadata_filters: dict = field(default_factory=dict)
 
 async def search(snapshot, query: str, ctx) -> list[Chunk]:
-    binding = snapshot.retrieval_binding                 # pinned KB + index_version + config (01)
+    # snapshot.retrieval_bindings is a COLLECTION — a version may bind multiple KBs (01 §4.4,
+    # unique(version_id, kb_id)). search() runs PER binding: the retriever-tool path names the target KB; the
+    # always_on path (03 §4) iterates every binding. 2026-10-24 LLD review (was the singular retrieval_binding).
+    binding = select_binding(snapshot, query)            # the binding for this call — pinned KB + index_version + config (01)
     # Invoke-time KB access policy (09 §effective-access): the caller must be entitled to USE this KB.
     # Eval runs (ctx.run_source == "eval") carry principal_id=None (00 §runtime), so they HONOR the frozen
     # snapshot but BYPASS the per-caller KB ACL — the binding was manage-authorized at bind time, and eval

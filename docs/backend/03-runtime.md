@@ -45,6 +45,9 @@ class GraphState(TypedDict):
     messages: Annotated[list[dict], add]  # conversation, appended across tool cycles
     inputs: "InvokeInputs"                # declared typed vars (validated vs io_contract)
     retrieved: list[dict]                 # chunks used (for citations, 04)
+    pending_tool_calls: list[dict]        # tool calls from the last model turn — read by tool_approval_gate /
+                                          #   execute_tools (§4); added 2026-10-24 (LLD review). session_id is NOT
+                                          #   here — it rides on ctx (RunContext, 00 §4) for the checkpointer (§6).
     tool_calls_made: int                  # loop guard
     usage: "NormalizedUsage"             # accumulated across model calls (cost, 02/07)
     substitutions: list["Substitution"]  # recorded capability leaks (02 §5)
@@ -77,7 +80,8 @@ async def build_messages(state):            # system prompt + skills + input-var
     # and no secrets live in skill text. Skills have NO execute path — they never enter execute_tools /
     # tool_approval_gate, touch the sandbox, or hit the egress allow-list (03 §8, 09 §10).
     skill_msgs = compose_skill_fragments(state["snapshot"].skills)            # pinned by skill_content_hash (01 §4.2)
-    history = apply_memory_window(state["messages"], state["snapshot"].memory_config)  # §6
+    history = await apply_memory_window(state["messages"], state["snapshot"].memory_config,
+                                        snapshot=state["snapshot"], ctx=state["ctx"])  # §6 — async (may summarize via the cheap model); 2026-10-24 LLD review
     return {"messages": [sys_msg(sys), *skill_msgs, *history]}
 
 async def retrieve_always_on(state):        # only when injection == "always_on" (04)

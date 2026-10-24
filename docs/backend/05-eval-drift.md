@@ -144,8 +144,10 @@ def score_quality(results: list[CaseScore], rubric_weights: dict[str, float]) ->
 def efficiency_delta(candidate: RunAgg, baseline: RunAgg) -> EfficiencyDelta:
     """cost%, latency(ms), tokens, tool-call-count deltas — all from the gateway IR (02)."""
 
-def verdict(quality_c, quality_b, eff, det_all_green, n_cases, policy) -> tuple[Verdict, str]:
+def verdict(quality_c, quality_b, eff, det_all_green, n_cases, policy, pairwise_rate) -> tuple[Verdict, str]:
     # policy = the agent's workspace EvalPolicy (§1): MIN_CASES / Q_THRESHOLD / EFF_BUDGET below read from it.
+    # pairwise_rate = fraction of decided cases the candidate WON head-to-head vs baseline (added 2026-10-24,
+    #   LLD review A2 — the engine ran pairwise all along but never gated on it; see lld/05 §1/§4).
     if n_cases < policy.min_cases:                 # default 10 (spec B5 small-set honesty)
         return "low_confidence", _reason_small_set(n_cases)
     if not det_all_green:
@@ -155,6 +157,8 @@ def verdict(quality_c, quality_b, eff, det_all_green, n_cases, policy) -> tuple[
         return "fail", _reason_quality(q_drop, worst_dimensions)
     if not eff.within_budget(EFF_BUDGET):
         return "fail", _reason_efficiency(eff)     # e.g. "cost +12%, latency +320ms"
+    if pairwise_rate < (1 - PAIRWISE_LOSS_LIMIT):  # default limit 0.5 — lost head-to-head on > half the cases
+        return "fail", _reason_pairwise(pairwise_rate)   # "rubric flat but clearly worse than baseline"
     return "pass", _reason_pass()
 ```
 
@@ -190,6 +194,7 @@ its last passing eval.** Enforced in code, returns `409` otherwise (spec B5, 08)
 DRIFT_TRIGGERS = {
     "model", "provider", "api_version",     # gateway config (02)
     "params",                                # temperature/max_tokens…
+    "memory_config", "context_config",       # window/compaction/truncation change behavior (03 §6/§7) — added 2026-10-24 (LLD review A4)
     "prompt_hash",                           # system prompt text (01)
     "guardrail_config",                      # guardrails change behavior (06)
     "tool_bindings",                         # tool set / schema snapshot (01, spec B7)
