@@ -18,7 +18,7 @@
 | `breaker` used; "opens after N … half-opens after a cooldown … State in Redis" — N, cooldown, keys, atomicity all unspecified | §5 — the `CircuitBreaker` class, N/cooldown/half-open, Redis key schema, atomic failure count |
 | `supports()` substitution logic shown once | §6 — the full feature→action rule set + the adapter `stream()` obligations (+ mvp reference) |
 | `compute_cost` returns `float`; `runs.cost_usd` is `numeric(12,6)` (01) — quantization undefined | §7 — the Decimal quantization point + rounding mode |
-| `§6` fallback calls `resolve_profile(fb…)` **live**, contradicting "snapshot so a profile change can't alter a published agent" | §8 — the decision (snapshot the fallback profile too) |
+| `§6` fallback resolved the fallback profile **live**, contradicting "snapshot so a profile change can't alter a published agent" | §8 — A1 (now folded into `01`/`02`): the fallback profile is snapshotted; no remaining hole |
 
 Python 3.12, `from __future__ import annotations`. Snippets compile (§9). Types `NormalizedRequest`,
 `NormalizedUsage`, `Substitution`, `CapabilityProfile`, `compute_cost`, the adapter Protocol: **see `02` — not
@@ -322,24 +322,35 @@ asserts `quantize_usd(compute_cost(...))` equals the hand-calc at 6dp.
 
 ---
 
-## 8. Fallback profile resolution (a parent inconsistency, resolved)
+## 8. Fallback profile resolution (A1 — snapshotted, adopted)
 
-`02 §6` fallback does `resolve_profile(fb.provider, fb.model)` — a **live** resolve. But the whole point of
-`profile_snapshot` is that a published version's cost/behavior can't shift under a live profile edit
-(`02 §4`). The fallback model's profile is **not** in the version snapshot today (only the primary's is), so a
-fallback run would be costed against a *live* profile — a silent inconsistency with the immutability guarantee.
+An earlier draft of `02 §6` resolved the fallback model's profile **live** (`resolve_profile(fb.provider,
+fb.model)`), which contradicted the whole point of `profile_snapshot`: a published version's cost/behavior must
+not shift under a live profile edit (`02 §4`). A live fallback resolve meant a fallback run was costed against a
+*live* profile — the one place the immutability guarantee had a hole.
 
-> ⚠️ **Amendment to `01 §4.2` + `02 §4/§6`.** When a version declares `model_config.fallback`, freeze the
-> **fallback model's resolved profile** into the snapshot too — e.g. `agent_versions.profile_snapshot` becomes
-> `{"primary": {...}, "fallback": {...}}` (or a sibling `fallback_profile_snapshot`). Then the §6 fallback path
-> reads `snapshot.fallback_profile` instead of `resolve_profile(fb…)` live, and a fallback run is costed and
-> capability-checked under the same immutability rule as the primary. A fallback-model profile edit then
-> becomes a drift trigger like any other. Flagged for the `01`/`02` reconciliation pass, not edited here.
-> (`VersionSnapshot` in `01-data-model.lld.md §1` should gain `fallback_profile: CapabilityProfile | None`.)
+**A1 (2026-10-24) closed it, and the fix is folded into the parents.** When a version pins
+`model_config.fallback`, the **fallback model's resolved profile is frozen into the snapshot too** —
+`agent_versions.profile_snapshot` carries `{..primary.., "fallback": {...}}` (`01 §4.2` DDL + comment;
+`02 §4`). The `02 §6` fallback path now reads the frozen profile first:
 
-Until adopted, document the current behavior honestly: **fallback runs use the live fallback profile**, so a
-fallback-model price change is reflected immediately (not frozen) — the one place the snapshot guarantee has a
-hole.
+```python
+# 02 §6 (parent, A1): frozen fallback profile wins; the live resolve is only the pre-publish/eval fallback.
+fb_profile = snapshot_fallback_profile(req) or resolve_profile(fb.provider, fb.model)
+```
+
+so a **published** fallback run is costed and capability-checked under the **same immutability rule as the
+primary**, and a fallback-model profile edit (reprice or feature change) is a **drift trigger** like any other.
+In the LLD this is carried by:
+
+- `VersionSnapshot.fallback_profile: CapabilityProfile | None` ([`01` LLD §1](01-data-model.lld.md)), populated
+  by `to_snapshot(..., fallback_profile=...)` from `profile_snapshot.fallback`.
+- `compute_snapshot_hash` folding `fallback_profile_features` ([`01` LLD §4.2](01-data-model.lld.md)), so a
+  fallback capability change busts the verdict cache + re-arms the publish gate (this is also Minor #9).
+
+`resolve_profile` (§2) remains the **live** read used only (a) at freeze to populate the snapshot (primary +
+fallback), and (b) for the pre-publish/eval candidate. **There is no remaining snapshot hole** on the fallback
+path.
 
 ---
 
@@ -354,7 +365,8 @@ hole.
    (`supports()` preflight subs, SSE `stream()`, runtime temperature-reject `Substitution`, final USAGE event)
    and `ollama_adapter.py` — verified live in the earlier `/verify` run (H2 produced correct substitutions +
    cost).
-4. **One flagged amendment** — the fallback-profile snapshot hole (§8), recorded as a callout + a note that
-   `VersionSnapshot` gains `fallback_profile`, not a silent parent edit.
+4. **A1 reconciled** — the fallback-profile snapshot hole (§8) is **now folded into the parents** (`01 §4.2`
+   `profile_snapshot.fallback` + `snapshot_hash`; `02 §4/§6`); `VersionSnapshot.fallback_profile` carries it
+   in the `01` LLD. §8 reflects A1 as adopted, no remaining hole.
 
 → Next LLD: `05-eval-drift.lld.md` (subtask 4, the second defensible core).

@@ -1,5 +1,7 @@
 """verdict() ordering — one test per branch of 05:147-158, plus a test that proves the ORDER."""
 
+import pytest
+
 from evals.drift import EfficiencyDelta, EvalPolicy, efficiency_delta, verdict
 
 
@@ -56,3 +58,26 @@ def test_efficiency_delta_boundary_is_within_budget():
     eff = EfficiencyDelta(cost_pct=10.0)
     assert eff.within_budget(10.0) is True
     assert eff.within_budget(9.999) is False
+
+
+def test_efficiency_delta_zero_baseline_nonzero_candidate_is_inf():
+    # drift.py ~77-80: a free baseline but a paid candidate is an infinite % increase (never within budget)
+    eff = efficiency_delta({"cost_usd": 0.01}, {"cost_usd": 0.0})
+    assert eff.cost_pct == float("inf")
+    assert eff.within_budget(10_000.0) is False
+
+
+def test_efficiency_delta_zero_baseline_zero_candidate_is_zero():
+    # both free (e.g. Ollama↔Ollama) → 0% delta, within any non-negative budget
+    eff = efficiency_delta(0.0, 0.0)
+    assert eff.cost_pct == 0.0
+    assert eff.within_budget(0.0) is True
+
+
+def test_efficiency_delta_accepts_float_and_attr_forms():
+    # _cost_of handles float, dict, and any object with .cost_usd
+    class _Agg:
+        cost_usd = 2.0
+
+    assert efficiency_delta(2.0, 1.0).cost_pct == pytest.approx(100.0)
+    assert efficiency_delta(_Agg(), {"cost_usd": 1.0}).cost_pct == pytest.approx(100.0)

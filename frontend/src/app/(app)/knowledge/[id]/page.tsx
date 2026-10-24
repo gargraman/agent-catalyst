@@ -21,7 +21,7 @@ import { AccessPolicyEditor } from "@/components/access-policy-editor";
 import { useAuth, usePrincipal } from "@/lib/auth";
 import { canManage } from "@/lib/access-policy";
 import { type DataSource, type IngestionJob, type KnowledgeBase } from "@/lib/data";
-import { addDataSource, reingest, toast, updateAgent, useAgents, useIngestionJobs, useKnowledgeBase } from "@/lib/store";
+import { addDataSource, reingest, toast, updateAgent, useActiveWorkspaceId, useAgents, useIngestionJobs, useKnowledgeBase } from "@/lib/store";
 import { num, relative } from "@/lib/format";
 
 const kbTone = (s: KnowledgeBase["status"]) => (s === "ready" ? "good" : s === "indexing" ? "warning" : "critical");
@@ -56,6 +56,7 @@ export default function KnowledgeDetailPage() {
   const params = useParams();
   const id = String(params.id);
   const kb = useKnowledgeBase(id);
+  const activeWorkspaceId = useActiveWorkspaceId();
   const agents = useAgents();
   const ingestionJobs = useIngestionJobs();
   const { can } = useAuth();
@@ -73,7 +74,9 @@ export default function KnowledgeDetailPage() {
   const bindableAgents = agents.filter((a) => canManage(a.accessPolicy, principal));
   const effectiveBindAgent = bindAgent || bindableAgents[0]?.id || "";
 
-  if (!kb) {
+  // Cross-workspace defense-in-depth: useKnowledgeBase resolves by id across all workspaces, so treat a
+  // KB belonging to another tenant as not-found (AppBoundary only gates the active workspace).
+  if (!kb || kb.workspaceId !== activeWorkspaceId) {
     return (
       <div className="space-y-6">
         <Button variant="ghost" size="sm" href="/knowledge"><ArrowLeft className="size-4" /> Back</Button>

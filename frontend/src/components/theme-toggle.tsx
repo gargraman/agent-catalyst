@@ -3,16 +3,25 @@
 import * as React from "react";
 import { Moon, Sun } from "lucide-react";
 
-export function ThemeToggle() {
-  const [light, setLight] = React.useState(false);
+// Subscribe to <html> class mutations so the toggle (and any other theme change) re-renders the icon.
+function subscribe(onChange: () => void) {
+  const observer = new MutationObserver(onChange);
+  observer.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
+  return () => observer.disconnect();
+}
 
-  React.useEffect(() => {
-    setLight(document.documentElement.classList.contains("light"));
-  }, []);
+export function ThemeToggle() {
+  // Read the live theme from the <html> class, set pre-hydration by the no-flash bootstrap script in
+  // layout.tsx. useSyncExternalStore keeps SSR + first client render on the dark default (server snapshot),
+  // then re-reads the real DOM value after hydration — hydration-safe with no set-state-in-effect.
+  const light = React.useSyncExternalStore(
+    subscribe,
+    () => document.documentElement.classList.contains("light"),
+    () => false,
+  );
 
   function toggle() {
     const next = !light;
-    setLight(next);
     document.documentElement.classList.toggle("light", next);
     try {
       localStorage.setItem("ac-theme", next ? "light" : "dark");

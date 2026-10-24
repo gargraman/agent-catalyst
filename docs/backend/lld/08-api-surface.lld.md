@@ -244,7 +244,8 @@ class AgentPatch(BaseModel):
 > ⚠️ **Amendment to `08 §3`:** `AgentPatch` currently includes `status: str | None` with a prose note that
 > the console "routes through guarded wrappers." Prose doesn't enforce it — a direct API caller could
 > `PATCH {status:"published"}` and skip the eval gate. Drop `status` from `AgentPatch` (above) and keep
-> lifecycle changes on the dedicated endpoints only. Flagged, not edited in the parent.
+> lifecycle changes on the dedicated endpoints only. **(Now folded into parent `08 §3` — A3, 2026-10-24: `status`
+> is dropped from `AgentPatch`.)**
 
 The jsonb config fields (`model_config`/`io_contract`/`retrieval_config`/`guardrail_config`/…) validate
 against the typed models in [`01-data-model.lld.md §3`](01-data-model.lld.md), not bare `dict`.
@@ -308,7 +309,8 @@ def etag_for(row) -> str:
 
 > ⚠️ **Amendment to `08 §1`:** add the `If-Match`/`ETag` convention + the `409 conflict.stale` code to the
 > error table (or `412 precondition.failed` if you prefer the REST-purist status — but that needs a new 412
-> row the table lacks; `409 conflict` reuses an existing status). Flagged, not edited in the parent.
+> row the table lacks; `409 conflict` reuses an existing status). **(Now folded into parent `08 §1` — A5/A6,
+> 2026-10-24: the error table gains the `409 conflict.stale` + `If-Match` row.)**
 
 ---
 

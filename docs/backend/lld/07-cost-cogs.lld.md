@@ -53,13 +53,14 @@ class BudgetGuard:   # reserve()/reconcile() bodies: see 07 §3 (now awaited —
     def __init__(self, db, redis, default_cap_usd: float):
         self.db, self.redis, self.default_cap = db, redis, default_cap_usd
 
-    def cap(self, workspace_id: str) -> float:
+    async def cap(self, workspace_id: str) -> float:
         """Monthly USD ceiling for the workspace-scope row (01 spend_limits). P1 enforces the 'workspace'
-        scope only; 'endpoint' rows are P2 (07 §3). Missing row → the settings default (00 §6)."""
-        row = self.db.execute(
+        scope only; 'endpoint' rows are P2 (07 §3). Missing row → the settings default (00 §6). AsyncSession —
+        awaited; the sync `.execute(...).scalar_one_or_none()` form is shorthand (session model: 00-conventions §4.1)."""
+        row = await self.db.scalar(
             select(SpendLimit.monthly_budget_usd)
             .where(SpendLimit.workspace_id == workspace_id, SpendLimit.scope == "workspace")
-        ).scalar_one_or_none()
+        )
         return float(row) if row is not None else self.default_cap
 ```
 
@@ -175,7 +176,7 @@ async def reserve_p2(self, workspace_id, est_usd) -> Reservation:
     # count the estimate as IN-FLIGHT (separate key) so the cap check sees committed + in-flight spend:
     inflight = await self.redis.incrbyfloat(f"inflight:{workspace_id}:{month_key()}", est_usd)
     committed = await self._committed(workspace_id)
-    if committed + inflight > self.cap(workspace_id):
+    if committed + inflight > await self.cap(workspace_id):
         await self.redis.incrbyfloat(f"inflight:{workspace_id}:{month_key()}", -est_usd)
         await self._release_slot(workspace_id)
         raise BudgetExceeded()                                  # 402 — now BEFORE the overshoot, not after

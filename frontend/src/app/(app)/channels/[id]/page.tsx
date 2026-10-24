@@ -18,7 +18,7 @@ import { DEFAULT_WORKSPACE_ID } from "@/lib/iam";
 import { canManage } from "@/lib/access-policy";
 import { CHANNEL_DEFS } from "@/lib/channels";
 import { resolveRun, statusLabel, type RunCtx } from "@/lib/runtime-access";
-import { addRun, deleteChannel, genId, nowIso, toast, updateChannel, useAgents, useChannel, useMcpServers, useSkills } from "@/lib/store";
+import { addRun, deleteChannel, genId, nowIso, toast, updateChannel, useActiveWorkspaceId, useAgents, useChannel, useMcpServers, useSkills } from "@/lib/store";
 import type { Channel } from "@/lib/data";
 import { dateShort, relative } from "@/lib/format";
 
@@ -39,6 +39,7 @@ export default function ChannelDetailPage() {
   const params = useParams();
   const id = String(params.id);
   const channel = useChannel(id);
+  const activeWorkspaceId = useActiveWorkspaceId();
   const agents = useAgents();
   const mcpServers = useMcpServers();
   const skills = useSkills();
@@ -47,7 +48,9 @@ export default function ChannelDetailPage() {
   const { workspace, active } = useWorkspace();
   const [confirmOpen, setConfirmOpen] = React.useState(false);
 
-  if (!channel) {
+  // Cross-workspace defense-in-depth: useChannel resolves by id across all workspaces, so treat a
+  // channel belonging to another tenant as not-found (AppBoundary only gates the active workspace).
+  if (!channel || channel.workspaceId !== activeWorkspaceId) {
     return (
       <div className="space-y-6">
         <Button variant="ghost" size="sm" href="/channels" className="-ml-2"><ArrowLeft className="size-4" /> Channels</Button>

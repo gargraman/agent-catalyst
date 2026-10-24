@@ -14,6 +14,7 @@
 | `chunk(doc, cfg)` body is `...` | §1 — the structure-aware chunking algorithm |
 | dedup "on re-sync" + "ingest atomicity/rollback" are prose (scope.md rev3) | §1 — the dedup key `(content_hash, embedding_model, chunk_config)` + the atomic write |
 | `select_binding()` (from the C9 plural fix) + `search()` helpers undefined | §2 — `select_binding` + the helper contracts |
+| `search()` "must resolve the KB's *current* policy at invoke" asserted, no helper/code (KB-grain access, `09 §5`) | §2.1 — `resolve_kb_access_policy()` live read + how `search()` calls it |
 | per-user doc-ACL is a single P2 bullet (`§10`) — but **B8** makes it the "see your own data" layer | §3 — the doc-ACL model + retrieval-time filter (the employee-group archetype) |
 
 Python 3.12. Snippets compile (§4). `ChunkConfig`/`RetrievalConfig`/`ingest()`/`search()`/the KNN SQL/the
@@ -111,7 +112,45 @@ Helper contracts used by `search()` (`04 §6`), named there, defined per module:
 - `embed_one(query, embedding_model) -> vector` — one embedding via the gateway embedding path (`04 §5`, cost-logged).
 - `pgvector_knn(workspace_id, kb_id, qvec, k, threshold, filters) -> rows` — the `04 §6` KNN SQL, namespace-pruned.
 - `trim_to_token_budget(rows, max_ctx_tokens) -> rows` — drop lowest-scored rows until `Σ token_count ≤ budget`.
+- `resolve_kb_access_policy(kb_id) -> dict` — **LIVE** read of the KB-grain access policy (§2.1 below).
 - `fuse(rows, bm25(...))` / `rerank(name, query, rows)` — **P2** (hybrid + bge reranker, `04 §6`).
+
+### 2.1 `resolve_kb_access_policy()` — the live KB-grain access read (P1)
+
+The KB's `access_policy` is **live, not snapshotted** (`04 §9`): the frozen `RetrievalBindingSnap` (`01` LLD §1)
+carries **no** `kb_access_policy` field, so `search()` (`04 §6`) must resolve the KB's **current** policy at
+invoke before touching a provider. This is the **KB-grain** access check (P1, `09 §5`) — distinct from the
+per-document ACL in §3 (P2+). A KB whose policy later restricts a caller stops serving that caller immediately,
+with no re-publish — exactly because it is not frozen into the version.
+
+```python
+from __future__ import annotations
+from access_policy import can_use                     # services/runtime/access.py (09 §5) — shared by reads AND invoke
+
+
+async def resolve_kb_access_policy(kb_id: str, *, db) -> dict:
+    """LIVE read of knowledge_bases.access_policy for THIS kb (NOT the frozen binding). RLS scopes it to the
+    caller's tenant (SET LOCAL app.workspace_id, 09 LLD §1 / 01 §6), so a cross-tenant kb_id resolves to no row.
+    Returns the workspace-default policy when a KB somehow has none (fail-open to workspace-visible is the KB
+    default, 09 §5; per-doc scoping in §3 is the tighter P2 layer). The policy jsonb matches AccessPolicy (01 §3)."""
+    row = await db.scalar(select(KnowledgeBase.access_policy).where(KnowledgeBase.id == kb_id))
+    return row or {"visibility": "workspace"}
+
+
+# How search() (04 §6) calls it — the KB-grain gate, eval-bypassed, before any embed/KNN:
+#     if ctx.run_source != "eval":
+#         kb_policy = await resolve_kb_access_policy(binding.kb_id, db=ctx.db)
+#         if not can_use(kb_policy, role=ctx.principal.role, teams=ctx.principal.teams, subject=ctx.principal.subject):
+#             return []                                # policy_denied → no retrieval from this KB
+```
+
+- **Live, per-invoke:** resolved on every non-eval retrieval; cheap (PK lookup, RLS-scoped). Caching it would
+  reintroduce the staleness the "KB policy is live" decision (`04 §9`) exists to avoid.
+- **Eval bypass:** `ctx.run_source == "eval"` skips the KB-grain check — the binding was manage-authorized at
+  bind time and eval tests the snapshot, not a caller's entitlements (`04 §6`). It does **not** bypass the
+  per-doc ACL (§3 `acl_filter` still restricts eval to workspace-visible docs).
+- **Consumer of `ctx.principal`:** needs the resolved `Principal` (role/teams/subject) on `RunContext`
+  (`01` LLD §2, the 2026-10-24 review addition), same identity the §3 `acl_filter` uses.
 
 ---
 
@@ -178,8 +217,9 @@ def acl_filter(principal: Principal, run_source: str) -> dict:
 > ⚠️ **Amendments (2026-10-24 review), folded into `01`/`04`:** (1) `RunContext` (00 §4 / 01 LLD §2) must carry
 > a **resolved `principal: Principal`** (subject+teams), not just `principal_id`, so `search()`/`can_use` can
 > evaluate per-caller access. (2) **KB access policy is live, not frozen** (04 §9): `RetrievalBindingSnap`
-> (01 LLD §1) carries no `kb_access_policy`; `search()` must resolve the KB's *current* policy at invoke
-> (the parent `04 §6` `can_use(binding.kb_access_policy, …)` reads that live-resolved policy, not a snap field).
+> (01 LLD §1) carries no `kb_access_policy`; `search()` resolves the KB's *current* policy at invoke via
+> `resolve_kb_access_policy(binding.kb_id)` (§2.1), then `can_use` — the parent `04 §6` now calls that live read,
+> not a snap field (the old `can_use(binding.kb_access_policy, ...)` form is corrected).
 > (3) `select_binding` now takes the structured `kb_ref` and returns `None` on miss — the parent `04 §6`
 > `search()` passes the retrieve()-tool's kb arg and surfaces `None` as a model-facing error.
 

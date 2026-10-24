@@ -94,7 +94,7 @@ async def invoke(snapshot, inputs, ctx) -> AsyncIterator["NormalizedStreamEvent"
     state = _initial_state(snapshot, inputs, ctx)
     queue: asyncio.Queue = asyncio.Queue()
     graph = build_graph()                               # 03 §4 (compiled with the checkpointer)
-    run_rec = _open_run(ctx, snapshot)                  # runs row (01 §4.7), status pending
+    run_rec = await _open_run(ctx, snapshot)            # runs row (01 §4.7), status pending — AsyncSession (00-conventions §4.1)
 
     async def _run():
         # bind the emit queue so node emit() calls land here; config carries the checkpointer thread_id (§6)
@@ -117,8 +117,11 @@ async def invoke(snapshot, inputs, ctx) -> AsyncIterator["NormalizedStreamEvent"
         yield _stop_event("deadline_exceeded")
     finally:
         # 6/7. persist Run + Spans (10), reconcile against actual cost (07 §3) — ALWAYS, even on deadline/
-        #      cancel/error, so a partial run is still billed and traced. reconcile() is async (07 §2) → await.
-        _close_run(run_rec, state, acc_usage, status=_run_status(state))
+        #      cancel/error, so a partial run is still billed and traced. Both are AWAITED (AsyncSession for the
+        #      run persist; async reconcile for the Redis counter — 00-conventions §4). ORDER MATTERS: persist the
+        #      run FIRST (Postgres, the cost SoR), THEN reconcile the Redis counter — a crash between them over-
+        #      counts spend (fail-safe), never loses the run row or under-bills (atomicity rule, 00-conventions §4.2).
+        await _close_run(run_rec, state, acc_usage, status=_run_status(state))
         await ctx.budget.reconcile(reservation, actual_usd=_actual_cost(acc_usage))
 ```
 
@@ -134,7 +137,10 @@ async def invoke(snapshot, inputs, ctx) -> AsyncIterator["NormalizedStreamEvent"
 - **Budget** brackets the run: `await reserve` before (402 fail-fast), `await reconcile` in `finally` (always) —
   both are async (`07 §2`); un-awaited, neither guard runs.
 - **`finally` always persists** — a deadline/cancel/error run is still a `runs` row with partial
-  cost/tokens/status, never lost (10).
+  cost/tokens/status, never lost (10). The persist and budget calls run on an **`AsyncSession`** and are
+  **awaited** (never a blocking sync `Session` inside this async generator — it would stall the event loop); the
+  run persist (Postgres, the cost SoR) is ordered **before** the Redis reconcile so a crash between them fails
+  safe. The session model + the persist/reconcile atomicity rule are pinned in **`00-conventions.lld.md §4`**.
 
 ---
 

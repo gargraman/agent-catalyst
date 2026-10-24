@@ -22,14 +22,25 @@ from profiles.loader import CapabilityProfile
 from providers.base import register_adapter
 
 _API_URL = "https://api.openai.com/v1/chat/completions"
+# Connect/read timeout (seconds) for the streaming request — without it a hung/half-open connection blocks
+# forever. urllib applies this per socket operation, so it bounds stalls between chunks too.
+_REQUEST_TIMEOUT = 60.0
 
 
-def _build_body(req: NormalizedRequest, *, drop_temperature: bool) -> dict:
-    """NormalizedRequest → OpenAI chat/completions wire body."""
+def _build_body(req: NormalizedRequest, *, profile: CapabilityProfile, drop_temperature: bool) -> dict:
+    """NormalizedRequest → OpenAI chat/completions wire body.
+
+    Features the profile lacks are actually OMITTED/REWRITTEN here — not just recorded by supports() — so
+    the wire body always matches the Substitution list (otherwise a recorded downgrade would be a lie). All
+    current OpenAI profiles have every feature true, so this is a no-op today; the invariant holds once a
+    weaker profile is added."""
     messages: list[dict] = []
     if req.system:
         messages.append({"role": "system", "content": req.system})
     messages.extend(req.messages)
+
+    # emulation instructions appended to the system turn when a feature is downgraded to prompt
+    emulation_notes: list[str] = []
 
     body: dict = {
         "model": req.model,
@@ -39,12 +50,34 @@ def _build_body(req: NormalizedRequest, *, drop_temperature: bool) -> dict:
     }
     if req.tools:
         body["tools"] = req.tools                       # OpenAI tool format — passthrough
+
+    # forced_tool_choice: a dict tool_choice forces a specific tool; emulate via prompt if unsupported.
     if req.tool_choice is not None:
-        body["tool_choice"] = req.tool_choice
+        if isinstance(req.tool_choice, dict) and not profile.feature("forced_tool_choice"):
+            fn = (req.tool_choice.get("function") or {}).get("name")
+            emulation_notes.append(
+                f"You MUST call the `{fn}` tool." if fn else "You MUST call the required tool."
+            )
+        else:
+            body["tool_choice"] = req.tool_choice       # "auto"/"none" string or a supported forced dict
+
+    # structured_output: response_format if supported, else enforce JSON via instruction.
     if req.response_format is not None:
-        body["response_format"] = req.response_format   # structured output — passthrough
-    if req.reasoning and "effort" in req.reasoning:
+        if profile.feature("structured_output"):
+            body["response_format"] = req.response_format
+        else:
+            emulation_notes.append("Respond with ONLY a single valid JSON object and no other text.")
+
+    # reasoning_control: only emit reasoning_effort when the profile can control it.
+    if req.reasoning and "effort" in req.reasoning and profile.feature("reasoning_control"):
         body["reasoning_effort"] = req.reasoning["effort"]
+
+    if emulation_notes:
+        note = " ".join(emulation_notes)
+        if messages and messages[0].get("role") == "system":
+            messages[0] = {**messages[0], "content": f"{messages[0]['content']}\n\n{note}"}
+        else:
+            messages.insert(0, {"role": "system", "content": note})
 
     params = dict(req.params)
     if "max_tokens" in params:                          # gpt-5 quirk: reasoning models need this name
@@ -55,11 +88,11 @@ def _build_body(req: NormalizedRequest, *, drop_temperature: bool) -> dict:
     return body
 
 
-def _open_sse(url: str, headers: dict, body: dict):
+def _open_sse(url: str, headers: dict, body: dict, *, timeout: float = _REQUEST_TIMEOUT):
     """Open the streaming request; yield decoded SSE lines. Isolated so tests can monkeypatch it."""
     data = json.dumps(body).encode("utf-8")
     request = urllib.request.Request(url, data=data, headers=headers, method="POST")
-    with urllib.request.urlopen(request) as resp:
+    with urllib.request.urlopen(request, timeout=timeout) as resp:
         for raw in resp:
             yield raw.decode("utf-8").rstrip("\n")
 
@@ -109,7 +142,7 @@ class OpenAIAdapter:
         drop_temperature = False
 
         for attempt in range(2):
-            body = _build_body(req, drop_temperature=drop_temperature)
+            body = _build_body(req, profile=profile, drop_temperature=drop_temperature)
             try:
                 usage: NormalizedUsage | None = None
                 tool_calls: dict[int, dict] = {}   # index → {name, args} accumulated across deltas

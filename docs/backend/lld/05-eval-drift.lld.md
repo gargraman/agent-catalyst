@@ -157,7 +157,7 @@ needs `verdict()` to **see** the pairwise result, which the parent signature doe
 > `verdict(quality_c, quality_b, eff, det_all_green, n_cases, policy)`, has **no** `results`/pairwise parameter,
 > so the branch can't be added as-is — it needs the precomputed rate passed in (shown below). The parent runs
 > pairwise (`§2`) and caches it (`§6`) but never gates on it; without this a head-to-head loss with a flat
-> rubric passes. Flagged, not edited in the parent.
+> rubric passes. **(Now folded into parent `05 §3` — A2, 2026-10-24: `verdict()` gates on the pairwise win-rate.)**
 
 ```python
 # the amended verdict() — one new parameter + one branch:
@@ -275,10 +275,11 @@ two runs queued for the same version both finish and both try to set `publishabl
 older run completing *after* a newer trigger could set `publishable=True` stale.
 
 ```python
-def finalize_eval_run(version_id: str, run, db) -> None:
+async def finalize_eval_run(version_id: str, run, db) -> None:
     """Worker write path. Same per-version advisory lock as assert_publishable (05 §5) so the gate-read and
-    the flag-write can't interleave with a concurrent finalize or a new trigger."""
-    db.execute(text("select pg_advisory_xact_lock(hashtextextended(:v, 0))"), {"v": version_id})
+    the flag-write can't interleave with a concurrent finalize or a new trigger. Runs on an AsyncSession inside
+    `async with db.begin()` so the xact-scoped advisory lock releases at commit (session model: 00-conventions §4.1)."""
+    await db.execute(text("select pg_advisory_xact_lock(hashtextextended(:v, 0))"), {"v": version_id})
     db.add(run)                                            # eval_runs + eval_results
     last_trigger = latest_trigger_time(version_id)
     # Only a PASS that is NEWER than the last behavior-changing edit may arm publish (05 §5 condition, mirrored).
@@ -323,7 +324,8 @@ def cases_to_run(changed: set[str], suite_cases: list, changed_tags: set[str]) -
 
 > ⚠️ **Amendment to `01 §4.5`:** add `eval_cases.tags text[] not null default '{}'` (matching the repo's
 > existing tag convention — `agents.tags text[]`, 01 §4.2 — not jsonb; `text[]` is the queryable idiomatic
-> choice) and FE `EvalCaseDef.tags?: string[]`. Additive, nullable-safe. Flagged for the `01` reconciliation.
+> choice) and FE `EvalCaseDef.tags?: string[]`. Additive, nullable-safe. **(Now folded into parent `01 §4.5` —
+> 2026-10-24.)**
 
 ---
 
@@ -391,7 +393,7 @@ same `0..100` bound.
 3. **FE reconciliation** — `score_quality`→`EvalRun.quality`, `dimension_scores`→`EvalDimension.score`,
    `efficiency_delta.cost_pct`→`costDelta`, `latency_ms`→`latencyDelta`; `EvalPolicy` aliases match the FE
    camelCase fields.
-4. **Two flagged amendments** — the `verdict()` pairwise branch (§4) and `eval_cases.tags` (§8), recorded as
-   callouts, not parent edits.
+4. **Two amendments, now reconciled** — the `verdict()` pairwise branch (§4, A2) and `eval_cases.tags` (§8) are
+   **folded into the parents** (`05 §3`, `01 §4.5`); the callouts remain as the finding/rationale trail.
 
 → Next LLD: `03-runtime.lld.md` (subtask 5, the shared spine).

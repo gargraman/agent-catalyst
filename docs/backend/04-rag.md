@@ -113,12 +113,16 @@ async def search(snapshot, query: str, ctx) -> list[Chunk]:
     # unique(version_id, kb_id)). search() runs PER binding: the retriever-tool path names the target KB; the
     # always_on path (03 §4) iterates every binding. 2026-10-24 LLD review (was the singular retrieval_binding).
     binding = select_binding(snapshot, query)            # the binding for this call — pinned KB + index_version + config (01)
-    # Invoke-time KB access policy (09 §effective-access): the caller must be entitled to USE this KB.
-    # Eval runs (ctx.run_source == "eval") carry principal_id=None (00 §runtime), so they HONOR the frozen
-    # snapshot but BYPASS the per-caller KB ACL — the binding was manage-authorized at bind time, and eval
-    # tests the snapshot, not a caller's entitlements. Per-chunk/doc-level ACLs remain P2 (§10).
-    if ctx.run_source != "eval" and not can_use(binding.kb_access_policy, ctx.principal):
-        return []                                        # policy_denied → no retrieval from this KB
+    # Invoke-time KB access policy (09 §5): the caller must be entitled to USE this KB. The KB's access_policy is
+    # LIVE, not frozen into the binding (04 §9) — RetrievalBindingSnap (lld 01 §1) carries NO kb_access_policy — so
+    # resolve the KB's CURRENT policy at invoke (resolve_kb_access_policy, lld 04 §2.1). Eval runs
+    # (ctx.run_source == "eval") carry principal=None (00 §runtime), so they HONOR the frozen snapshot but BYPASS
+    # the per-caller KB ACL — the binding was manage-authorized at bind time, and eval tests the snapshot, not a
+    # caller's entitlements. Per-chunk/doc-level ACLs remain P2 (§10).
+    if ctx.run_source != "eval":
+        kb_policy = await resolve_kb_access_policy(binding.kb_id)   # live read of knowledge_bases.access_policy (NOT a snap field)
+        if not can_use(kb_policy, ctx.principal):
+            return []                                    # policy_denied → no retrieval from this KB
     qvec = await embed_one(query, binding.embedding_model)
     rows = await pgvector_knn(                            # namespace-pruned (01 §4.4, 09 §7)
         workspace_id=ctx.workspace_id, kb_id=binding.kb_id,

@@ -73,16 +73,61 @@ def test_openai_cost_matches_hand_calc(monkeypatch):
     events = _collect(OpenAIAdapter().stream(_req(), api_key="k", profile=profile))
     usage = next(e.data["usage"] for e in events if e.type is EventType.USAGE)
 
-    # hand-calc with gpt-5-mini pricing: input .6, cached_input .06, output 2.4, reasoning 2.4 per Mtok
-    billable_input = 1200 - 300          # = 900
-    hand = (900 * 0.6 + 300 * 0.06 + 400 * 2.4 + 150 * 2.4) / 1e6
-    assert compute_cost(profile, usage) == pytest.approx(hand, rel=1e-9)
+    # Reasoning-aware LITERAL expected (gpt-5-mini: input .6, cached_input .06, output 2.4, reasoning 2.4).
+    # completion_tokens (400) is INCLUSIVE of reasoning (150) → billable_output = 250. A regression that
+    # billed reasoning twice (400*2.4 + 150*2.4) would read 0.001878 and fail this assertion.
+    #   billable_input  = 1200 - 300 = 900
+    #   billable_output = 400 - 150  = 250
+    #   (900*0.6 + 300*0.06 + 250*2.4 + 150*2.4) / 1e6
+    #   = (540 + 18 + 600 + 360) / 1e6 = 1518/1e6
+    assert compute_cost(profile, usage) == pytest.approx(0.001518, rel=0, abs=1e-12)
+
+
+def _full_openai_profile() -> CapabilityProfile:
+    return resolve_profile("openai", "gpt-5-mini")  # every feature true
+
+
+def _weak_openai_profile() -> CapabilityProfile:
+    return CapabilityProfile(
+        provider="openai", model="weak", api_version=None, pricing={}, limits={},
+        features={"structured_output": False, "forced_tool_choice": False,
+                  "reasoning_control": False, "prompt_caching": False},
+    )
 
 
 def test_openai_translates_max_tokens():
-    body = _build_body(_req(params={"max_tokens": 777}), drop_temperature=False)
+    body = _build_body(_req(params={"max_tokens": 777}),
+                       profile=_full_openai_profile(), drop_temperature=False)
     assert "max_tokens" not in body
     assert body["max_completion_tokens"] == 777
+
+
+def test_build_body_sends_features_when_profile_supports_them():
+    body = _build_body(
+        _req(tool_choice={"type": "function", "function": {"name": "escalate"}}),
+        profile=_full_openai_profile(), drop_temperature=False,
+    )
+    assert body["response_format"] == {"type": "json_object"}   # structured_output supported
+    assert body["tool_choice"] == {"type": "function", "function": {"name": "escalate"}}
+    assert body["reasoning_effort"] == "low"                    # reasoning_control supported
+
+
+def test_build_body_omits_and_emulates_downgraded_features():
+    """IMPORTANT #3 guard: when the profile lacks a feature, _build_body must OMIT it from the wire body
+    (matching the Substitution supports() records) — not send it unconditionally."""
+    body = _build_body(
+        _req(tool_choice={"type": "function", "function": {"name": "escalate"}}),
+        profile=_weak_openai_profile(), drop_temperature=False,
+    )
+    # structured_output / reasoning_control / forced_tool_choice are all unsupported → omitted from the body
+    assert "response_format" not in body
+    assert "reasoning_effort" not in body
+    assert "tool_choice" not in body
+    # emulation falls back to a prompt instruction appended to the system turn
+    system = body["messages"][0]
+    assert system["role"] == "system"
+    assert "JSON" in system["content"]            # structured_output emulated via prompt
+    assert "escalate" in system["content"]        # forced tool emulated via prompt
 
 
 def test_openai_drops_temperature_on_400(monkeypatch):
@@ -106,6 +151,53 @@ def test_openai_drops_temperature_on_400(monkeypatch):
     subs = next(e.data["substitutions"] for e in events if e.type is EventType.USAGE)
     assert [s.feature for s in subs] == ["temperature"]
     assert subs[0].action == "dropped"
+
+
+def test_openai_reraises_generic_httperror(monkeypatch):
+    """A non-temperature HTTP error (e.g. 500) is not the temperature-downgrade case → it must propagate."""
+    def fake_open(url, headers, body):
+        raise urllib.error.HTTPError(
+            url, 500, "Server Error", {}, io.BytesIO(b'{"error":{"message":"upstream exploded"}}'))
+
+    monkeypatch.setattr(openai_adapter, "_open_sse", fake_open)
+    profile = resolve_profile("openai", "gpt-5-mini")
+    with pytest.raises(urllib.error.HTTPError):
+        _collect(OpenAIAdapter().stream(_req(), api_key="k", profile=profile))
+
+
+def test_openai_reraises_400_without_temperature(monkeypatch):
+    """A 400 that is NOT about temperature must not be swallowed by the retry branch."""
+    def fake_open(url, headers, body):
+        raise urllib.error.HTTPError(
+            url, 400, "Bad Request", {}, io.BytesIO(b'{"error":{"message":"invalid tool schema"}}'))
+
+    monkeypatch.setattr(openai_adapter, "_open_sse", fake_open)
+    profile = resolve_profile("openai", "gpt-5-mini")
+    with pytest.raises(urllib.error.HTTPError):
+        _collect(OpenAIAdapter().stream(_req(), api_key="k", profile=profile))
+
+
+def test_openai_propagates_urlerror(monkeypatch):
+    """Connection-down (URLError, not HTTPError) is not caught by the adapter → propagates to the caller."""
+    def fake_open(url, headers, body):
+        raise urllib.error.URLError("connection refused")
+
+    monkeypatch.setattr(openai_adapter, "_open_sse", fake_open)
+    profile = resolve_profile("openai", "gpt-5-mini")
+    with pytest.raises(urllib.error.URLError):
+        _collect(OpenAIAdapter().stream(_req(), api_key="k", profile=profile))
+
+
+def test_ollama_propagates_urlerror(monkeypatch):
+    """Ollama server down → URLError propagates (the adapter has no retry/swallow path)."""
+    def fake_open(url, headers, body):
+        raise urllib.error.URLError("connection refused")
+
+    monkeypatch.setattr(ollama_adapter, "_open_ndjson", fake_open)
+    profile = resolve_profile("ollama", "llama3.1:8b")
+    with pytest.raises(urllib.error.URLError):
+        _collect(OllamaAdapter().stream(_req(provider="ollama", model="llama3.1:8b"),
+                                        api_key="", profile=profile))
 
 
 def test_openai_supports_records_missing_structured_output():

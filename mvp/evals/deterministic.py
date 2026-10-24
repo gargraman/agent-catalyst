@@ -14,11 +14,17 @@ SEVERITY_ENUM = {"critical", "high", "medium", "low", "info"}
 # default required fields for the triage output contract (a case may override via case["required_fields"])
 DEFAULT_REQUIRED = ("severity", "summary", "next_step")
 
-# refusal phrases → a spiking refusal rate is itself drift (05:60)
+# refusal phrases → a spiking refusal rate is itself drift (05:60).
+# FIRST-PERSON-ANCHORED on purpose: a bare substring like "unable to" false-positives on legit SOC prose
+# ("the service was unable to start"), hard-failing valid incident JSON and inflating the H1 false-positive
+# metric. Only the model refusing in its own voice ("i'm unable to …") counts; third-person descriptions of
+# a system being unable to do something do not.
 REFUSAL_PHRASES = (
-    "i cannot", "i can't", "i can not", "i'm sorry", "i am sorry",
-    "cannot help", "can't help", "unable to", "i won't", "i will not",
-    "as an ai", "i'm not able", "i am not able",
+    "i cannot", "i can't", "i can not",
+    "i'm sorry", "i am sorry",
+    "i'm unable to", "i am unable to", "i'm not able", "i am not able",
+    "i won't", "i will not",
+    "as an ai",
 )
 
 _EMPTY_VALUES = (None, "", [], {})

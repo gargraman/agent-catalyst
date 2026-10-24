@@ -64,11 +64,11 @@ class NormalizedStreamEvent:
 
 @dataclass(frozen=True)
 class NormalizedUsage:
-    input_tokens: int
-    output_tokens: int
+    input_tokens: int                    # provider-reported, INCLUSIVE of cached_input + cache_write (carved out in §4.1)
+    output_tokens: int                   # provider-reported, INCLUSIVE of reasoning_tokens (carved out in §4.1)
     cached_input_tokens: int = 0         # cache READS — priced at the discounted rate (07)
     cache_write_tokens: int = 0          # cache SEEDING — priced at the cache_write premium (07)
-    reasoning_tokens: int = 0
+    reasoning_tokens: int = 0            # a SUBSET of output_tokens (not additive) — priced at the reasoning rate (§4.1)
     cost_usd: float = 0.0                # WE compute this (§4), not the provider/LiteLLM
 ```
 
@@ -164,16 +164,25 @@ def resolve_profile(provider, model, api_version=None) -> CapabilityProfile: ...
 def compute_cost(profile: CapabilityProfile, u: NormalizedUsage, *, batch: bool = False) -> float:
     """The single authority for cost. `batch=True` (eval/ingest via Batch API, 05/07) applies the
     profile's batch_multiplier; cache writes/reads are priced at their own rates. Interactive paths
-    (playground, published invoke) always pass batch=False."""
+    (playground, published invoke) always pass batch=False.
+
+    PINNED token-accounting convention (both sides inclusive-then-subtract):
+      - INPUT side: provider-reported `input_tokens` is INCLUSIVE of cached + cache_write; carve them out
+        so each slice is priced at its own rate exactly once.
+      - OUTPUT side: provider-reported `output_tokens` is INCLUSIVE of reasoning; carve reasoning out
+        (`billable_output = output - reasoning`) so reasoning is priced once at `rate_reasoning`, NOT twice.
+        Pricing output AND reasoning off the full `output_tokens` would double-count reasoning tokens.
+      - `rate_reasoning` DEFAULTS to `rate_output` when a profile omits a distinct `reasoning` rate."""
     p = profile.pricing  # USD per 1M tokens
-    billable_input = u.input_tokens - u.cached_input_tokens - u.cache_write_tokens
+    billable_input = max(0, u.input_tokens - u.cached_input_tokens - u.cache_write_tokens)
+    billable_output = max(0, u.output_tokens - u.reasoning_tokens)   # reasoning carved out (see convention above)
     mult = p.get("batch_multiplier", 1.0) if batch else 1.0
     return mult * (
         billable_input        * p["input"]        / 1e6
       + u.cached_input_tokens * p.get("cached_input", p["input"]) / 1e6
       + u.cache_write_tokens  * p.get("cache_write",  p["input"]) / 1e6
-      + u.output_tokens       * p["output"]       / 1e6
-      + u.reasoning_tokens    * p.get("reasoning", p["output"]) / 1e6
+      + billable_output       * p["output"]       / 1e6
+      + u.reasoning_tokens    * p.get("reasoning", p["output"]) / 1e6   # rate_reasoning defaults to rate_output
     )
 ```
 

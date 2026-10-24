@@ -100,6 +100,10 @@ class VersionSnapshot:
     memory_config: MemoryConfig     # session window/compaction/persist (03 §6)
     context_config: ContextConfig   # token-window limit + truncation (03 §7)
     guardrail_config: GuardrailConfig  # ordered stages (06); consumer: 03 input_guardrails/output_guardrails
+    fallback_profile: CapabilityProfile | None = None  # resolved profile of model_config.fallback, frozen at freeze
+                                    #   (agent_versions.profile_snapshot.fallback, 02 §4; A1). None when no fallback is
+                                    #   pinned. Consumer: 02 §6 fallback path (costed/capability-checked under the SAME
+                                    #   immutability rule as the primary — no live resolve_profile on a published run)
     semantic_cache_enabled: bool = False   # per-agent opt-in for the semantic response cache (07 §4.3); is_qa_safe() still fences it (2026-10-24 review)
     retrieval_bindings: tuple[RetrievalBindingSnap, ...] = ()
     tool_bindings: tuple[ToolBindingSnap, ...] = ()
@@ -118,6 +122,7 @@ The anti-rework tactic from the plan: a field exists only if **both** the produc
 | `system_prompt`, `prompt_hash` | `agent_versions.system_prompt` / `.prompt_hash` | `03` `build_messages` → `render_prompt(snapshot.system_prompt)` |
 | `model_config` | `agent_versions.model_config` | `02` `build_normalized_request` (provider/model/api_version/params/fallback) |
 | `profile` | `agent_versions.profile_snapshot` | `03` `gateway.stream(..., profile=snapshot.profile)`; `02` cost/limits |
+| `fallback_profile` | `agent_versions.profile_snapshot.fallback` (A1) | `02 §6` fallback path (`snapshot.fallback_profile` → cost/capability under the same immutability rule as the primary) |
 | `io_contract` | `agent_versions.io_contract` | `03`/`08` input validation; `02` `response_format` |
 | `memory_config` | `agent_versions.memory_config` | `03 §6` `apply_memory_window(..., snapshot.memory_config)` |
 | `context_config` | `agent_versions.context_config` | `03 §7` context window enforcement |
@@ -130,19 +135,25 @@ The anti-rework tactic from the plan: a field exists only if **both** the produc
 > ⚠️ **Amendment to `04 §6`:** the retriever reads `snapshot.retrieval_binding` (**singular**), but `01 §4.4`
 > models `retrieval_bindings` as a per-version collection (`unique (version_id, kb_id)` ⇒ a version may bind
 > **multiple** KBs). The snapshot is therefore `retrieval_bindings: tuple[...]` (plural); `04`'s `search()`
-> should iterate bindings (or select one by the model's tool call). Flagged for the `04` LLD, not edited here.
+> should iterate bindings (or select one by the model's tool call). **(Now folded into parents `01 §4.4`/`04 §6`
+> + the `04` LLD §2 `select_binding` — C9, 2026-10-24: `retrieval_bindings` is plural.)**
 
 ### 1.2 `to_snapshot()` — the assembly (fills `01 §5`)
 
 ```python
-def to_snapshot(av: AgentVersion, *, profile: CapabilityProfile) -> VersionSnapshot:
+def to_snapshot(
+    av: AgentVersion, *, profile: CapabilityProfile, fallback_profile: CapabilityProfile | None = None,
+) -> VersionSnapshot:
     """Pure read; assembles the frozen snapshot from a loaded AgentVersion + its eager-loaded bindings.
-    No live `agents` row is touched (00 §1). `profile` is the resolved agent_versions.profile_snapshot."""
+    No live `agents` row is touched (00 §1). `profile` is the resolved primary `profile_snapshot`;
+    `fallback_profile` is the resolved `profile_snapshot.fallback` (A1) — None when no fallback is pinned.
+    Both are materialized by the caller from the frozen snapshot columns, NOT re-resolved live (02 §4/§6)."""
     return VersionSnapshot(
         version_id=str(av.id), agent_id=str(av.agent_id), workspace_id=str(av.workspace_id), label=av.label,
         system_prompt=av.system_prompt,
         model_config=ModelConfig.model_validate(av.model_config_),      # jsonb → §3 model
         profile=profile,
+        fallback_profile=fallback_profile,                             # A1: frozen fallback profile (02 §6), None if unset
         io_contract=IOContract.model_validate(av.io_contract),
         memory_config=MemoryConfig.model_validate(av.memory_config),
         context_config=ContextConfig.model_validate(av.context_config),
@@ -244,8 +255,9 @@ class InvokeInputs:
 > and `GraphState` reads tool state, yet **neither `RunContext` (`00 §4`) nor `GraphState` (`03 §3`) carries
 > `session_id`**, and `GraphState` is missing `pending_tool_calls` (read by `tool_approval_gate`/`execute_tools`
 > in `03 §4`). This LLD adds `session_id` to `RunContext` and records both as corrections the `03` LLD must
-> propagate into `GraphState` (`pending_tool_calls: list[...]`, and `session_id` sourced from `ctx`). Not
-> edited in the parent per the reference-don't-restate rule.
+> propagate into `GraphState` (`pending_tool_calls: list[...]`, and `session_id` sourced from `ctx`). **(Now
+> folded into the parents — 2026-10-24: `RunContext.session_id`/`principal` in `00 §4`; `GraphState.pending_tool_calls`
+> + `session_id`-via-`ctx` applied in the `03` LLD §1.)**
 
 ---
 
@@ -452,7 +464,8 @@ def compute_skill_content_hash(instructions: str, resource_hashes: list[str], ve
 
 
 def compute_snapshot_hash(av: AgentVersion) -> str:
-    """The version's content identity. Covers EVERY DRIFT_TRIGGER (05 §5) — plus io_contract as deliberate
+    """The version's content identity. Covers EVERY DRIFT_TRIGGER (05 §5) — including memory_config/
+    context_config (A4) and the fallback model's profile_features (A1) — plus io_contract as deliberate
     safe over-coverage (see §4.3). A CI property test (05 §5 'C2') mutates each trigger and asserts this hash
     changes (the forward direction); io_contract is the one hashed field that is not itself a trigger."""
     payload = {
@@ -463,6 +476,10 @@ def compute_snapshot_hash(av: AgentVersion) -> str:
         "prompt_hash": av.prompt_hash,
         "guardrail_config": av.guardrail_config,
         "io_contract": av.io_contract,
+        # memory/context behavior are DRIFT_TRIGGERS (05 §5, A4): editing the session window/compaction or the
+        # context window/truncation changes behavior, so it MUST bust the verdict cache + re-arm the publish gate.
+        "memory_config": av.memory_config,
+        "context_config": av.context_config,
         "tool_bindings": [
             {"kind": b.kind, "schema": b.schema_snapshot, "risk_tier": b.risk_tier,
              "requires_approval": b.requires_approval, "subagent_config_id": _opt_str(b.subagent_config_id)}
@@ -483,6 +500,10 @@ def compute_snapshot_hash(av: AgentVersion) -> str:
             for b in sorted(av.retrieval_bindings, key=lambda b: str(b.kb_id))   # kb_id stable across clones
         ],
         "profile_features": av.profile_snapshot.get("features", {}),   # capability_substitution driver (02 §5)
+        # A1 (2026-10-24): the FALLBACK model's profile is snapshotted too (profile_snapshot.fallback, 02 §4/§6),
+        # so a fallback capability change is a DRIFT_TRIGGER like the primary's — else a fallback run's behavior
+        # could shift under a live profile edit without busting the verdict cache. {} when no fallback is pinned.
+        "fallback_profile_features": av.profile_snapshot.get("fallback", {}).get("features", {}),
     }
     return sha256_hex(payload)
 ```
@@ -493,13 +514,15 @@ def compute_snapshot_hash(av: AgentVersion) -> str:
 |---|---|
 | `model`, `provider`, `api_version` | `model`, `provider`, `api_version` |
 | `params` | `params` |
+| `memory_config` | `memory_config` (A4 — window/compaction/persist; a behavior change, 03 §6) |
+| `context_config` | `context_config` (A4 — window limit/truncation; a behavior change, 03 §7) |
 | `prompt_hash` | `prompt_hash` |
 | `guardrail_config` | `guardrail_config` |
 | `tool_bindings` | `tool_bindings[]` (+ frozen `risk_tier`/`requires_approval`/`subagent_config_id`, 01 §4.6) |
 | `skill_bindings`, `skill_content_hash` | `skill_bindings[].content_hash` |
 | `embedding_model`, `kb_binding` | `retrieval_bindings[].embedding_model` / `.kb_id` |
 | `retrieval_config` (incl. `injection`, per 05 §5) | `retrieval_bindings[].config` **+ `.injection`** (separate column, hashed explicitly — review H2) |
-| `capability_substitution` | `profile_features` (a profile feature change flips a substitution) |
+| `capability_substitution` | `profile_features` **+ `fallback_profile_features`** (A1 — a primary *or* fallback profile-feature change flips a substitution; the fallback profile is snapshotted, 02 §4/§6) |
 | — (`kb_index_version`) | **deliberately excluded** — KB content live & independent (04 §9; parked, 05 §6) |
 | — (`io_contract`) | **hashed anyway** — NOT a `DRIFT_TRIGGER`, but a changed IO contract changes behavior; safe over-coverage (busts the cache, never a false PASS). The C2 reverse-direction test must whitelist it. |
 
@@ -606,7 +629,9 @@ class Agent(Base, WorkspaceScoped):
 - **Loading strategy:** `to_snapshot()` needs bindings eagerly → load `AgentVersion` with
   `selectinload(AgentVersion.retrieval_bindings, .tool_bindings, .skill_bindings)`. Everything else is lazy.
 - **Repository pattern** (keeps `routers/` thin and RLS-safe — the session already has `SET LOCAL
-  app.workspace_id`, so repos never add a manual `WHERE workspace_id`):
+  app.workspace_id`, so repos never add a manual `WHERE workspace_id`). The session is an **`AsyncSession`** and
+  every call is **`await`ed** — the sync-looking `db.get(...)` below is illustrative shorthand; the buildable
+  form is `await db.get(...)` (session model pinned in [`00-conventions.lld.md §4`](00-conventions.lld.md)):
 
 ```python
 class AgentRepo:
@@ -692,7 +717,8 @@ Re-run these on any edit to this doc (the plan's per-subtask protocol):
    a named `02`/`03`/`05` consumer; no orphan fields.
 4. **Snippet compile** — §1–§4 Python extracted and run through `python3 -m py_compile` (with light import
    stubs for cross-module names like `BudgetGuard`, `CapabilityProfile`, `AgentVersion`).
-5. **Internal consistency** — the three ⚠️ amendments (`session_id`/`pending_tool_calls` in `03`; singular
-   `retrieval_binding` in `04`) are flagged as callouts, not silent parent edits.
+5. **Internal consistency** — the ⚠️ amendments (`session_id`/`pending_tool_calls` in `03`; singular→plural
+   `retrieval_binding` in `04`; `fallback_profile`/`memory_config`/`context_config` into the hash) are **now
+   folded into the parents** (2026-10-24); the callouts remain as the finding/rationale trail.
 
 → Next LLD: `00-conventions.lld.md` (exception hierarchy, pagination, idempotency — subtask 2).

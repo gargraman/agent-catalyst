@@ -17,7 +17,7 @@ import { AccessPolicyEditor } from "@/components/access-policy-editor";
 import { useAuth, usePrincipal } from "@/lib/auth";
 import { canManage, canUse } from "@/lib/access-policy";
 import {
-  deleteSkill, publishSkill, updateSkill, updateAgent, toast, useAgents, useSkill,
+  deleteSkill, publishSkill, updateSkill, updateAgent, toast, useActiveWorkspaceId, useAgents, useSkill,
 } from "@/lib/store";
 import type { Skill } from "@/lib/data";
 import { relative } from "@/lib/format";
@@ -38,6 +38,7 @@ export default function SkillDetailPage() {
   const router = useRouter();
   const id = String(params.id);
   const skill = useSkill(id);
+  const activeWorkspaceId = useActiveWorkspaceId();
   const agents = useAgents();
   const { can } = useAuth();
   const principal = usePrincipal();
@@ -55,7 +56,9 @@ export default function SkillDetailPage() {
   const bindableAgents = agents.filter((a) => canManage(a.accessPolicy, principal));
   const effectiveBindAgent = bindAgent || bindableAgents.find((a) => !(a.skills ?? []).includes(id))?.id || bindableAgents[0]?.id || "";
 
-  if (!skill) {
+  // Cross-workspace defense-in-depth: useSkill resolves by id across all workspaces, so treat a skill
+  // belonging to another tenant as not-found (AppBoundary only gates the active workspace).
+  if (!skill || skill.workspaceId !== activeWorkspaceId) {
     return (
       <div className="space-y-6">
         <Button variant="ghost" size="sm" href="/skills" className="-ml-2"><ArrowLeft className="size-4" /> Skills</Button>

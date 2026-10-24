@@ -69,6 +69,24 @@ def test_refusal_is_hard_fail():
     assert r.checks["no_refusal"] is False
 
 
+def test_first_person_unable_is_refusal():
+    r = run_deterministic("I'm unable to assist with that.", {})
+    assert r.passed is False
+    assert r.hard_fail is True
+    assert r.checks["no_refusal"] is False
+
+
+def test_incidental_unable_to_in_valid_json_is_not_refusal():
+    """IMPORTANT #4 guard: valid incident JSON whose prose contains the bare words "unable to" must NOT be
+    flagged as a refusal — only first-person refusals ("i'm unable to") count."""
+    out = {"severity": "high", "summary": "The checkout service was unable to start after the deploy.",
+           "next_step": "roll back the deploy"}
+    r = run_deterministic(json.dumps(out), {})
+    assert r.passed is True
+    assert r.hard_fail is False
+    assert r.checks["no_refusal"] is True
+
+
 def test_empty_output_is_hard_fail():
     r = run_deterministic("   ", {})
     assert r.passed is False

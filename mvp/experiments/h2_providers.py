@@ -78,19 +78,34 @@ def build_request() -> NormalizedRequest:
 
 
 def _hand_calc_cost(profile, u: NormalizedUsage) -> float:
-    """Independent re-derivation of the cost from raw token counts × profile pricing (the ±5% check).
+    """GENUINELY INDEPENDENT re-derivation of the cost — the ±5% reconciliation check.
 
-    Deliberately NOT a call to compute_cost — it reproduces the 02 §4.1 formula by hand so the test is a
-    genuine cross-check of the accounting, not a tautology against the same function object."""
+    This must NOT share cost.py's code path: it is written as a separate per-group sum over the published
+    per-Mtok rates, and it derives the billable output on its own (carving reasoning OUT of the inclusive
+    completion count). If cost.py regressed to double-counting reasoning, this hand-calc would diverge and
+    the ±5% assertion would fire — which is the whole point of the cross-check (not a tautology)."""
     p = profile.pricing
-    billable_input = u.input_tokens - u.cached_input_tokens - u.cache_write_tokens
-    return (
-        billable_input * p["input"]
-        + u.cached_input_tokens * p.get("cached_input", p["input"])
-        + u.cache_write_tokens * p.get("cache_write", p["input"])
-        + u.output_tokens * p["output"]
-        + u.reasoning_tokens * p.get("reasoning", p["output"])
-    ) / 1e6
+    per_mtok = 1.0 / 1_000_000.0
+
+    # Rates as published (per Mtok); reasoning/cached/cache_write fall back to their base side.
+    rate_input = p["input"]
+    rate_cached = p.get("cached_input", p["input"])
+    rate_cache_write = p.get("cache_write", p["input"])
+    rate_output = p["output"]
+    rate_reasoning = p.get("reasoning", p["output"])
+
+    # Token groups, each priced once. Output is INCLUSIVE of reasoning, so bill (output - reasoning) at the
+    # output rate and reasoning separately — derived here independently of cost.py.
+    non_reasoning_output = max(0, u.output_tokens - u.reasoning_tokens)
+    fresh_input = u.input_tokens - u.cached_input_tokens - u.cache_write_tokens
+
+    dollars = 0.0
+    dollars += fresh_input * rate_input * per_mtok
+    dollars += u.cached_input_tokens * rate_cached * per_mtok
+    dollars += u.cache_write_tokens * rate_cache_write * per_mtok
+    dollars += non_reasoning_output * rate_output * per_mtok
+    dollars += u.reasoning_tokens * rate_reasoning * per_mtok
+    return dollars
 
 
 async def _run_one(provider: str, model: str, base_req: NormalizedRequest, api_key: str) -> dict:

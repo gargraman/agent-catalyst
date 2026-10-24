@@ -122,7 +122,11 @@ export function Donut({
   const r = (size - thickness) / 2;
   const c = size / 2;
   const circ = 2 * Math.PI * r;
-  let offset = 0;
+  // Cumulative arc offset per segment, computed up-front (no reassignment during render).
+  const offsets = data.reduce<number[]>((acc, _d, i) => {
+    acc.push(i === 0 ? 0 : acc[i - 1] + (data[i - 1].value / total) * circ);
+    return acc;
+  }, []);
   return (
     <div className={cn("flex items-center gap-5", className)}>
       <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="shrink-0">
@@ -134,13 +138,12 @@ export function Donut({
             <circle
               key={i} cx={c} cy={c} r={r} fill="none"
               stroke={d.color ?? SERIES[i % SERIES.length]} strokeWidth={thickness}
-              strokeDasharray={`${len} ${circ - len}`} strokeDashoffset={-offset}
+              strokeDasharray={`${len} ${circ - len}`} strokeDashoffset={-offsets[i]}
               transform={`rotate(-90 ${c} ${c})`} strokeLinecap="butt"
             >
               <title>{`${d.label}: ${d.value} (${((frac) * 100).toFixed(0)}%)`}</title>
             </circle>
           );
-          offset += len;
           return el;
         })}
         <text x={c} y={c - 2} textAnchor="middle" fontSize={22} fontWeight={600} fill="var(--color-ink)" className="tnum">{total}</text>

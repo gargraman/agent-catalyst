@@ -17,7 +17,7 @@ import { MCP_AUTH_METHODS, mcpAuthLabel } from "@/lib/mcp";
 import { PER_USER_OAUTH_APP_FIELDS } from "@/lib/oauth-app";
 import { riskTone } from "@/lib/tools";
 import {
-  deleteMcpServer, reconnectMcpServer, setMcpToolEnabled, updateMcpServer, useMcpServer,
+  deleteMcpServer, reconnectMcpServer, setMcpToolEnabled, updateMcpServer, useActiveWorkspaceId, useMcpServer,
 } from "@/lib/store";
 import type { McpServer } from "@/lib/data";
 import { relative } from "@/lib/format";
@@ -38,11 +38,14 @@ export default function McpServerDetailPage() {
   const router = useRouter();
   const id = String(params.id);
   const server = useMcpServer(id);
+  const activeWorkspaceId = useActiveWorkspaceId();
   const { can } = useAuth();
   const principal = usePrincipal();
   const [confirmOpen, setConfirmOpen] = React.useState(false);
 
-  if (!server) {
+  // Cross-workspace defense-in-depth: useMcpServer resolves by id across all workspaces, so treat a
+  // server belonging to another tenant as not-found (AppBoundary only gates the active workspace).
+  if (!server || server.workspaceId !== activeWorkspaceId) {
     return (
       <div className="space-y-6">
         <Button variant="ghost" size="sm" href="/tools" className="-ml-2"><ArrowLeft className="size-4" /> Tools & MCP</Button>

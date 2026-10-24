@@ -37,6 +37,7 @@ foundation dependency map.
 | 7 | [`06-guardrails.lld.md`](06-guardrails.lld.md) | `06` | P2 | **done** |
 | 8 | [`07-cost-cogs.lld.md`](07-cost-cogs.lld.md) | `07` | P2 | **done** |
 | 9 | [`04-rag.lld.md`](04-rag.lld.md) | `04` | P3 | **done** |
+| 10 | [`09-security-tenancy.lld.md`](09-security-tenancy.lld.md) — tenancy GUC, RLS DDL, per-user DEK (C4), org-plane boundary (C4) | `09` | P1 | **done** |
 
 ## Conventions shared across every LLD doc
 

@@ -11,12 +11,17 @@ from profiles.loader import CapabilityProfile
 
 def compute_cost(profile: CapabilityProfile, u: NormalizedUsage, *, batch: bool = False) -> float:
     p = profile.pricing  # USD per 1M tokens
+    # Both token sides are reported INCLUSIVE and carved out at pricing time, so each sub-rate is
+    # billed on exactly the tokens it owns and nothing is double-counted:
+    #   input side  = inclusive-then-subtract (cached/cache_write carved out of prompt_tokens);
+    #   output side = inclusive-then-subtract (reasoning carved out of completion_tokens).
     billable_input = u.input_tokens - u.cached_input_tokens - u.cache_write_tokens
+    billable_output = max(0, u.output_tokens - u.reasoning_tokens)
     mult = p.get("batch_multiplier", 1.0) if batch else 1.0
     return mult * (
         billable_input        * p["input"]        / 1e6
       + u.cached_input_tokens * p.get("cached_input", p["input"]) / 1e6
       + u.cache_write_tokens  * p.get("cache_write",  p["input"]) / 1e6
-      + u.output_tokens       * p["output"]       / 1e6
+      + billable_output       * p["output"]       / 1e6
       + u.reasoning_tokens    * p.get("reasoning", p["output"]) / 1e6
     )

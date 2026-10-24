@@ -25,7 +25,7 @@ import {
   type InputVariable, type InputVariableType,
 } from "@/lib/data";
 import {
-  useAgent, useTokens, useTools, useKnowledgeBases, useMcpServers, useSkills, useEvalRunsForAgent,
+  useActiveWorkspaceId, useAgent, useTokens, useTools, useKnowledgeBases, useMcpServers, useSkills, useEvalRunsForAgent,
   useChannelsForAgent, useSuitesForAgent, addEvalRun, simulateEvalRun, useEvalPolicyFor, addToken, revokeToken,
   addSuite, renameSuite, deleteSuite, upsertCase, deleteCase,
   updateAgent, updateAgentConfig, deleteAgent, duplicateAgent, toast, genId, nowIso,
@@ -91,13 +91,16 @@ export default function AgentDetailPage() {
   const { can } = useAuth();
   const principal = usePrincipal();
   const agent = useAgent(params.id);
+  const activeWorkspaceId = useActiveWorkspaceId();
   const evals = useEvalRunsForAgent(params.id);
   const policy = useEvalPolicyFor(agent?.workspaceId);
   const [runEvalOpen, setRunEvalOpen] = React.useState(false);
   const [gate, setGate] = React.useState<PublishGate | null>(null);
   const [deleteOpen, setDeleteOpen] = React.useState(false);
 
-  if (!agent) {
+  // Cross-workspace defense-in-depth: useAgent resolves by id across all workspaces, so treat an agent
+  // belonging to another tenant as not-found (AppBoundary only gates the active workspace).
+  if (!agent || agent.workspaceId !== activeWorkspaceId) {
     return (
       <div className="space-y-6">
         <Link href="/agents" className="inline-flex items-center gap-1.5 text-sm text-muted hover:text-ink"><ArrowLeft className="size-4" /> Back to agents</Link>
@@ -546,7 +549,13 @@ function AttachKbDialog({ agent, open, onClose }: { agent: Agent; open: boolean;
   const principal = usePrincipal();
   const kbs = useKnowledgeBases().filter((kb) => canUse(kb.accessPolicy, principal));
   const [selected, setSelected] = React.useState<string[]>(agent.knowledgeBases);
-  React.useEffect(() => { if (open) setSelected(agent.knowledgeBases); }, [open, agent.knowledgeBases]);
+  // Reset the picker to the agent's bound KBs whenever the dialog (re)opens — adjust-state-during-render
+  // instead of a set-state-in-effect. Mirrors the previous effect's [open, agent.knowledgeBases] deps.
+  const [resetKey, setResetKey] = React.useState({ open, kbs: agent.knowledgeBases });
+  if (resetKey.open !== open || resetKey.kbs !== agent.knowledgeBases) {
+    setResetKey({ open, kbs: agent.knowledgeBases });
+    if (open) setSelected(agent.knowledgeBases);
+  }
   function toggle(id: string) { setSelected((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id])); }
   function submit() { updateAgent(agent.id, { knowledgeBases: selected }, false); toast("Knowledge bases updated"); onClose(); }
   return (

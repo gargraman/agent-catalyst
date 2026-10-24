@@ -13,8 +13,9 @@
 | Exception *names* scattered (`ConflictError` 05, `BudgetExceeded` 07, `ProviderUnavailable`/`RetryableProviderError`/`NonRetryableError` 02, `OutputBlocked` 06); `08 §1` asserts `api/errors.py` exists but never shows it | §1 — one `AppError` hierarchy, the `errors.py` handler, and a row-by-row map of the `08` table to a class. Plus the **three-category taxonomy** (HTTP-surfacing vs internally-caught vs run `stop_reason`) that no parent states. |
 | `08 §1` pagination is one line (`?limit&cursor` → `{items,next_cursor}`); no cursor encoding, no filter/sort convention | §2 — `Page[T]`, the opaque-cursor codec, limit bounds, and the per-router filter/sort whitelist pattern. |
 | `08 §1` idempotency: the happy path + TTL replay; the **two-concurrent-same-key** race is undefined | §3 — the full check/reserve/replay flow, the Redis key + TTL, and the in-flight case (a flagged new code). |
+| No doc pins **sync vs async DB sessions**; LLDs mix both and `invoke()`'s persist/reconcile boundary is undefined | §4 — pin `AsyncSession` on the request/run/worker path + the `invoke()` persist-then-reconcile atomicity rule. |
 
-Python 3.12, `from __future__ import annotations`, stdlib + Pydantic v2 + FastAPI. Snippets compile (§4).
+Python 3.12, `from __future__ import annotations`, stdlib + Pydantic v2 + FastAPI. Snippets compile (§5).
 
 ---
 
@@ -131,7 +132,8 @@ class ProviderUnavailable(AppError):    # 02 §6 — provider + all fallbacks fa
 
 > ⚠️ **Amendment to `08 §1`:** the error table has no `internal`/500 row, yet `AppError.code` defaults to
 > `"internal"`. Add an `unhandled → 500 internal` row (any non-`AppError` exception → logged + generic 500
-> envelope, no stack to the client) so the envelope contract is total. Flagged, not edited.
+> envelope, no stack to the client) so the envelope contract is total. **(Now folded into `08 §1` as the
+> `unhandled → 500 internal` row — A5/A6, 2026-10-24.)**
 
 ---
 
@@ -213,8 +215,9 @@ IDEMPOTENCY_TTL_S = 24 * 3600            # design choice: 24h replay window; aft
 
 
 async def invoke_idempotent(ws_id: str, key: str | None, run_fn, *, redis, db):
-    """Wraps a published invoke. run_fn() performs the real runtime.invoke + persists the run.
-    Three outcomes: fresh run, verbatim replay, or (post-TTL) a metadata-only expired marker."""
+    """Wraps a published invoke. run_fn() runs the real runtime.invoke to completion, persists the run, and
+    returns an assembled InvokeResult (metadata + final message — NOT the stream; see §3.3). Three outcomes:
+    fresh run, replay of the assembled body (JSON, never a re-stream), or (post-TTL) a metadata-only marker."""
     if key is None:
         return await run_fn()                               # no key ⇒ no dedupe
 
@@ -251,15 +254,100 @@ async def invoke_idempotent(ws_id: str, key: str | None, run_fn, *, redis, db):
   (cost/tokens/status), never a reconstructed output.
 - **Failure:** on exception the reservation is deleted so a genuine retry isn't permanently blocked.
 
+### 3.3 What "the body" is for a **streaming** invoke (replay does NOT re-stream)
+
+Published invoke (`03 §2`) is a streaming async generator, so "cache the result body and replay it verbatim"
+needs a concrete definition — a token stream is not a value you can store and hand back. **Decision:**
+
+- **`run_fn()` returns an assembled result, not the stream.** On the published path `run_fn()` runs
+  `runtime.invoke()` to completion — consuming the SSE frames and persisting the `runs` row (`03 §2`) — and
+  returns an `InvokeResult` = **run metadata** (`run_id`, `status`, `stop_reason`, `cost_usd`, token usage,
+  `created_at`) **+ the assembled final assistant message** (the concatenated text / final JSON, *not* the
+  per-token frames). `_serialize(result)` stores exactly that; `_replay(cached)` returns exactly that.
+- **A replay is a single `200 application/json`, never a fresh SSE stream.** The response carries
+  `Idempotent-Replay: true` (header) + `"idempotent_replay": true` in the body. Re-streaming is explicitly
+  rejected: re-running the model would defeat dedupe and re-bill; replaying stored token frames adds complexity
+  for no value — a client that retries after a dropped connection wants *the answer*, not the typing animation.
+  (So the response **shape** differs between the first call (SSE) and a replay (JSON); the client keys off the
+  `Idempotent-Replay` header. This is the deliberate, documented asymmetry.)
+- **Oversize fallback — bind to the run row only.** If the assembled body would exceed the Redis value cap
+  (large JSON output), store **metadata + `run_id` only** with a `"result_in_run": true` marker; the replay
+  returns that envelope and the client re-fetches the full output via `GET /runs/:id`. This is the "idempotency
+  binds only the persisted run row" option, used as the fallback rather than the default so the common
+  lost-connection retry still gets its answer inline.
+- **Post-TTL** (`§3.2`) is the same envelope with `result_expired` instead of the body — metadata from the
+  `runs` row, never a reconstructed output.
+
+The `runs` partial-unique index (`01 §4.7`) remains the durable dedupe backstop; Redis holds the replayable
+body only for the TTL window.
+
 > ⚠️ **Amendment to `08 §1`:** add one row — `idempotency key still in-flight → 409 idempotency.in_progress`.
 > It's the only idempotency outcome the table doesn't cover. New class:
-> `class IdempotencyInProgress(ConflictError): code = "idempotency.in_progress"`.
+> `class IdempotencyInProgress(ConflictError): code = "idempotency.in_progress"`. **(Now folded into `08 §1` as
+> the `409 idempotency.in_progress` row — A5/A6, 2026-10-24.)**
 
 ---
 
-## 4. Verification performed
+## 4. Database session model & transaction boundaries
 
-1. **Snippet compile** — every `python` block run through `compile()` (§4 harness, same as `01` LLD).
+The LLDs were written per module and show a mix of **sync** (`01 §6` `db.get(...)`, `05 §7`/`07 §1`
+`db.execute(...).scalar_one_or_none()`, `db.get(...)`) and **async** (`04 §1.2` `async with db.begin(): await
+db.execute(...)`) DB calls, and `03 §2` `invoke()` is an async generator that called sync `_open_run`/`_close_run`.
+That mix is unsafe in the streaming runtime and left the `invoke()` persist/reconcile boundary undefined. This
+section pins both, once, for every module.
+
+### 4.1 Pinned: `AsyncSession` everywhere on the request / run / worker path
+
+**Decision: SQLAlchemy `AsyncSession` (asyncpg driver) is the one session type** across `api` routers,
+`runtime.invoke()`, and the `worker`. Rationale: `invoke()` is an async generator that streams tokens (`03 §2`);
+a blocking **sync** `Session.execute()` inside it **stalls the whole event loop** for the duration of the query,
+destroying the p95-first-token SLO (`00 §5`) and starving every other concurrent stream on that process.
+
+The sync-looking snippets elsewhere are **illustrative shorthand**; the async form is **normative**:
+
+| Written as (illustrative) | Buildable (normative) | Where |
+|---|---|---|
+| `db.get(Agent, id)` | `await db.get(Agent, id)` | `01 §6` repo template |
+| `db.execute(select(...)).scalar_one_or_none()` | `await db.scalar(select(...))` (or `(await db.execute(...)).scalar_one_or_none()`) | `05 §7`, `07 §1` |
+| `db.execute(text("select pg_advisory_xact_lock(...)"), …)` | `await db.execute(text(...), …)` inside `async with db.begin()` | `05 §7` `finalize_eval_run` |
+| `async with db.begin(): await db.execute(...)` | unchanged — already correct | `04 §1.2` |
+
+The repository pattern (`01 §6`) and the tenant GUC (`SET LOCAL app.workspace_id`, `09` LLD §1 / `01 §6`) are
+unchanged in **shape** — only the call becomes `await`. RLS safety requires a **transaction-scoped** connection
+so `SET LOCAL` can't bleed across pooled sessions (`09 §7`): **one `AsyncSession` per request/job**, committed
+or rolled back at the boundary.
+
+**Threadpool escape hatch (narrow).** The only genuinely sync DB code is out-of-band and has no event loop —
+Alembic migrations and one-off CLIs — where a sync `Session` is fine. If a blocking library ever *must* run on
+the async path, wrap it in `await asyncio.to_thread(...)` so it never blocks the loop. Nothing in the current
+design needs this: **no sync `Session` is opened inside `invoke()` or a router coroutine.**
+
+### 4.2 `invoke()` persist + budget-reconcile atomicity (fills `03 §2`)
+
+`invoke()`'s `finally` does two writes to **two different stores** — the Run+Spans persist (**Postgres**) and the
+budget reconcile (**Redis** counter, `07 §2/§3`) — so they **cannot** share one transaction. The rule:
+
+1. **Run persist is one Postgres transaction.** `_open_run` (status `pending`) and `_close_run` (final status +
+   cost/tokens + Spans) each commit atomically on the request `AsyncSession`; a `runs` row is never half-written.
+   Both are **`await`ed** — fixing the `03 §2` sync-call-inside-an-async-generator contradiction.
+2. **Order: persist the Run, *then* reconcile Redis** — chosen so a crash *between* them fails **safe**:
+   - crash after `reserve` (pre-check) but before persist → the Redis reservation stays at the *estimate*
+     (`07 §3` `incrbyfloat`): spend is **over**-counted, never under — the monthly cap stays conservative.
+   - crash after persist but before reconcile → the `runs` row holds the **actual** cost (durable, billable,
+     traced) while Redis is still at the estimate — again over-counting.
+   Either way the invariant holds: **never lose a run record, never under-bill.** The periodic reconciliation
+   sweep (`07 §12`) / month-boundary reset corrects the transient Redis over-count.
+3. **No cross-store 2PC.** Deliberately not worth it: the Redis counter is a fast *approximate* guard, the `runs`
+   table is the **system of record** for cost (`07`/`10`), and the reconciliation sweep makes the approximate
+   counter eventually exact. A transient over-count only ever makes the budget guard *stricter*, never laxer.
+
+This is why `03 §2`'s `finally` ordering is `await _close_run(...)` **then** `await ctx.budget.reconcile(...)`.
+
+---
+
+## 5. Verification performed
+
+1. **Snippet compile** — every `python` block run through `compile()` (§5 harness, same as `01` LLD).
 2. **Consistency with `08 §1`** — every row of the parent exception table maps to exactly one class in §1.2
    (codes verbatim: `input.invalid`, `auth.required`, `access.denied`, `not_found`, `publish.eval_gate`,
    `publish.low_confidence`, `eval.assertion_detail_required`, `registration.gate`, `tool.approval.denied`,

@@ -21,6 +21,9 @@ from profiles.loader import CapabilityProfile
 from providers.base import register_adapter
 
 _API_URL = "http://localhost:11434/api/chat"
+# Connect/read timeout (seconds) for the streaming request — without it a hung local server (model still
+# loading, stuck generation) would block forever. Local inference can be slow, so this is generous.
+_REQUEST_TIMEOUT = 60.0
 
 
 def _build_body(req: NormalizedRequest) -> dict:
@@ -45,11 +48,11 @@ def _build_body(req: NormalizedRequest) -> dict:
     return body
 
 
-def _open_ndjson(url: str, headers: dict, body: dict):
+def _open_ndjson(url: str, headers: dict, body: dict, *, timeout: float = _REQUEST_TIMEOUT):
     """Open the streaming request; yield decoded JSON lines. Isolated so tests can monkeypatch it."""
     data = json.dumps(body).encode("utf-8")
     request = urllib.request.Request(url, data=data, headers=headers, method="POST")
-    with urllib.request.urlopen(request) as resp:
+    with urllib.request.urlopen(request, timeout=timeout) as resp:
         for raw in resp:
             yield raw.decode("utf-8").rstrip("\n")
 
