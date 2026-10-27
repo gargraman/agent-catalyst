@@ -34,8 +34,10 @@ claim, not an org-scoped one. Concretely:
   per deployment, so an `org_id` dimension would be a column that is always the same value.
 - **No `platform_admins` table, and no roster of any kind.** admin is the adapter's admin claim
   (`admin_group_ref`, 18 §6; Okta adapter default `ap-platform-admin`), read live from the token on each
-  request (`09 §1/§2.1`). Grant/revoke happens **in the IdP** (audited there); it takes effect on next login.
-  There is nothing to store, upsert, or RLS-partition.
+  request (`09 §1/§2.1`). Grant/revoke happens **in the IdP** (audited there); it takes effect on next login —
+  except an admin **`force-logout`/`revoke-user`** (`09 §2.1`), which cuts an active session immediately via the
+  transient Redis deny-set (a revocation list, not a stored roster). There is nothing else to store, upsert, or
+  RLS-partition.
   `Principal.is_admin` (`09 §1`) is `True` iff the token carries that claim.
 
 ### 1.1 admin in the `09 §1` auth-plane table (already one of the three)

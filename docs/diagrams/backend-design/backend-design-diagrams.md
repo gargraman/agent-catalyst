@@ -112,30 +112,31 @@ flowchart LR
 
 ## Backend Deployment & Data Plane
 
-*Deployable units, the state they own, and the two isolation boundaries — designed services/ tree (not yet built)*
+*Deployable units, the state they own, how each tier scales, and the two isolation boundaries — designed services/ tree (not yet built)*
 
 `architecture` · source: `backend-deployment-plane.json` / `backend-deployment-plane.html`
 
 ```mermaid
 flowchart LR
     subgraph g0["private app network · RLS backstop"]
-    api["api (FastAPI)<br/>builder + published invoke<br/>⟦auth · tenancy · RLS · SSE⟧"]
+    api["api (FastAPI)<br/>builder + invoke · HPA 2→20<br/>⟦auth · tenancy · RLS · SSE⟧"]
     worker_i["worker · interactive<br/>fast jobs · 1–2 replicas"]
     worker_b["worker · batch<br/>bursty · KEDA 0→N"]
     redis["Redis<br/>queue · idemp · breaker"]
     postgres["Postgres + pgvector<br/>money · tenancy · vectors<br/>⟦RLS⟧"]
     vault["Vault<br/>platform + per-ws DEK"]
-    langfuse["Langfuse<br/>traces + cost"]
+    langfuse["Langfuse v3<br/>traces + cost"]
     minio["MinIO<br/>uploads · payloads"]
+    clickhouse["ClickHouse<br/>v3 backend · P2 analytics"]
     end
     subgraph g1["per-call isolation (P2) · gVisor + egress deny"]
-    sandbox["sandbox (P2)<br/>gVisor · per-call"]
+    sandbox["sandbox (P2)<br/>gVisor · per-call (KEDA)"]
     egress["Egress proxy<br/>Squid · deny-default"]
     end
     console["Console / Builder<br/>playground · CRUD"]
     extcaller["External caller<br/>caller token → /v1"]
     channel["Channel<br/>Slack · Teams · GChat"]
-    web["web<br/>Next.js standalone"]
+    web["web<br/>Next.js standalone · ×2"]
     proxy["Reverse proxy<br/>TLS · same-origin · SSE"]
     providers["LLM providers<br/>cost from our profiles, not LiteLLM"]
     tool_apis["Tool / MCP servers<br/>allow-listed only"]
@@ -154,6 +155,7 @@ flowchart LR
     worker_i -.->|"chunks"| postgres
     worker_b -.->|"eval_results"| postgres
     worker_b -.-> langfuse
+    langfuse -.->|"v3 columnar"| clickhouse
     worker_b -.->|"payloads"| minio
     worker_b -.->|"dispatch (P2)"| sandbox
     sandbox -->|"only exit"| egress
@@ -170,7 +172,7 @@ flowchart LR
 
 - Postgres+pgvector is the single source of truth for money, tenancy AND vectors — RLS is the layer-2 backstop; api writes runs/cost, workers write chunks + eval_results, all under the workspace guard
 - Redis = queue + idempotency store + circuit-breaker + rate-limit window; Vault decrypts creds just-in-time (memory-only) — provider keys use a platform-custodied pool (platform-scope DEK), tool/connector/channel creds use a per-workspace DEK
-- Both api AND worker call providers through the same runtime (api for invoke, worker for eval runs + ingestion embeddings); Langfuse = traces/cost; MinIO = uploads + large payloads
+- Both api AND worker call providers through the same runtime (api for invoke, worker for eval runs + ingestion embeddings); Langfuse v3 = traces/cost, columnar on its own ClickHouse (traces unsampled) + a P2 derived 'analytics' DB (eval/drift + cost rollups, non-authoritative, no RLS); MinIO = uploads + large payloads
 
 **Isolation boundaries**
 
@@ -178,9 +180,15 @@ flowchart LR
 - Sandbox (P2): per-call gVisor, reached only via api/worker dispatch, whose ONLY path out is the deny-by-default egress proxy — the anti-SSRF/exfil control
 - Provider calls go direct (NOT via the egress proxy); routing them through provider-egress is an unbuilt precondition for real key-custody enforcement (09 §9.1)
 
+**How each tier scales**
+
+- Stateless app tier scales OUT (no process holds tenant state): api on request concurrency (HPA 2→20), worker·batch + sandbox on Redis queue depth (KEDA 0→N), web on request load (×2); worker·interactive stays 1–2 for fast jobs
+- Stateful core scales UP / HA: Postgres vertical + read replica (dashboards read the replica), Vault HA raft ×3, Redis vertical+HA, MinIO distributed ×4, ClickHouse vertical/external — Postgres is the one stateful source of truth
+- Two independent bounds: MAX_TOOL_CALLS caps COST per run, the per-run 30s deadline caps LATENCY (p99 ≤ 30s by construction); PgBouncer MUST be transaction-pool mode so RLS SET LOCAL never leaks across pooled connections
+
 **Source**
 
-- docs/backend/11-deployment.md §1/§4/§7/§9 (topology: API+WRK→providers, pools, SSE) · 09-security-tenancy.md §9.1 (DEK split, egress) · 12-channels.md (channel = 4th caller, worker-run)
+- docs/backend/11-deployment.md §1/§4/§7/§9 (topology + scaling: API+WRK→providers, pools, HPA/KEDA, SSE) · 09-security-tenancy.md §9.1 (DEK split, egress) · 12-channels.md (channel = 4th caller, worker-run)
 - Companion: runtime-invoke-pipeline.html — what runs inside api + worker
 
 
@@ -773,7 +781,7 @@ sequenceDiagram
 
 ## Observability — the per-call log & telemetry
 
-*One span() helper in the shared runtime fans every call to three stores; two audiences read them (doc 10)*
+*One span() helper in the shared runtime fans every call across four stores (Langfuse v3 is columnar on ClickHouse); two audiences read them (doc 10)*
 
 `dataflow` · source: `observability-telemetry.json` / `observability-telemetry.html`
 
@@ -784,8 +792,9 @@ flowchart LR
     end
     subgraph stage1["2. Stores"]
     pg["Postgres<br/>runs · spans · cost<br/>⟦money + tenancy⟧"]
-    langfuse["Langfuse<br/>trace · redacted"]
+    langfuse["Langfuse v3<br/>trace · redacted"]
     prom["Prometheus<br/>counters · histos"]
+    clickhouse["ClickHouse<br/>v3 backend · P2 analytics"]
     end
     subgraph stage2["3. Consume"]
     metrics["dashboards<br/>/v1/metrics/*"]
@@ -797,6 +806,8 @@ flowchart LR
     span -->|"metrics"| prom
     pg -->|"aggregate"| metrics
     langfuse -.->|"run traces"| metrics
+    langfuse -.->|"v3 columnar"| clickhouse
+    pg -.->|"P2 rollups"| clickhouse
     pg -.->|"drift / budget"| notif
     prom -->|"SLO rules"| alerts
 ```
@@ -807,11 +818,12 @@ flowchart LR
 - One span() context manager writes a spans row, mirrors a Langfuse generation, and increments Prometheus counters
 - Span kinds: model · tool · retrieval · guardrail · judge · skill; finalize() rolls spans into one runs row
 
-**Three stores, three jobs**
+**Four stores, four jobs**
 
 - Postgres (runs/spans): source of truth for money + tenancy; partitioned by month; cost from our profiles (02/07)
-- Langfuse: full prompt/response I/O + nested traces, PII-redacted; the source of truth for 'what was said'
+- Langfuse v3: full prompt/response I/O + nested traces, PII-redacted; columnar on its own ClickHouse so traces are retained 100% (no sampling); source of truth for 'what was said'
 - Prometheus: numeric time-series labeled workspace/agent/source/model for SLOs + autoscaling
+- ClickHouse: Langfuse v3's columnar backend + (P2) a derived 'analytics' DB for eval/drift + cost rollups — non-authoritative, no RLS, workspace_id-filtered; Postgres stays the billed figure
 
 **Two audiences (don't conflate)**
 
@@ -821,7 +833,7 @@ flowchart LR
 
 **Source**
 
-- docs/backend/10-observability-monitoring.md §per-call-log/§stores/§metrics/§SLOs/§cost · 07 (cost) · 16 (owner notifs)
+- docs/backend/10-observability-monitoring.md §per-call-log/§stores/§metrics/§SLOs/§cost · 11 §9 (ClickHouse + Langfuse v3) · 07 (cost) · 16 (owner notifs)
 - services/runtime/obs.py · tables runs · spans · trace_id → Langfuse
 
 ## Owner Notifications — triggers → fan-out → inbox

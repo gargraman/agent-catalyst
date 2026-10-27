@@ -37,8 +37,9 @@ flowchart TB
   EGRESS -. allow-list .-> INT[approved internal/external endpoints]
   API -. decrypt key .-> VAULT[(Vault<br/>per-workspace DEK)]
   WRK -. decrypt key .-> VAULT
-  API --> LF[(Langfuse<br/>traces · cost)]
+  API --> LF[(Langfuse v3<br/>traces · cost)]
   WRK --> LF
+  LF --> CH[(ClickHouse<br/>trace backend · P2 analytics DB)]
   API --> PROV[LLM providers]
   WRK --> PROV
 ```
@@ -69,8 +70,17 @@ identical code (00 §1).
 | Postgres+pgvector | `pgvector/pgvector:pg16` | 1 (+replica later) | vertical + read replicas | **no** |
 | Redis | `redis:7` | 1 | vertical | **no** |
 | Vault | `hashicorp/vault` | 1 (HA: 3 raft) | — | **no** |
-| Langfuse | `langfuse/langfuse` | 1 | — | **no** |
+| Langfuse **v3** | `langfuse/langfuse@sha256:<digest>` (pinned — §2/§12) | 1 | — | **no** |
+| ClickHouse | `clickhouse/clickhouse-server` | 1 | vertical (external/dedicated via `CLICKHOUSE_URL` — 11 LLD) | **no** |
 | MinIO | `minio/minio` | 1 (HA: 4) | storage | **no** |
+
+> **Langfuse v3 brings ClickHouse (its only net-new dependency here).** v3 no longer runs Postgres-only — it
+> keeps traces in a **ClickHouse** columnar backend and also wants Redis + S3. We **already run Redis and
+> MinIO (S3-compatible)**, so v3 reuses those; the single net-new stateful service is **`clickhouse`**. That
+> columnar backend is what lets us retain **100% of traces** (the old 0.2 sampling is deleted, `lld/10 §8`).
+> The Langfuse image is **pinned by digest** (§2/§12) — it was the one unpinned outlier. (Phase 2) our own
+> derived `analytics` DB rides the **same** ClickHouse cluster (`lld/10 §8`); scale-out to a
+> dedicated/external cluster is a `CLICKHOUSE_URL` change (11 LLD), not a rewrite.
 
 > **Why split `worker` into interactive vs batch pools** (plan Part 4): eval + ingestion are bursty and
 > CPU/token-heavy. A single pool lets a 120-case eval run starve a user's file ingestion. Two pools with
@@ -189,10 +199,28 @@ services:
     environment: { MINIO_ROOT_USER: minio, MINIO_ROOT_PASSWORD: minio123 }
     volumes: ["miniodata:/data"]
 
-  langfuse:
-    image: langfuse/langfuse
-    environment: { DATABASE_URL: postgresql://app:app@postgres:5432/langfuse, NEXTAUTH_SECRET: dev }
-    depends_on: { postgres: { condition: service_healthy } }
+  clickhouse:                                # Langfuse v3 trace backend (+ P2 our analytics DB, lld/10 §8)
+    image: clickhouse/clickhouse-server
+    environment: { CLICKHOUSE_USER: langfuse, CLICKHOUSE_PASSWORD: langfuse }
+    ulimits: { nofile: { soft: 262144, hard: 262144 } }
+    volumes: ["chdata:/var/lib/clickhouse"]
+    healthcheck: { test: ["CMD","clickhouse-client","--query","SELECT 1"], interval: 5s, retries: 10 }
+
+  langfuse:                                  # v3: pin by digest in prod (§2/§12); needs ClickHouse + Redis + S3(MinIO)
+    image: langfuse/langfuse@sha256:<v3-digest>   # <-- pinned; dev may use langfuse/langfuse:3 for convenience
+    environment:
+      DATABASE_URL: postgresql://app:app@postgres:5432/langfuse   # Langfuse metadata still on Postgres
+      CLICKHOUSE_URL: http://clickhouse:8123                      # v3 trace store (own `langfuse` DB)
+      CLICKHOUSE_USER: langfuse
+      CLICKHOUSE_PASSWORD: langfuse
+      REDIS_CONNECTION_STRING: redis://redis:6379/1               # reuse the Redis we already run (own DB index)
+      LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse                   # reuse MinIO (S3-compatible) — endpoint via env
+      NEXTAUTH_SECRET: dev
+    depends_on:
+      postgres: { condition: service_healthy }
+      clickhouse: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      minio: { condition: service_started }
 
   migrate:                                   # runs Alembic then exits (01 §7)
     image: agent-catalyst/api
@@ -230,7 +258,7 @@ services:
     ports: ["8080:8080"]
     depends_on: [api, web]
 
-volumes: { pgdata: {}, miniodata: {} }
+volumes: { pgdata: {}, miniodata: {}, chdata: {} }
 ```
 
 `migrate` and `seed` are **run-once** containers (gate the app on their completion) — this keeps schema
@@ -428,8 +456,13 @@ semaphores (07) + cache. No app process holds tenant state in memory, so scale-o
 Split by shape (plan Part 5, cross-ref 01 + 10):
 
 - **Transactional entities** (`agents`, `versions`, `runs`, `spans`, `eval_runs`) → Postgres.
-- **High-volume trace/cost payloads** (full prompt/response bodies) → **Langfuse** (10); ClickHouse
-  later if trace volume outgrows it.
+- **High-volume trace/cost payloads** (full prompt/response bodies) → **Langfuse v3** (10), which stores them
+  in **ClickHouse** (its own columnar backend, now a present service — §1/§3). Traces are retained at **100%**
+  (no sampling, `lld/10 §8`); storage is bounded by time-based retention, not by dropping payloads.
+- **(Phase 2, when PG rollups strain)** our own **`analytics` ClickHouse DB** on the same cluster holds
+  derived eval/drift + cost rollups (ReplacingMergeTree + AggregatingMergeTree MVs + TTL, `lld/10 §8`). It is
+  **derived/non-authoritative, no RLS** — Postgres stays the SoR for money + tenancy. Scale-out to a
+  dedicated/external ClickHouse is a `CLICKHOUSE_URL` change (11 LLD), not a rewrite.
 - `runs` and `spans` are high-write → **partition by month** and apply a retention policy so the primary
   DB doesn't bloat. Large eval/trace payloads go to **MinIO** keyed from the row.
 
@@ -453,7 +486,8 @@ Per-workspace retention + PII redaction before any log/trace write are security 
 | pgvector indexes | Rebuilt from `chunks` rows; HNSW `REINDEX` after a restore if needed | — | ≤ 2 h (large KBs) | reindex runbook; retrieval degraded-but-serving during rebuild |
 | Vault (DEKs — **loss = all tenant keys unrecoverable**) | Raft snapshot backup; **unseal keys / recovery keys in separate custody** | ≤ 1 h | ≤ 1 h | restore snapshot → unseal with quorum of recovery keys |
 | MinIO (uploads, large payloads) | Bucket replication / versioning + periodic snapshot | ≤ 15 min | ≤ 1 h | re-point endpoint; re-ingest only if objects lost |
-| Langfuse (traces/cost) | Its Postgres is backed by the PITR above; non-critical to serving | ≤ 1 h | best-effort | observability data; not on the serving critical path |
+| Langfuse (metadata) | Its Postgres metadata is backed by the PITR above; non-critical to serving | ≤ 1 h | best-effort | observability data; not on the serving critical path |
+| ClickHouse (Langfuse v3 traces + P2 `analytics` rollups) | Native `BACKUP ... TO Disk/S3` or volume snapshot to object storage; derived data, so lower RPO tolerance | ≤ 24 h | best-effort | restore snapshot/`RESTORE`; `analytics` rollups are **re-derivable from Postgres** (`runs`/`spans`/`eval_runs`) if lost — re-run the rollup job rather than restore |
 | Secrets config (AppRole, OIDC) | In the platform secret store, IaC-managed | — | ≤ 30 min | re-provision from IaC |
 
 > ⚠️ **Vault is the highest-stakes asset.** Provider/tool/source keys are envelope-encrypted with

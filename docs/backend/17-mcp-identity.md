@@ -131,8 +131,11 @@ vaulted per `(user, server)` under the per-user DEK (§3); access tokens are nev
   run returns `mcp.connect_required` (re-consent, surfaced in-chat / inline) — it does not silently fall back
   to `shared_service` (see §6 ⚠️).
 - **Revocation:** `status='revoked'` on offboarding or `mcp_server` delete (cascade) stops *our* use
-  immediately. **Propagating revocation upstream** (calling the provider's OAuth revoke endpoint on explicit
-  disconnect) is best-effort — a dangling grant can survive if the provider exposes no revoke endpoint.
+  immediately. An admin **`revoke-user`** (the `09 §2.1` deny-set / force-logout path) cascades here too: cutting
+  a user's session also marks that user's per-user MCP connections `revoked`, so a cut-off user's delegated
+  tokens stop alongside their session rather than lingering until their next refresh. **Propagating revocation
+  upstream** (calling the provider's OAuth revoke endpoint on explicit disconnect) is best-effort — a dangling
+  grant can survive if the provider exposes no revoke endpoint.
   **[OPEN — P2.a: the upstream revoke call + reconciliation are not yet specified.]**
 
 - The MCP server's declared **scopes bound** what the delegated token can do; the per-call **egress

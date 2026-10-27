@@ -184,7 +184,10 @@ there.
   `compute_cost` (02 §4) — tagged with `workspace_id` + `caller_token_id` for per-tenant, per-endpoint,
   per-model rollups (10).
 - These rollups power: per-tenant **quotas/chargeback** (spec Part 4), the dashboards the frontend
-  already renders (`SPEND_SERIES`, `cost30d`), and **spend-anomaly alerts** (10 §alerts).
+  already renders (`SPEND_SERIES`, `cost30d`), and **spend-anomaly alerts** (10 §alerts). At P1 they are
+  live Postgres aggregates over `runs`; **(Phase 2, at scale)** the dashboard reads derive from the
+  `analytics` ClickHouse DB's **AggregatingMergeTree materialized views** (`lld/10 §8`, `10 §2/§6`) — but the
+  **authoritative, billed number stays `runs.cost_usd` in Postgres** (quotas/`BudgetGuard` never read CH).
 - **Reconcile against provider billing** periodically; a gap means our pricing table (02 profiles) drifted
   — itself an alert, because wrong cost numbers corrupt every budget decision above (spec E risk #6).
 
@@ -242,28 +245,30 @@ Two buckets:
 - **Embedding spend** — KB ingestion (04) + the dedup-scan signatures (14 §3); one-time per doc/version,
   small.
 
-**B. Platform infra COGS (the 6 stateful services + compute).** Self-hosted OSS, so this is infra, not
+**B. Platform infra COGS (the 7 stateful services + compute).** Self-hosted OSS, so this is infra, not
 SaaS per-call — but it is real money and real ops. Order-of-magnitude for a single-deployment internal
 install (one org, ~40 agents), to be replaced with real quotes:
 
 | Component | Drives cost | Rough monthly (self-host) |
 |---|---|---|
 | Postgres + pgvector | rows + vector index RAM (HNSW resident) | the big one — size to index RAM (§4 ceiling, 01 §4.4) |
-| Langfuse (traces) | trace volume × retention | grows with run volume; cap via retention TTL (09 §11) |
+| Langfuse v3 (traces) | trace volume × retention | grows with run volume; cap via retention TTL (09 §11) |
+| ClickHouse (Langfuse v3 trace backend; P2 `analytics` rollups) | trace columns + P2 rollup tables | scales with trace volume; net-new with v3 (`11 §1`); shares one cluster until a `CLICKHOUSE_URL` split |
 | Redis | cache + queue + budget counters | small |
 | Vault | secrets | small |
 | MinIO | uploaded docs | small, storage-bound |
 | `api` + `worker` compute | request + eval/ingest concurrency | scales with load (00 §2, 11 §7) |
 
 > **The honest number is a formula, not a total** (matches the CxO cheat-sheet rule). Platform COGS ≈
-> *(eval/judge + embedding inference)* + *(infra for 6 stateful services + compute)*. The inference half
+> *(eval/judge + embedding inference)* + *(infra for 7 stateful services + compute)*. The inference half
 > is governed by §§4–8; the infra half is **fixed-ish and dominated by Postgres/pgvector RAM + Langfuse
 > retention**. Build-time dev/eval budget is the scoped **~$100/mo** (scope.md); steady-state infra is a
 > separate capex/opex line that **must be sized against real quotes before the full build** — it is an
 > input to the build-vs-buy case, not an afterthought.
 
-**Ops burden is part of the cost.** Six stateful services (Postgres, Redis, Vault, Langfuse, MinIO, +
-the worker fleet) need an owning team, backups, and the Vault-custody drill (11 §10). That staffing is a
-real COGS line the "lean, OSS, no per-call SaaS" framing must not hide.
+**Ops burden is part of the cost.** Seven stateful services (Postgres, Redis, Vault, Langfuse, MinIO,
+**ClickHouse** — net-new with Langfuse v3, `11 §1` — + the worker fleet) need an owning team, backups, and
+the Vault-custody drill (11 §10). That staffing is a real COGS line the "lean, OSS, no per-call SaaS" framing
+must not hide.
 
 → Next: `08-api-surface.md`.

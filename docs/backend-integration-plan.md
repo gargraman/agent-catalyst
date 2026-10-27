@@ -217,9 +217,9 @@ large trace/eval payloads), all self-hosted OSS, no cloud-managed lock-in ("port
 | Networking | `web` and `api` behind one reverse proxy (same origin `/api`); SSE requires proxy buffering off + long timeouts |
 | CI/CD | Build images → run two-layer tests + **eval gate** → push to internal registry (Trellix Artifactory) → deploy QA on green → **prod only on explicit confirmation** |
 | Secrets | Vault only; nothing in images or committed env files |
-| Observability | Langfuse (LLM traces/cost) + OTel app metrics + health/readiness probes |
+| Observability | Langfuse **v3** (columnar LLM traces/cost — ships ClickHouse, so traces are unsampled) + OTel app metrics + health/readiness probes |
 | Scaling shape | API stateless (scale out); workers scale by queue depth; Postgres is the stateful core; Redis = queue + concurrency semaphores + cache |
-| Telemetry store | Transactional entities in Postgres; high-volume traces/cost in Langfuse (or ClickHouse later); partition + retention on `runs`/`spans` so the primary DB does not bloat |
+| Telemetry store | Money/tenancy/transactional entities in Postgres (**SoT**); high-volume traces/cost in Langfuse v3 (columnar, ships ClickHouse); a **derived, non-authoritative `analytics` ClickHouse DB** (Phase 2) holds eval/drift + cost rollups via ReplacingMergeTree/AggregatingMergeTree materialized views; partition + retention on `runs`/`spans` so the primary DB does not bloat |
 | Backup / DR | Postgres PITR backups; pgvector reindex runbook; Vault backup + unseal/key-recovery plan; periodic restore drills |
 | Zero-downtime | Expand/contract migrations, rolling deploys, `/v1` API-contract policy with deprecation windows |
 

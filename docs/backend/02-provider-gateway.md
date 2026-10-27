@@ -211,7 +211,12 @@ Profiles are hand-authored JSON, so cost accuracy is only as good as how current
   Reconciliation **detects** drift; this process is what **fixes** it.
 - **Deprecation feeds P0-3.** The `availability`/`sunset_at` fields (§4) are part of the same PR workflow;
   marking a model `deprecated`/`retired` here is what the model-deprecation detector reads (16 §3). So
-  profile currency gates both cost accuracy *and* deprecation notifications.
+  profile currency gates both cost accuracy *and* deprecation notifications. The **same signal — no new
+  detector** — also backs the admin **`outdated` view** (`GET /api/v1/org/compliance`, 08 · 15): it lists
+  agents whose pinned `profile_snapshot.model` is stale or past `sunset_at` so owners re-point onto a current
+  model before removal. This surfaces as a **distinct, informational flag** (FE `Agent.profileOutdated`,
+  `lld/01`) — **separate from `needsReEval`** (config-drift, which gates publish): a merely-sunsetting model
+  flags the agent without blocking its publish.
 
 > Honest limit: this is a **manual-first** process. It reduces, not eliminates, the staleness risk —
 > the CI gate makes staleness loud rather than silent, but a provider price change still isn't reflected

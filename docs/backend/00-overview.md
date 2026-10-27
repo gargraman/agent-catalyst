@@ -44,8 +44,8 @@ variant used only on the P2 MCP/tool path; the first three are the always-on cor
 | `web` (Next.js standalone) | The existing console. | Yes | — |
 | `sandbox` (P2) | Network-isolated per-call MCP + tool execution under a hardened runtime (gVisor + egress allow-list proxy); reachable only via `api`/`worker` dispatch. See `11-deployment.md §1`. | Yes (ephemeral per call) | per-call jobs (queue depth / KEDA) |
 
-Shared stateful backing services (see `11-deployment.md`): Postgres+pgvector, Redis, Vault, Langfuse,
-MinIO.
+Shared stateful backing services (see `11-deployment.md`): Postgres+pgvector, Redis, Vault, Langfuse **v3**,
+ClickHouse (Langfuse's columnar trace store; + a Phase-2 derived `analytics` DB, 10 §2), MinIO.
 
 > **Why `api` serves both builder and published invoke:** same runtime, same auth primitives, half the
 > infra. Separate them into two Deployments later *only* for blast-radius isolation (a runaway public

@@ -178,4 +178,9 @@ team, or owner)** · **policy granularity = roles + IdP teams + `private` owner*
 ## Open decisions (recommended first)
 1. Viewer may use the playground read-only *(recommended)* vs builders+ only.
 2. **Members: read-only, managed in the IdP** — resolved; see the `scope.md` decision log and `backend/18 §3`.
-3. Sign out = reset role + toast *(recommended)* vs full stub login screen.
+3. **Sign out → a real logout flow** — resolved 2026-10-25 (D2). With the fail-closed deny-set + admin
+   `force-logout` (`09 §2.1`), sign-out must actually **end the session** (clear the Auth.js session → redirect to
+   the login/no-access screen), not merely reset the mock role. A `401` from the deny-set (an admin revoked the
+   subject mid-session) uses the **same** redirect path. Until the real OIDC session lands, the mock keeps a
+   role-reset shim behind a `@backend` marker; the net-new FE pieces are a fetch **401 interceptor** + the
+   redirect (none exists today).

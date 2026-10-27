@@ -3,7 +3,7 @@
   "diagram_type": "architecture",
   "meta": {
     "title": "Backend Deployment & Data Plane",
-    "subtitle": "Deployable units, the state they own, and the two isolation boundaries — designed services/ tree (not yet built)",
+    "subtitle": "Deployable units, the state they own, how each tier scales, and the two isolation boundaries — designed services/ tree (not yet built)",
     "output": "docs/diagrams/backend-design/backend-deployment-plane.html",
     "quality_profile": "showcase"
   },
@@ -11,13 +11,13 @@
     { "id": "console", "type": "frontend", "label": "Console / Builder", "sublabel": "playground · CRUD", "pos": [16, 40], "size": [150, 48] },
     { "id": "extcaller", "type": "external", "label": "External caller", "sublabel": "caller token → /v1", "pos": [16, 100], "size": [150, 48] },
     { "id": "channel", "type": "external", "label": "Channel", "sublabel": "Slack · Teams · GChat", "pos": [16, 160], "size": [150, 48] },
-    { "id": "web", "type": "frontend", "label": "web", "sublabel": "Next.js standalone", "pos": [16, 248], "size": [150, 48] },
+    { "id": "web", "type": "frontend", "label": "web", "sublabel": "Next.js standalone · ×2", "pos": [16, 248], "size": [150, 48] },
 
     { "id": "proxy", "type": "cloud", "label": "Reverse proxy", "sublabel": "TLS · same-origin · SSE", "pos": [186, 150], "size": [140, 60] },
 
     { "id": "providers", "type": "external", "label": "LLM providers", "sublabel": "cost from our profiles, not LiteLLM", "pos": [380, 36], "size": [180, 50] },
 
-    { "id": "api", "type": "backend", "label": "api (FastAPI)", "sublabel": "builder + published invoke", "tag": "auth · tenancy · RLS · SSE", "pos": [380, 150], "size": [175, 92] },
+    { "id": "api", "type": "backend", "label": "api (FastAPI)", "sublabel": "builder + invoke · HPA 2→20", "tag": "auth · tenancy · RLS · SSE", "pos": [380, 150], "size": [175, 92] },
 
     { "id": "worker_i", "type": "backend", "label": "worker · interactive", "sublabel": "fast jobs · 1–2 replicas", "pos": [620, 142], "size": [165, 56] },
     { "id": "worker_b", "type": "backend", "label": "worker · batch", "sublabel": "bursty · KEDA 0→N", "pos": [620, 238], "size": [165, 56] },
@@ -25,15 +25,16 @@
     { "id": "redis", "type": "messagebus", "label": "Redis", "sublabel": "queue · idemp · breaker", "pos": [380, 360], "size": [140, 52] },
     { "id": "postgres", "type": "database", "label": "Postgres + pgvector", "sublabel": "money · tenancy · vectors", "tag": "RLS", "pos": [548, 360], "size": [158, 52] },
     { "id": "vault", "type": "security", "label": "Vault", "sublabel": "platform + per-ws DEK", "pos": [734, 360], "size": [145, 52] },
-    { "id": "langfuse", "type": "database", "label": "Langfuse", "sublabel": "traces + cost", "pos": [907, 360], "size": [140, 52] },
+    { "id": "langfuse", "type": "database", "label": "Langfuse v3", "sublabel": "traces + cost", "pos": [907, 360], "size": [140, 52] },
     { "id": "minio", "type": "database", "label": "MinIO", "sublabel": "uploads · payloads", "pos": [1075, 360], "size": [140, 52] },
+    { "id": "clickhouse", "type": "database", "label": "ClickHouse", "sublabel": "v3 backend · P2 analytics", "pos": [907, 452], "size": [140, 52] },
 
-    { "id": "sandbox", "type": "security", "label": "sandbox (P2)", "sublabel": "gVisor · per-call", "pos": [1262, 142], "size": [160, 58] },
+    { "id": "sandbox", "type": "security", "label": "sandbox (P2)", "sublabel": "gVisor · per-call (KEDA)", "pos": [1262, 142], "size": [160, 58] },
     { "id": "egress", "type": "security", "label": "Egress proxy", "sublabel": "Squid · deny-default", "pos": [1262, 250], "size": [160, 58] },
     { "id": "tool_apis", "type": "external", "label": "Tool / MCP servers", "sublabel": "allow-listed only", "pos": [1262, 358], "size": [160, 58] }
   ],
   "boundaries": [
-    { "kind": "security-group", "label": "private app network · RLS backstop", "wraps": ["api", "worker_i", "worker_b", "redis", "postgres", "vault", "langfuse", "minio"], "pad": 16 },
+    { "kind": "security-group", "label": "private app network · RLS backstop", "wraps": ["api", "worker_i", "worker_b", "redis", "postgres", "vault", "langfuse", "minio", "clickhouse"], "pad": 16 },
     { "kind": "security-group", "label": "per-call isolation (P2) · gVisor + egress deny", "wraps": ["sandbox", "egress"], "pad": 14 }
   ],
   "connections": [
@@ -56,6 +57,7 @@
     { "id": "c-wi-pg", "from": "worker_i", "to": "postgres", "label": "chunks", "variant": "dashed" },
     { "id": "c-wb-pg", "from": "worker_b", "to": "postgres", "label": "eval_results", "variant": "dashed" },
     { "id": "c-obs", "from": "worker_b", "to": "langfuse", "variant": "dashed" },
+    { "id": "c-lf-ch", "from": "langfuse", "to": "clickhouse", "label": "v3 columnar", "variant": "dashed", "fromSide": "bottom", "toSide": "top" },
     { "id": "c-minio", "from": "worker_b", "to": "minio", "label": "payloads", "variant": "dashed" },
 
     { "id": "c-disp", "from": "worker_b", "to": "sandbox", "label": "dispatch (P2)", "variant": "dashed" },
@@ -64,8 +66,9 @@
   ],
   "cards": [
     { "dot": "cyan", "title": "Deployable units", "items": ["api (FastAPI) serves BOTH builder /api/v1 (session) and published /v1 invoke (caller token) — split into two Deployments later only for blast-radius", "worker splits into interactive + batch (KEDA 0→N) by latency/scaling, NOT by job — both pools run eval + ingestion; the split just keeps a 120-case eval from starving a user's upload", "web + api sit behind one same-origin reverse proxy (kills CORS; the hard part is SSE buffering OFF)"] },
-    { "dot": "amber", "title": "Who owns state", "items": ["Postgres+pgvector is the single source of truth for money, tenancy AND vectors — RLS is the layer-2 backstop; api writes runs/cost, workers write chunks + eval_results, all under the workspace guard", "Redis = queue + idempotency store + circuit-breaker + rate-limit window; Vault decrypts creds just-in-time (memory-only) — provider keys use a platform-custodied pool (platform-scope DEK), tool/connector/channel creds use a per-workspace DEK", "Both api AND worker call providers through the same runtime (api for invoke, worker for eval runs + ingestion embeddings); Langfuse = traces/cost; MinIO = uploads + large payloads"] },
+    { "dot": "amber", "title": "Who owns state", "items": ["Postgres+pgvector is the single source of truth for money, tenancy AND vectors — RLS is the layer-2 backstop; api writes runs/cost, workers write chunks + eval_results, all under the workspace guard", "Redis = queue + idempotency store + circuit-breaker + rate-limit window; Vault decrypts creds just-in-time (memory-only) — provider keys use a platform-custodied pool (platform-scope DEK), tool/connector/channel creds use a per-workspace DEK", "Both api AND worker call providers through the same runtime (api for invoke, worker for eval runs + ingestion embeddings); Langfuse v3 = traces/cost, columnar on its own ClickHouse (traces unsampled) + a P2 derived 'analytics' DB (eval/drift + cost rollups, non-authoritative, no RLS); MinIO = uploads + large payloads"] },
     { "dot": "rose", "title": "Isolation boundaries", "items": ["Private app network: nothing reaches api/worker/stores except through the proxy; PgBouncer MUST be transaction-pool mode or SET LOCAL leaks tenancy across callers", "Sandbox (P2): per-call gVisor, reached only via api/worker dispatch, whose ONLY path out is the deny-by-default egress proxy — the anti-SSRF/exfil control", "Provider calls go direct (NOT via the egress proxy); routing them through provider-egress is an unbuilt precondition for real key-custody enforcement (09 §9.1)"] },
-    { "dot": "slate", "title": "Source", "items": ["docs/backend/11-deployment.md §1/§4/§7/§9 (topology: API+WRK→providers, pools, SSE) · 09-security-tenancy.md §9.1 (DEK split, egress) · 12-channels.md (channel = 4th caller, worker-run)", "Companion: runtime-invoke-pipeline.html — what runs inside api + worker"] }
+    { "dot": "emerald", "title": "How each tier scales", "items": ["Stateless app tier scales OUT (no process holds tenant state): api on request concurrency (HPA 2→20), worker·batch + sandbox on Redis queue depth (KEDA 0→N), web on request load (×2); worker·interactive stays 1–2 for fast jobs", "Stateful core scales UP / HA: Postgres vertical + read replica (dashboards read the replica), Vault HA raft ×3, Redis vertical+HA, MinIO distributed ×4, ClickHouse vertical/external — Postgres is the one stateful source of truth", "Two independent bounds: MAX_TOOL_CALLS caps COST per run, the per-run 30s deadline caps LATENCY (p99 ≤ 30s by construction); PgBouncer MUST be transaction-pool mode so RLS SET LOCAL never leaks across pooled connections"] },
+    { "dot": "slate", "title": "Source", "items": ["docs/backend/11-deployment.md §1/§4/§7/§9 (topology + scaling: API+WRK→providers, pools, HPA/KEDA, SSE) · 09-security-tenancy.md §9.1 (DEK split, egress) · 12-channels.md (channel = 4th caller, worker-run)", "Companion: runtime-invoke-pipeline.html — what runs inside api + worker"] }
   ]
 }

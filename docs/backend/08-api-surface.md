@@ -180,9 +180,18 @@ there is deliberately **no test-invoke, no risk-tier, and no approval route** he
 |---|---|---|---|
 | `GET /api/v1/org/agents` | P | — | *(net FE)* whole-estate rows {agent, workspace, owner, status, eval verdict, drift, spend_30d, policy tier, compliance_flags}; metadata-only for `private` |
 | `GET /api/v1/org/spend` | P | — | *(net FE)* spend rollup by workspace / agent / model |
-| `GET /api/v1/org/compliance` | P | — | *(net FE)* non-compliant list (unregistered / un-evaluated / over-budget / no-owner) — consumes `agents.registered_at`/`owner_subject` (14) |
+| `GET /api/v1/org/compliance` | P | — | *(net FE)* non-compliant list (unregistered / un-evaluated / over-budget / no-owner / **pinned to a stale or `sunset_at` model profile** — the `outdated` view (FE `Agent.profileOutdated`) over the *existing* `model_deprecation_scan` / `sunset_at` signal, 02 §4 · 10 §6 · 16 §3; **no new detector**, a distinct informational flag, **not** `needsReEval`) — consumes `agents.registered_at`/`owner_subject` (14) |
 
 All three route through the elevated `SECURITY DEFINER` path and write `org.report.read` (09 §7,§12).
+
+### Admin security actions (elevated — platform-admin, 15 · 09 §2.1)
+| Method · Path | Auth | Async | Backs |
+|---|---|---|---|
+| `POST /api/v1/org/revoke-user` | P | — | *(net FE)* admin **force-logout**: writes `{subject}` and/or `{token_id}` to the transient Redis deny-set → active console sessions **+** caller tokens fail closed on their next request (09 §2.1, §6); audited as `security.revoke_user` (append-only `audit_logs`) |
+
+Unlike the read reports above, `revoke-user` is a **mutation** — it does **not** use the `SECURITY DEFINER`
+org-read path; it writes the deny-set (Redis) + an audit row only. It is the admin-triggered half of the
+"immediate revocation" model (`09 §2.1`); there is no SCIM/`/scim/v2` provisioning surface and no roster.
 
 ### Tools & MCP (P2 — routes reserved)
 | Method · Path | Auth | Async | Backs |

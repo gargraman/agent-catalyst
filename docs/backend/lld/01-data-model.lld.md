@@ -757,6 +757,7 @@ model exactly. ✅ No change. (Caller gating nuance — an `executer` is gated o
 |---|---|
 | `Agent.tools: string[]` mixes `"http-enrich-ip"` and `"mcp:<serverId>/<tool>"` (`tools.ts MCP_REF_PREFIX`) | `tool_bindings` rows (`kind` + `tool_id`\|`mcp_tool_id`); the API resolves the ref ↔ binding. `ToolBindingSnap.name` carries the ref. |
 | `Agent.needsReEval?: boolean` | **inverse of** `agent_versions.publishable` (`01 §4.2`): a trigger edit sets `needsReEval=true`/`publishable=false`; a fresh PASS clears it. |
+| `Agent.profileOutdated?: boolean` | **distinct from `needsReEval`** — *informational, does NOT gate publish*. The admin **`outdated` view** (`/api/v1/org/compliance`, 08) derives it from the existing `model_deprecation_scan` detector (`02 §4` `sunset_at`/`availability`): the agent's pinned `profile_snapshot.model` is being retired, so re-point before removal. **No new detector**, but a **separate surfaced flag** — routing this through `needsReEval` would wrongly make every agent on a sunsetting model unpublishable even with an unchanged config. |
 | `Agent.endpoint?` (URL slug) ≠ `Agent.id` | `published_endpoints.slug` vs `agents.slug`; endpoint assigned on publish (`endpoint ?? id`). |
 | `ApiToken.agent`, `IngestionJob.kb` link **by display name** | backend keys by id; the name is denormalized for display + the FE cascade-delete. API must resolve name→id. |
 | `RepoTool` identity = **`name`** (no id) | `tools.name` unique per workspace; `tools.id` exists but the FE addresses tools by name. |

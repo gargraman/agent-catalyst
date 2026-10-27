@@ -1,0 +1,23 @@
+[project]
+name = "agent-catalyst-services"
+version = "0.0.0"
+description = "Agent Catalyst backend services (api · runtime · evals · ingestion)"
+requires-python = ">=3.12"
+# Declared for documentation; M0's infra-free unit tests need only pydantic (installed).
+# DB/Redis/FastAPI deps are exercised in the integration batch once the compose stack is up.
+dependencies = [
+    "pydantic>=2.0",
+]
+
+[project.optional-dependencies]
+api = ["fastapi", "uvicorn", "sqlalchemy>=2.0", "asyncpg", "alembic", "redis"]
+test = ["pytest>=8", "pytest-asyncio"]
+
+[tool.pytest.ini_options]
+# Make the services/ root importable (api.*, runtime.*, evals.*) without an install step.
+pythonpath = ["."]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = [
+    "integration: requires the local compose stack (Postgres/Redis/Vault/MinIO) — skipped in the unit run",
+]

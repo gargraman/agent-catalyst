@@ -373,5 +373,11 @@ A drift detector you don't trust is worthless. So the judge itself is evaluated:
   separately from generation (04) — retrieval is a hidden quality lever and deserves its own axis.
 - **Multi-judge ensembles / judge disagreement flags** for high-stakes agents (security triage).
 - **Auto-suite-expansion suggestions** from clustered production failures.
+- **Eval/drift rollups in ClickHouse (at scale).** When Postgres eval dashboards strain, the eval/drift
+  time-series (pass-ratio history, verdict/quality-dimension trends) can be served from the derived
+  `analytics` ClickHouse DB's AggregatingMergeTree materialized views (`lld/10 §8`, `10 §2`). Those MVs
+  **derive from `eval_runs`/`eval_results`** — **Postgres stays authoritative** for every verdict and the
+  publish gate; ClickHouse is only a read-optimized, eventually-consistent rollup for dashboards (no RLS,
+  `workspace_id`-filtered at query time).
 
 → Next: `06-guardrails.md`.

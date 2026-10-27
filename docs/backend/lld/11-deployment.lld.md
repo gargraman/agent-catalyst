@@ -91,8 +91,16 @@ no secrets**. `11 §5` sketches the boot; here is the split and the login.
 | Comes from **env** (`Settings`, `00 §6`) | Comes from **Vault** (`09 §9`) |
 |---|---|
 | `AC_DATABASE_URL`, `AC_REDIS_URL`, `AC_VAULT_ADDR`, `AC_VAULT_ROLE`, `AC_LANGFUSE_HOST`, `AC_MINIO_ENDPOINT` | DB password / Redis auth (if not in the DSN), the session-signing secret |
+| `AC_CLICKHOUSE_URL` *(P2 — the derived `analytics` DB; absent until Phase 2, `lld/10 §8`)* | ClickHouse password for the `analytics` rollup role (if not in the DSN) |
 | `AC_OIDC_ISSUER`, `AC_OIDC_CLIENT_ID` | **Provider / tool / connector / channel API keys** — never at boot; decrypted **per call, in memory** (`09 §9`, `11 §5`) |
 | tunable defaults (budget, judge model/version, cache toggles — `00 §6`) | the **Transit DEK keys** (`platform-pool`, `ws-<id>`, `user-<hash>` — `09 §9.1` / `09-security.lld §3`) |
+
+> **Langfuse v3 is wired entirely through env, reusing our existing stateful services** (`11 §1/§3`). v3's own
+> `CLICKHOUSE_URL`, `REDIS_CONNECTION_STRING`, and S3 (`LANGFUSE_S3_*`) point at the **new `clickhouse`
+> service + the Redis and MinIO we already run** — no Vault secrets at boot (Langfuse owns its own creds).
+> Langfuse keeps a *separate* ClickHouse DB (`langfuse`) from our P2 `analytics` DB; both live on the same
+> cluster, reachable by us via `AC_CLICKHOUSE_URL`. Pointing `AC_CLICKHOUSE_URL` / Langfuse's `CLICKHOUSE_URL`
+> at a **dedicated/external** ClickHouse is the scale path — **config, not a rewrite** (`11 §9`).
 
 ```python
 # services/api/vault.py — AppRole login at startup (11 §5 step S2; 09 §9 "AppRole-authed at boot")
@@ -177,6 +185,24 @@ fallback     = snap.get("fallback", {})                # pre-A1 snapshots: no fa
 
 The lesson for deployment: **JSONB schema growth is a code concern (default on read); only typed columns and
 enums are Alembic concerns.** A backfill of old snapshots is explicitly *not* done — they are immutable.
+
+### 4.3 (Phase 2) ClickHouse `analytics` DDL is NOT an Alembic concern
+
+**Alembic manages Postgres only.** The P2 `analytics` ClickHouse tables + AggregatingMergeTree materialized
+views (`lld/10 §8`) are a **separate, additive DDL path** — ClickHouse has its own SQL dialect and engine
+clauses (`ReplacingMergeTree`, `AggregatingMergeTree`, `TTL`) that Alembic/SQLAlchemy don't model. Keep them
+in a dedicated `migrations/clickhouse/` set of idempotent `CREATE TABLE/VIEW IF NOT EXISTS` scripts, applied
+by their own run-once step (a sibling of the `migrate` container, `11 §3`), **gated behind the P2 feature flag
+/ presence of `AC_CLICKHOUSE_URL`** so a P1 deployment never runs them.
+
+- **No cross-engine transaction.** A Postgres Alembic migration and a ClickHouse DDL apply are two independent
+  steps; never assume atomicity across them. The `analytics` DB being **derived + eventually-consistent**
+  (`lld/10 §8`) is what makes this safe — a ClickHouse schema lagging a Postgres change degrades a dashboard,
+  never billing or tenancy (those read Postgres).
+- **MV + source ordering.** An `AggregatingMergeTree` MV must be created **after** its source `MergeTree`
+  table, and a backfill of pre-existing rows is a separate `INSERT ... SELECT` (MVs only capture inserts from
+  creation onward) — the ClickHouse analog of expand/contract. Because the rollups are re-derivable from
+  Postgres (`11 §10` DR note), a rebuild is "truncate + replay the rollup job," not a restore.
 
 ---
 

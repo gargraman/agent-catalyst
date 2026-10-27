@@ -195,6 +195,8 @@ function AgentCard(props: RowActions) {
       <div className="flex flex-wrap items-center gap-1.5">
         <Badge tone="neutral">{a.provider}</Badge>
         <Badge tone="neutral">{a.activeVersion}</Badge>
+        {/* @backend profileOutdated: GET /api/v1/org/compliance "outdated" view (model_deprecation_scan). */}
+        {!archived && a.profileOutdated && <Badge tone="warning">Model sunsetting</Badge>}
         {a.tags.slice(0, 2).map((t) => <Badge key={t} tone="neutral">{t}</Badge>)}
         {extraTags > 0 && <span className="text-xs text-muted">+{extraTags}</span>}
       </div>

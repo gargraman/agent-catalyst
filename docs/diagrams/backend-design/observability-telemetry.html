@@ -5152,7 +5152,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
         <div class="pulse-dot"></div>
         <h1>Observability — the per-call log &amp; telemetry</h1>
       </div>
-      <p class="subtitle">One span() helper in the shared runtime fans every call to three stores; two audiences read them (doc 10)</p>
+      <p class="subtitle">One span() helper in the shared runtime fans every call across four stores (Langfuse v3 is columnar on ClickHouse); two audiences read them (doc 10)</p>
     </div>
 
 
@@ -5162,7 +5162,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
          data-preset-badge-editorial-plate="ARCHIFY / PLATE 04">
       <svg viewBox="0 0 638 740" data-reader-fit="intrinsic-height" role="img" lang="en" aria-labelledby="archify-diagram-title archify-diagram-description" data-animation="trace" data-preset="classic" data-quality-profile="showcase" data-motion-choreography="stream">
         <title id="archify-diagram-title">Observability — the per-call log &amp; telemetry</title>
-        <desc id="archify-diagram-description">One span() helper in the shared runtime fans every call to three stores; two audiences read them (doc 10)</desc>
+        <desc id="archify-diagram-description">One span() helper in the shared runtime fans every call across four stores (Langfuse v3 is columnar on ClickHouse); two audiences read them (doc 10)</desc>
         <!-- Definitions -->
         <defs>
           <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
@@ -5197,18 +5197,26 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
 
         <!-- Flow paths -->
         <path data-edge-from="span" data-edge-to="pg" data-edge-label="runs+spans+cost" data-edge-key="0" data-edge-id="f-runs" data-composition-points="156,372;207.5,372;207.5,157;259,157" d="M 156 372 L 207.5 372 L 207.5 157 L 259 157" class="a-emphasis" data-animate="edge" style="--step:0" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
-        <path data-edge-from="span" data-edge-to="langfuse" data-edge-label="trace" data-edge-key="1" data-edge-id="f-trace" data-composition-points="156,385;259,385" d="M 156 385 L 259 385" class="a-dashed" data-animate="edge" style="--step:1" stroke-width="1.4" marker-end="url(#arrowhead-dashed)"/>
+        <g data-graph-role="automatic-crossover" style="--step:1">
+          <path data-graph-role="automatic-crossover-underlay" d="M 156 385 L 259 385" fill="none" stroke="var(--mask)" stroke-width="5.4" stroke-linecap="round" stroke-linejoin="round" pointer-events="none"/>
+        <path data-edge-from="span" data-edge-to="langfuse" data-edge-label="trace" data-edge-key="1" data-edge-id="f-trace" data-composition-points="156,385;259,385" data-composition-crossover="halo" d="M 156 385 L 259 385" class="a-dashed" data-animate="edge" style="--step:1" stroke-width="1.4" marker-end="url(#arrowhead-dashed)"/>
+        </g>
         <path data-edge-from="span" data-edge-to="prom" data-edge-label="metrics" data-edge-key="2" data-edge-id="f-metrics" data-composition-points="156,398;207.5,398;207.5,613;259,613" d="M 156 398 L 207.5 398 L 207.5 613 L 259 613" class="a-default" data-animate="edge" style="--step:2" stroke-width="1.4" marker-end="url(#arrowhead)"/>
         <path data-edge-from="pg" data-edge-to="metrics" data-edge-label="aggregate" data-edge-key="3" data-edge-id="f-agg" data-composition-points="371,148;474,148" d="M 371 148 L 474 148" class="a-default" data-animate="edge" style="--step:3" stroke-width="1.4" marker-end="url(#arrowhead)"/>
         <g data-graph-role="automatic-crossover" style="--step:4">
-          <path data-graph-role="automatic-crossover-underlay" d="M 371 385 L 414.5 385 L 414.5 341 L 450 341 L 450 166 L 474 166" fill="none" stroke="var(--mask)" stroke-width="5.4" stroke-linecap="round" stroke-linejoin="round" pointer-events="none"/>
-        <path data-edge-from="langfuse" data-edge-to="metrics" data-edge-label="run traces" data-edge-key="4" data-edge-id="f-traces" data-composition-points="371,385;414.5,385;414.5,341;450,341;450,166;474,166" data-composition-crossover="halo" d="M 371 385 L 414.5 385 L 414.5 341 L 450 341 L 450 166 L 474 166" class="a-dashed" data-animate="edge" style="--step:4" stroke-width="1.4" marker-end="url(#arrowhead-dashed)"/>
+          <path data-graph-role="automatic-crossover-underlay" d="M 371 385 L 414.5 385 L 414.5 320 L 450 320 L 450 166 L 474 166" fill="none" stroke="var(--mask)" stroke-width="5.4" stroke-linecap="round" stroke-linejoin="round" pointer-events="none"/>
+        <path data-edge-from="langfuse" data-edge-to="metrics" data-edge-label="run traces" data-edge-key="4" data-edge-id="f-traces" data-composition-points="371,385;414.5,385;414.5,320;450,320;450,166;474,166" data-composition-crossover="halo" d="M 371 385 L 414.5 385 L 414.5 320 L 450 320 L 450 166 L 474 166" class="a-dashed" data-animate="edge" style="--step:4" stroke-width="1.4" marker-end="url(#arrowhead-dashed)"/>
         </g>
         <g data-graph-role="automatic-crossover" style="--step:5">
           <path data-graph-role="automatic-crossover-underlay" d="M 371 166 L 422.5 166 L 422.5 385 L 474 385" fill="none" stroke="var(--mask)" stroke-width="5.4" stroke-linecap="round" stroke-linejoin="round" pointer-events="none"/>
         <path data-edge-from="pg" data-edge-to="notif" data-edge-label="drift / budget" data-edge-key="5" data-edge-id="f-notif" data-composition-points="371,166;422.5,166;422.5,385;474,385" data-composition-crossover="halo" d="M 371 166 L 422.5 166 L 422.5 385 L 474 385" class="a-dashed" data-animate="edge" style="--step:5" stroke-width="1.4" marker-end="url(#arrowhead-dashed)"/>
         </g>
         <path data-edge-from="prom" data-edge-to="alerts" data-edge-label="SLO rules" data-edge-key="6" data-edge-id="f-slo" data-composition-points="371,613;474,613" d="M 371 613 L 474 613" class="a-default" data-animate="edge" style="--step:6" stroke-width="1.4" marker-end="url(#arrowhead)"/>
+        <path data-edge-from="langfuse" data-edge-to="clickhouse" data-edge-label="v3 columnar" data-edge-key="7" data-edge-id="f-lf-ch" data-composition-points="306,414;306,470" d="M 306 414 L 306 470" class="a-dashed" data-animate="edge" style="--step:7" stroke-width="1.4" marker-end="url(#arrowhead-dashed)"/>
+        <g data-graph-role="automatic-crossover" style="--step:8">
+          <path data-graph-role="automatic-crossover-underlay" d="M 315 186 L 315 312 L 244 312 L 244 446 L 324 446 L 324 470" fill="none" stroke="var(--mask)" stroke-width="5.4" stroke-linecap="round" stroke-linejoin="round" pointer-events="none"/>
+        <path data-edge-from="pg" data-edge-to="clickhouse" data-edge-label="P2 rollups" data-edge-key="8" data-edge-id="f-pg-ch" data-composition-points="315,186;315,312;244,312;244,446;324,446;324,470" data-composition-crossover="halo" d="M 315 186 L 315 312 L 244 312 L 244 446 L 324 446 L 324 470" class="a-dashed" data-animate="edge" style="--step:8" stroke-width="1.4" marker-end="url(#arrowhead-dashed)"/>
+        </g>
 
         <!-- Nodes -->
         <g id="node-span" data-node-id="span" data-node-label="span()" tabindex="0" role="button" aria-label="Focus span(), obs.py · one helper, 01 / Runtime (shared)" aria-pressed="false" data-node-kind="backend" data-node-sublabel="obs.py · one helper" data-node-tag="6 span kinds" data-node-context="01 / Runtime (shared)">
@@ -5236,15 +5244,15 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
         <text data-detail="fine" x="315" y="175" class="t-database" font-size="7" text-anchor="middle">money + tenancy</text>
         </g>
 
-        <g id="node-langfuse" data-node-id="langfuse" data-node-label="Langfuse" tabindex="0" role="button" aria-label="Focus Langfuse, trace · redacted, 02 / Stores" aria-pressed="false" data-node-kind="database" data-node-sublabel="trace · redacted" data-node-context="02 / Stores">
-          <title>Langfuse · trace · redacted · 02 / Stores</title>
+        <g id="node-langfuse" data-node-id="langfuse" data-node-label="Langfuse v3" tabindex="0" role="button" aria-label="Focus Langfuse v3, trace · redacted, 02 / Stores" aria-pressed="false" data-node-kind="database" data-node-sublabel="trace · redacted" data-node-context="02 / Stores">
+          <title>Langfuse v3 · trace · redacted · 02 / Stores</title>
           <rect x="259" y="356" width="112" height="58" rx="6" class="c-mask"/>
           <rect x="259" y="356" width="112" height="58" rx="6" class="c-database" data-animate="node" style="--step:2" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="database" class="semantic-sigil s-database" transform="translate(265 362) scale(0.6875)">
             <ellipse cx="8" cy="4" rx="5" ry="2"/>
             <path d="M3 4v8c0 1.1 2.2 2 5 2s5-.9 5-2V4M3 8c0 1.1 2.2 2 5 2s5-.9 5-2"/>
           </g>
-          <text data-node-label="" data-detail-anchor="" x="315" y="377" class="t-primary" font-size="10" font-weight="600" text-anchor="middle">Langfuse</text>
+          <text data-node-label="" data-detail-anchor="" x="315" y="377" class="t-primary" font-size="10" font-weight="600" text-anchor="middle">Langfuse v3</text>
           <text data-detail="context" x="315" y="393" class="t-muted" font-size="7" text-anchor="middle">trace · redacted</text>
         </g>
 
@@ -5260,6 +5268,19 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           </g>
           <text data-node-label="" data-detail-anchor="" x="315" y="605" class="t-primary" font-size="10" font-weight="600" text-anchor="middle">Prometheus</text>
           <text data-detail="context" x="315" y="621" class="t-muted" font-size="7" text-anchor="middle">counters · histos</text>
+        </g>
+
+        <g id="node-clickhouse" data-node-id="clickhouse" data-node-label="ClickHouse" tabindex="0" role="button" aria-label="Focus ClickHouse, v3 backend · P2 analytics, 02 / Stores" aria-pressed="false" data-node-kind="database" data-node-sublabel="v3 backend · P2 analytics" data-node-tag="columnar · derived" data-node-context="02 / Stores">
+          <title>ClickHouse · v3 backend · P2 analytics · 02 / Stores · columnar · derived</title>
+          <rect x="258.5" y="470" width="113" height="58" rx="6" class="c-mask"/>
+          <rect x="258.5" y="470" width="113" height="58" rx="6" class="c-database" data-animate="node" style="--step:8" stroke-width="1.5"/>
+          <g aria-hidden="true" data-semantic-sigil="database" class="semantic-sigil s-database" transform="translate(264.5 476) scale(0.6875)">
+            <ellipse cx="8" cy="4" rx="5" ry="2"/>
+            <path d="M3 4v8c0 1.1 2.2 2 5 2s5-.9 5-2V4M3 8c0 1.1 2.2 2 5 2s5-.9 5-2"/>
+          </g>
+          <text data-node-label="" data-detail-anchor="" x="315" y="491" class="t-primary" font-size="10" font-weight="600" text-anchor="middle">ClickHouse</text>
+          <text data-detail="context" x="315" y="507" class="t-muted" font-size="7" text-anchor="middle">v3 backend · P2 analytics</text>
+        <text data-detail="fine" x="315" y="517" class="t-database" font-size="7" text-anchor="middle">columnar · derived</text>
         </g>
 
         <g id="node-metrics" data-node-id="metrics" data-node-label="dashboards" tabindex="0" role="button" aria-label="Focus dashboards, /v1/metrics/*, 03 / Consume" aria-pressed="false" data-node-kind="backend" data-node-sublabel="/v1/metrics/*" data-node-context="03 / Consume">
@@ -5314,8 +5335,8 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           <text x="422.5" y="138" class="t-edge-default" font-size="8" text-anchor="middle">aggregate</text>
         </g>
         <g data-detail="context" data-edge-from="langfuse" data-edge-to="metrics" data-edge-label="run traces" data-edge-key="4" data-edge-id="f-traces">
-          <rect x="456" y="290.25" width="61" height="16" rx="4" class="c-mask"/>
-          <text x="486.5" y="301.25" class="t-edge-dashed" font-size="8" text-anchor="middle">run traces</text>
+          <rect x="347.5" y="329.25" width="61" height="16" rx="4" class="c-mask"/>
+          <text x="378" y="340.25" class="t-edge-dashed" font-size="8" text-anchor="middle">run traces</text>
         </g>
         <g data-detail="context" data-edge-from="pg" data-edge-to="notif" data-edge-label="drift / budget" data-edge-key="5" data-edge-id="f-notif">
           <rect x="335.9" y="268.5" width="80.6" height="16" rx="4" class="c-mask"/>
@@ -5324,6 +5345,14 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
         <g data-detail="context" data-edge-from="prom" data-edge-to="alerts" data-edge-label="SLO rules" data-edge-key="6" data-edge-id="f-slo">
           <rect x="394.45" y="592" width="56.1" height="16" rx="4" class="c-mask"/>
           <text x="422.5" y="603" class="t-edge-default" font-size="8" text-anchor="middle">SLO rules</text>
+        </g>
+        <g data-detail="context" data-edge-from="langfuse" data-edge-to="clickhouse" data-edge-label="v3 columnar" data-edge-key="7" data-edge-id="f-lf-ch">
+          <rect x="273.05" y="421" width="65.9" height="16" rx="4" class="c-mask"/>
+          <text x="306" y="432" class="t-edge-dashed" font-size="8" text-anchor="middle">v3 columnar</text>
+        </g>
+        <g data-detail="context" data-edge-from="pg" data-edge-to="clickhouse" data-edge-label="P2 rollups" data-edge-key="8" data-edge-id="f-pg-ch">
+          <rect x="249" y="291" width="61" height="16" rx="4" class="c-mask"/>
+          <text x="279.5" y="302" class="t-edge-dashed" font-size="8" text-anchor="middle">P2 rollups</text>
         </g>
 
         <!-- Legend -->
@@ -5538,12 +5567,13 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
       <div class="card">
         <div class="card-header">
           <div class="card-dot amber"></div>
-          <h3>Three stores, three jobs</h3>
+          <h3>Four stores, four jobs</h3>
         </div>
         <ul>
           <li>Postgres (runs/spans): source of truth for money + tenancy; partitioned by month; cost from our profiles (02/07)</li>
-          <li>Langfuse: full prompt/response I/O + nested traces, PII-redacted; the source of truth for &#39;what was said&#39;</li>
+          <li>Langfuse v3: full prompt/response I/O + nested traces, PII-redacted; columnar on its own ClickHouse so traces are retained 100% (no sampling); source of truth for &#39;what was said&#39;</li>
           <li>Prometheus: numeric time-series labeled workspace/agent/source/model for SLOs + autoscaling</li>
+          <li>ClickHouse: Langfuse v3&#39;s columnar backend + (P2) a derived &#39;analytics&#39; DB for eval/drift + cost rollups — non-authoritative, no RLS, workspace_id-filtered; Postgres stays the billed figure</li>
         </ul>
       </div>
 
@@ -5565,7 +5595,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           <h3>Source</h3>
         </div>
         <ul>
-          <li>docs/backend/10-observability-monitoring.md §per-call-log/§stores/§metrics/§SLOs/§cost · 07 (cost) · 16 (owner notifs)</li>
+          <li>docs/backend/10-observability-monitoring.md §per-call-log/§stores/§metrics/§SLOs/§cost · 11 §9 (ClickHouse + Langfuse v3) · 07 (cost) · 16 (owner notifs)</li>
           <li>services/runtime/obs.py · tables runs · spans · trace_id → Langfuse</li>
         </ul>
       </div>

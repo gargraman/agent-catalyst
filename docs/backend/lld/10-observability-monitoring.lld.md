@@ -1,7 +1,7 @@
 # 10 (LLD) — Observability & Monitoring
 
 > **Parent:** [`../10-observability-monitoring.md`](../10-observability-monitoring.md) (the one-rule per-call
-> log contract, the three-store split, the `span()` helper, `SpanRecord`, metrics/SLOs/alerts, the cost↔COGS
+> log contract, the four-store split, the `span()` helper, `SpanRecord`, metrics/SLOs/alerts, the cost↔COGS
 > bridge, drift/quality feedback, async-job status, provider-resilience monitoring).
 > The parent fixes the *topology and the intent*, but leaves the load-bearing wiring to the implementer: it
 > shows `SpanRecord` and a `_emit_langfuse` that mints a `generation` for **every** span kind yet **never
@@ -19,11 +19,11 @@
 | `span()` writes a `spans` row **per span** (`§1`), but `03 §2 _close_run` + `00-conv §4.2` persist **Run + Spans together** at close — which wins? | §1 — the four-sink split: **PG buffered + flushed with the run** (atomic, `03 §2`); Langfuse/Prometheus/JSONL **per-span, best-effort**. Amendment to `10 §1`. |
 | `_emit_langfuse` (`§3`) mints a `generation` for every kind and **never creates the trace** / sets `run_source` | §2 — `_open_trace`/`_close_trace`, the `kind → observation-type` map, the per-kind required-attrs table, `run_source` tagging, sub-agent trace linkage. Amendment to `10 §3`. |
 | spec-A2 log line is a **hard contract** (`§1`) but is **never emitted** — no shape, no sink, no retention | §3 — `ModelCallLog` (the exact JSONL schema), the field-by-field map to spec A2, where it's written + retained, and that it is a **projection, not an authority** |
-| three stores named "SoR for money / what-was-said / time-series" but the **runs-row ↔ log ↔ trace** relationship + the single cost number are prose | §4 — the source-of-truth matrix; one quantized cost (`02 §7` `quantize_usd`) copied into every sink; reconciliation by `run_id`/`trace_id` |
+| four stores (three SoR roles — money / what-was-said / time-series — + derived ClickHouse) but the **runs-row ↔ log ↔ trace** relationship + the single cost number are prose | §4 — the source-of-truth matrix; one quantized cost (`02 §7` `quantize_usd`) copied into every sink; reconciliation by `run_id`/`trace_id` |
 | "PII-redacted before write" (`§7`/`09`) with **no mechanism** | §5 — `redact_for_telemetry` **reusing the `06` tier-0 PII+secret scrub**; the never-logged list (Vault keys, tool-arg secrets) |
 | `_emit_metrics` (`§4`) is a `# Prometheus` comment; `ac_cost_usd_total` is a float Counter vs `numeric(12,6)`; label cardinality unbounded | §6 — the body, the float-approx-vs-PG-authoritative cost rule, the cardinality bound |
 | no error taxonomy for the **telemetry path itself** — a Langfuse outage must not 500 a run | §7 — `_safe_emit` (category B, `00-conv §1`), the PG-persist-failure handling, `ac_telemetry_emit_failures_total` |
-| retention tabled (`§2`); **sampling** absent, and it collides with "every call logged" | §8 — PG/JSONL **never sampled** (A2); Langfuse **head-sampled** with always-keep rules; retention per store |
+| retention tabled (`§2`); **sampling** absent, and it collides with "every call logged" | §8 — PG/JSONL **never sampled** (A2); **Langfuse v3 100% (no sampling — columnar)**; retention-per-store; the P2 `analytics` ClickHouse DB (ReplacingMergeTree + AggregatingMergeTree MVs + TTL, derived/no-RLS) |
 | tenancy of telemetry only implied (`workspace` labels); who may read Langfuse/Prometheus; org-plane read | §9 — RLS on `runs`/`spans`; Langfuse/Prometheus/Grafana **operator-only**; the `trace_id` deep-link gate; org plane via the `15 §2` `SECURITY DEFINER` read |
 
 Python 3.12, `from __future__ import annotations`, Pydantic v2 for the boundary schema. Snippets compile (§11).
@@ -209,7 +209,7 @@ def _emit_call_log(ctx: "RunContext", rec: "SpanRecord") -> None:
 
 ## 4. Source of truth & the single cost number
 
-The three stores are **not** three independent cost figures; they are one figure (`02 §7`) copied into four
+The four stores do **not** each compute cost independently; it is one figure (`02 §7`) copied into four
 places. The matrix:
 
 | Question | Authoritative store | Why |
@@ -347,34 +347,85 @@ def _safe_emit(fn, ctx: "RunContext", rec: "SpanRecord") -> None:
 
 ---
 
-## 8. Sampling & retention
+## 8. Retention (no sampling — Langfuse v3 columnar) + the Phase-2 `analytics` ClickHouse DB
 
-"Every model call is logged" (spec A2) and "sample traces to control cost" are both true — they apply to
-**different sinks**:
+**Trace sampling is gone.** The parent previously bounded Langfuse storage with a `TRACE_SAMPLE_RATE = 0.2`
+head-sample (we dropped ~80% of trace payloads on the high-volume happy path). With **Langfuse v3 on a
+ClickHouse columnar backend** (`10 §2`, `11 §1/§3`) that cost bound is no longer needed: traces are retained
+at **100%**. This *over-satisfies* spec-A2 — the per-call model-call record (PG `runs`/`spans` + JSONL) was
+never sampled anyway (it is the billable/audit SoR), and now the full prompt/response I/O is kept for every
+run too, not just the debug-worthy ones. **`should_sample_trace()` / `TRACE_SAMPLE_RATE` are deleted.**
 
 | Sink | Sampling | Retention |
 |---|---|---|
 | **PG `runs`/`spans`** + **JSONL model-call line** | **NEVER sampled** — 100% (spec A2 is absolute for the billable/audit record) | `runs`/`spans`: 90d hot, monthly partitions, drop older (`01 §4.7`, `11 §9`); JSONL: 14–30d (§3) |
-| **Langfuse trace payloads** | **head-sampled** (trace-level) to bound storage, with always-keep rules | per-workspace policy (`10 §2`); PITR-backed, non-critical (`11 §9`) |
+| **Langfuse v3 trace payloads** (ClickHouse-backed) | **NONE** — 100% retained; the columnar backend absorbs full trace volume | per-workspace retention policy enforced by Langfuse over its own ClickHouse `langfuse` DB (time-based TTL); PITR-backed, non-critical to serving (`11 §9`) |
 | **Prometheus** | n/a (aggregate counters/histograms) | 15–30d; long-term via remote-write if needed (`10 §2`) |
 
-```python
-TRACE_SAMPLE_RATE = 0.2       # default fraction of high-volume published traffic kept in Langfuse
+- **Retention story in place of the sample-rate cost bound:** storage is now bounded by **time-based
+  retention**, not by dropping payloads. Langfuse owns its `langfuse` ClickHouse DB and ages traces out per
+  the per-workspace policy (`10 §2`); operators tune the window if volume demands, but the default is
+  keep-everything-for-the-window rather than keep-a-fifth-forever. Cost, tokens, status, latency, and the
+  spec-A2 model-call line remain 100% in Postgres regardless — no billing, SLO, or drift-proxy metric was
+  ever (or is now) sampled away.
 
-def should_sample_trace(ctx: "RunContext", final_status: str, had_substitution: bool, feedback_rated: bool) -> bool:
-    """Head/tail decision for whether a run's FULL I/O is persisted in Langfuse (the PG row + JSONL are always
-    written, §8). Always keep the runs worth debugging; sample the rest."""
-    if ctx.run_source in ("eval", "tool_test"):   return True     # eval I/O is the feedback-loop seed (10 §7)
-    if final_status in ("error", "blocked"):      return True     # every failure/block is kept
-    if had_substitution or feedback_rated:        return True     # capability leaks (02) + rated runs (10 §7)
-    import random
-    return random.random() < TRACE_SAMPLE_RATE                    # sample the high-volume happy path
+### 8.1 (Phase 2) The `analytics` ClickHouse DB — derived eval/drift + cost rollups
+
+When Postgres rollups strain (`15 §193-197`'s "nightly materialized view" lever), we add our **own
+`analytics` DB on the *same* ClickHouse cluster** Langfuse already brought — logically split from Langfuse's
+`langfuse` DB (Langfuse owns its schema, untouched; we own `analytics`). It holds eval/drift + cost/usage
+rollups **derived from** `runs`/`spans`/`eval_runs`/`eval_results` (Postgres stays authoritative). DDL sketch
+(not built in P1):
+
+```sql
+-- analytics DB (ClickHouse) — DERIVED, non-authoritative, NO RLS. Illustrative P2 shape.
+-- Raw ingest: ReplacingMergeTree gives idempotent re-ingest (dedup on the key), mirroring our
+-- per-ref_id eval idempotency and per-run_id run idempotency (10 §9, 05 §7).
+CREATE TABLE analytics.run_cost (
+  workspace_id   UUID,
+  run_id         UUID,            -- dedup key
+  agent_id       UUID,
+  model          LowCardinality(String),
+  day            Date,
+  cost_usd       Float64,
+  input_tokens   UInt64,
+  output_tokens  UInt64,
+  ingested_at    DateTime         -- ReplacingMergeTree version col: last write wins on re-ingest
+) ENGINE = ReplacingMergeTree(ingested_at)
+  ORDER BY (workspace_id, run_id)
+  TTL day + INTERVAL {DATA_RETENTION_DAYS} DAY;
+
+CREATE TABLE analytics.eval_result (
+  workspace_id UUID, eval_run_id UUID, ref_id String,   -- (eval_run_id, ref_id) dedup key
+  agent_id UUID, passed UInt8, score Float64, day Date, ingested_at DateTime
+) ENGINE = ReplacingMergeTree(ingested_at)
+  ORDER BY (workspace_id, eval_run_id, ref_id)
+  TTL day + INTERVAL {DATA_RETENTION_DAYS} DAY;
+
+-- Rollup: AggregatingMergeTree materialized views (Observal's session_stats_agg pattern) pre-aggregate
+-- so a dashboard read is a cheap merge, not a full scan.
+CREATE MATERIALIZED VIEW analytics.spend_by_ws_day_mv
+  ENGINE = AggregatingMergeTree() ORDER BY (workspace_id, day) AS
+  SELECT workspace_id, day, sumState(cost_usd) AS cost, countState() AS runs
+  FROM analytics.run_cost GROUP BY workspace_id, day;
 ```
 
-- **The invariant:** sampling only ever drops *Langfuse I/O payloads* for ordinary, successful, high-volume
-  runs. The **cost, tokens, status, latency, and the spec-A2 model-call line are retained for 100% of runs** —
-  so no billing, SLO, or drift-proxy metric is ever sampled away. A sampled-out run still has its `runs` row and
-  its JSONL line; it just lacks the full prompt/response in Langfuse.
+- **Idempotent ingest.** `ReplacingMergeTree` keyed on `run_id` (and `(eval_run_id, ref_id)`) dedups on
+  re-ingest — the CH analog of our existing per-`ref_id` job idempotency (`10 §9`). A retried rollup job that
+  re-emits a row is a no-op after merge.
+- **Rollups are AggregatingMergeTree MVs.** They are exactly where `15 §193-197`'s materialized-view lever
+  lands; `/v1/metrics/*` and `/org/spend` read them at scale instead of live Postgres aggregates (`10 §6`).
+- **TTL, not sampling,** bounds `analytics` storage: `DATA_RETENTION_DAYS`-style `TTL` on the raw tables (the
+  MVs retain their smaller rollups longer as configured).
+- **Any CH analytics sink inherits the best-effort `_safe_emit` pattern (§7).** A rollup-emit failure to
+  ClickHouse is **category B** — swallowed, counted (`ac_telemetry_emit_failures_total{sink=...}`), never
+  propagated into `invoke()` or a run `stop_reason`. ClickHouse is derived; its unavailability degrades
+  dashboards, never serving or billing (which read Postgres).
+- **Derived / non-authoritative, NO RLS.** Unlike `runs`/`spans` (§9, RLS-backed), the `analytics` DB has no
+  row-level security. Tenant isolation is **query-time `workspace_id` filtering**, enforced by a
+  `workspace_id`-injecting rollup API, or the DB stays operator-plane only. Billing, quotas, and the publish
+  gate **never** read it — they read Postgres `runs.cost_usd`/`eval_runs` (`10 §6`). Scale-out to a
+  dedicated/external ClickHouse is a `CLICKHOUSE_URL` config change, not a rewrite (`11 LLD`).
 
 ---
 
@@ -393,6 +444,10 @@ parent leaves implicit:
   (`15 §1` admin), never wired to open another tenant's trace.
 - **Prometheus + Grafana (Ops/Cost boards, `10 §10`) are operator-only** — they carry a `workspace` label but
   are not a tenant-facing surface; tenants get the in-app, RLS-scoped dashboards instead.
+- **(P2) The `analytics` ClickHouse DB has no RLS** (§8.1). It is reached either operator-plane only, or by a
+  **`workspace_id`-injecting rollup API** that filters at query time — ClickHouse carries no tenant GUC, so the
+  `workspace_id` predicate is the isolation boundary and must be set by the API, never trusted from the caller.
+  Like Langfuse, it is derived and never the authoritative tenant/money record (that stays RLS-backed Postgres).
 - **Org-plane reporting (`15`) is the one sanctioned cross-tenant read.** It reads `runs.cost_usd` (and
   `eval_runs`, `agent_versions`) via the single `SECURITY DEFINER` function (`15 §2` `org_report_agents()`),
   never Langfuse or Prometheus, and is **metadata-only for private-tier agents** (`15 §2`). All other

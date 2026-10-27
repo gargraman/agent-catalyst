@@ -108,6 +108,11 @@ export type Agent = {
   //   edit — model/provider/params/prompt/guardrails/retrieval/tools/kb/skills — sets this true; a passing eval
   //   newer than that edit clears it. Gates publish alongside status==="eval_failing". [ref: backend/05 §5]
   needsReEval?: boolean;
+  // @backend derived from the existing model_deprecation_scan (no new detector): true when this agent's pinned
+  //   profile_snapshot.model is stale or past sunset_at — surfaced by GET /api/v1/org/compliance (the "outdated"
+  //   view). Distinct from needsReEval (config drift); here the model itself is being retired.
+  //   [ref: backend/02 §4, 10 §6, 16 §3; backend-integration-map]
+  profileOutdated?: boolean;
   // Mutable draft config (model params, prompt, memory, retrieval, guardrails, spend).
   // Mirrors the fields the backend freezes into an immutable version snapshot on publish
   // (agent_versions.model_config / system_prompt / memory_config / context_config /
@@ -292,6 +297,7 @@ export const AGENTS: Agent[] = [
     owner: "Sofia Rossi", createdAt: "2026-05-20T11:00:00Z", updatedAt: "2026-10-04T06:45:00Z",
     activeVersion: "v11", versions: 11, tags: ["support", "rag", "q&a"],
     calls30d: 98760, cost30d: 642.18, p95ms: 980, evalPass: 97.8, drift: "stable",
+    profileOutdated: true, // pinned model (claude-haiku-4-5) is being retired — needs re-eval before re-point
     callsSpark: [2100, 2250, 2400, 2380, 2600, 2700, 2900, 3100, 3050, 3300, 3400, 3520, 3600, 3810],
     knowledgeBases: ["product-docs", "release-notes"], tools: ["http-search-docs"],
     skills: ["citation-discipline"],

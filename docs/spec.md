@@ -136,7 +136,7 @@ accounting · non-LLM workflow automation.
 | Vector store | **pgvector** (in Postgres) | One store; no extra infra |
 | Ingestion | LangChain loaders + splitters (OSS) | Don't hand-build parsers |
 | Eval/drift | **Built in-house** + promptfoo/Langfuse datasets as scaffolding | Defensible core |
-| Observability | **Langfuse** (OSS, self-hosted) | Per-call logs, traces, cost, eval — free LangSmith alt |
+| Observability | **Langfuse v3** (OSS, self-hosted, pinned) + **ClickHouse** (columnar analytics) | Per-call logs, traces, cost, eval — free LangSmith alt. v3 is columnar (ships ClickHouse) so traces are unsampled; Postgres stays SoT for money+tenancy, ClickHouse is a derived, non-authoritative analytics store (10, 11) |
 | Guardrails | **Guardrails AI / NeMo Guardrails** (OSS) behind our stage API | Don't hand-build PII/toxicity |
 | DB / queue | Postgres + pgvector · Redis + RQ/Celery | Transactional + async eval/ingest jobs |
 | Secrets | **HashiCorp Vault (Transit)** | Portable KMS-equivalent |

@@ -322,6 +322,32 @@ export function NeedsReEvalBanner({ agent, onRunEval }: { agent: Agent; onRunEva
   );
 }
 
+/** Shown when the agent's pinned model profile is stale or past its sunset date (backend's
+    model_deprecation_scan / 02 §4 sunset_at — surfaced by the "outdated" view, backend/08 /org/compliance).
+    Distinct from NeedsReEvalBanner: nothing about the config changed, the underlying model is being retired —
+    so a re-point onto a current model + a fresh eval is needed. */
+export function ProfileOutdatedBanner({ agent, onRunEval }: { agent: Agent; onRunEval?: () => void }) {
+  return (
+    <div className="flex flex-wrap items-start gap-3 rounded-xl border border-warning/40 bg-warning/10 px-4 py-3">
+      <TriangleAlert className="mt-0.5 size-4 shrink-0 text-warning" aria-hidden />
+      <div className="min-w-0 flex-1 space-y-0.5">
+        <p className="text-sm font-medium text-ink">The pinned model for {agent.activeVersion} is being retired.</p>
+        <p className="text-xs leading-relaxed text-ink-2">
+          {agent.provider}/{agent.model} is marked deprecated or past its sunset date. Re-point this agent onto a
+          current model and run a fresh eval before the provider removes it.
+        </p>
+      </div>
+      {onRunEval && (
+        <div className="flex shrink-0 items-center gap-2">
+          <GateButton permission="eval.run" variant="primary" size="sm" onClick={onRunEval}>
+            <FlaskConical className="size-4" /> Run eval
+          </GateButton>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function PublishBlockedDialog({
   agent,
   open,

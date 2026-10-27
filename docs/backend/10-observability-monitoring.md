@@ -1,7 +1,8 @@
 # 10 — Observability & Monitoring
 
 > Implementation-level companion to `spec.md A2/B` and `backend-integration-plan.md` Part 5. Covers the
-> per-call log contract, the three-store telemetry split, metrics/SLOs/alerts, the cost↔COGS monitoring
+> per-call log contract, the four-store telemetry split (Postgres · Langfuse v3/ClickHouse · Prometheus · P2
+> `analytics` ClickHouse DB), metrics/SLOs/alerts, the cost↔COGS monitoring
 > bridge, drift/quality monitoring (the feedback loop that makes eval trustworthy), async job status
 > delivery, and provider-resilience monitoring. Reads on top of `00-overview.md` (§3 `runtime/obs.py`,
 > `RunContext.trace_id`) and `01-data-model.md` (`runs`, `spans`, `jobs`).
@@ -83,17 +84,20 @@ async with span(ctx, "model", f"model:{snapshot.model}",
 > eval worker, a drift report would describe code production never ran (00 §1). Centralizing it is what
 > makes "test == eval == prod" true at the telemetry layer too.
 
-## 2. Three stores, three jobs
+## 2. Four stores, each with a job
 
-Telemetry has three very different access patterns; forcing them into one store either bankrupts
+Telemetry has several very different access patterns; forcing them into one store either bankrupts
 Postgres on trace volume or makes dashboards slow. Split by purpose:
 
 ```mermaid
 flowchart LR
   RT[runtime/obs.py<br/>span helper] --> PG[(Postgres<br/>runs + spans + jobs)]
-  RT --> LF[(Langfuse<br/>traces + I/O + scores)]
+  RT --> LF[(Langfuse v3<br/>traces + I/O + scores)]
   RT --> PROM[Prometheus<br/>counters + histograms]
+  LF -. v3 columnar backend .-> CH[(ClickHouse<br/>langfuse DB + analytics DB P2)]
   PG -->|aggregates| METRICS[/v1/metrics/*  dashboard API/]
+  PG -. P2 rollup ingest .-> CH
+  CH -. P2 rollup read .-> METRICS
   LF --> EVAL[eval feedback loop<br/>prod failures → suites]
   PROM --> ALERT[Alertmanager]
   PROM --> GRAF[Grafana ops dashboard]
@@ -102,13 +106,28 @@ flowchart LR
 | Store | Holds | Access pattern | Retention |
 |---|---|---|---|
 | **Postgres** (`runs`, `spans`) | transactional, tenant-attributed call records + cost for billing/quotas | per-tenant queries, dashboard rollups, cost attribution | partition `runs`/`spans` by month; retain 90d hot, archive/drop older (`01 §4.7`, `11`) |
-| **Langfuse** (self-hosted OSS) | full prompt/response I/O, nested traces, judge scores, latency breakdown | debugging a single run, judge calibration, exporting failures | per-workspace retention policy; PII-redacted before write (§7, 09) |
+| **Langfuse v3** (self-hosted OSS, pinned image) | full prompt/response I/O, nested traces, judge scores, latency breakdown | debugging a single run, judge calibration, exporting failures | per-workspace retention policy; traces retained at **100%** (v3 columnar backend absorbs full volume — no sampling, `lld/10 §8`); PII-redacted before write (§7, 09) |
+| **ClickHouse** (Langfuse's own columnar backend — net-new infra as of v3) | the `langfuse` DB Langfuse owns internally; **(P2) an `analytics` DB of ours** — eval/drift + cost/usage rollups derived from `runs`/`spans`/`eval_runs`/`eval_results` | columnar scans for Langfuse; (P2) dashboard rollup reads via a `workspace_id`-injecting rollup API or operator-plane | Langfuse DB per Langfuse policy; (P2) `analytics` via `DATA_RETENTION_DAYS`-style TTL (`lld/10 §8`) |
 | **Prometheus** | numeric time-series (rates, histograms, gauges) | real-time ops dashboards + alerting | 15–30d; long-term via remote-write if needed |
+
+> **Langfuse v3 brings its own ClickHouse.** v3 runs on ClickHouse internally (bringing its own ClickHouse
+> + Redis + S3 — and since we already run Redis & MinIO, the net-new infra is the **one `clickhouse`
+> service**, `11 §1/§3`). That columnar backend is what lets us **delete the old 0.2 trace sampling** and
+> keep 100% of traces (`lld/10 §8`). We pin the Langfuse image by digest (`11 §2/§12`).
+
+> **(Phase 2) The `analytics` ClickHouse DB is derived, never authoritative.** When Postgres rollups strain
+> (the `15 §193-197` materialized-view lever), we add our **own `analytics` DB on the same ClickHouse
+> cluster** — logically split from Langfuse's DB — for eval/drift + cost/usage rollups. It is
+> **eventually-consistent, non-authoritative, and has NO RLS**: tenant isolation there is query-time
+> `workspace_id` filtering, reached only via a `workspace_id`-injecting rollup API or the operator-plane
+> (`lld/10 §8`). Billing, quotas, and the publish gate never read it — they stay on Postgres
+> `runs.cost_usd`/`eval_runs` (§6).
 
 > **Why Langfuse holds the heavy payloads, not Postgres:** prompt/response bodies are large and
 > high-volume. Keeping them out of the primary DB is what lets `runs` stay a lean, partitioned,
-> index-friendly table for cost rollups and quota checks (`01 §4.7` note, `11 §telemetry`). Postgres is
-> the source of truth for **money and tenancy**; Langfuse is the source of truth for **what was said**.
+> index-friendly table for cost rollups and quota checks (`01 §4.7` note, `11 §telemetry`). **Postgres is
+> the source of truth for money and tenancy**; Langfuse is the source of truth for **what was said**; the
+> (P2) `analytics` DB is only a derived rollup for dashboards at scale.
 
 ### 3. Langfuse integration
 
@@ -242,6 +261,10 @@ from capability profiles (02) — so the dashboard and the quota engine (07) use
 - **Rollups** feed the FE dashboard/runs charts (`SPEND_SERIES`, `RUNS_SERIES`, `dashStats`) via the
   `/v1/metrics/*` endpoints (08). Rollup granularity: per `workspace_id` (quota + chargeback), per
   `agent_id` (which agent costs most), per `caller_token_id`/endpoint (which consumer costs most).
+  **(Phase 2, at scale)** the cost/eval dashboards may read these rollups from the derived `analytics`
+  ClickHouse DB (AggregatingMergeTree materialized views, `lld/10 §8`) instead of live Postgres aggregates —
+  but the **authoritative cost number stays `runs.cost_usd`** (the quota engine and `BudgetGuard` only ever
+  read Postgres; the CH rollup is a read-optimized, eventually-consistent mirror, never the billed figure).
 
 ```sql
 -- per-workspace daily spend, the query behind /v1/metrics/spend (08) and quota checks (07)
@@ -337,6 +360,15 @@ read exactly this. Job rows carry `workspace_id` so status is tenant-scoped like
 > have a heartbeat (`updated_at`); a reaper marks jobs `failed` if a running job goes silent past a
 > timeout, so the UI never spins forever. Eval/ingest are idempotent per `ref_id` so a retried job
 > re-runs cleanly.
+>
+> **Reaper safety — verify PID ownership before any kill (2026-10-25).** When the reaper (or a sandbox
+> janitor) reclaims a silent job by terminating its process, it must **confirm the PID still belongs to the
+> job it recorded** before sending a signal — a dead worker's PID can be *reused* by an unrelated process, and
+> a blind kill would take out a bystander. Record `{pid, start_time}` (or the container/cgroup id) at job
+> start and re-check both at reap time; mismatch → treat as already-gone, mark `failed`, do **not** signal.
+> (Our sandbox is ephemeral-per-call — `11 §1` tears the container down after each call — so this bites
+> hardest on the general worker pool's reused processes. Pattern adopted from Observal's delegation cleanup,
+> which confirms process ownership before killing a reused PID.)
 
 ## 10. Dashboards (what exists, what backs each)
 

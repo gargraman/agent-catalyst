@@ -17,6 +17,7 @@
 | RLS shows **one** `CREATE POLICY` + "repeat for every `WorkspaceScoped` table" (`01 §6`); no `FORCE`, no `WITH CHECK`, no unset-GUC guard, no generation loop | §2 — the per-table DDL template (enable+force, `USING`/`WITH CHECK`), the fail-closed unset guard, the one-migration loop, the CI assertion |
 | Per-user DEK (C4, §9.1 / `17 §3`) **named** — "per-USER DEK" — but the envelope scheme, Vault wiring, wrap/unwrap, rotation are undefined | §3 — the three DEK scopes, the datakey envelope, buildable `KeyVault`, key naming, rotation/rewrap |
 | Org-plane isolation (C4, §7/§8) **named** — "`SECURITY DEFINER` … `EXECUTE`-granted only to `platform_report`" — no function DDL, no grant/revoke, no separate connection | §4 — the `SECURITY DEFINER` function template, the `REVOKE`/`GRANT` boundary, the dedicated engine, the DB-level isolation test |
+| Immediate revocation (`09 §2.1`/`§6`, 2026-10-25) names a **transient Redis deny-set** + admin `force-logout` but not the keys, the fail-closed check, the TTL, or the test | §5 — the deny-set key spaces + TTL, the console/caller check points, fail-closed-on-outage, the admin write path, the isolation-suite case |
 
 Python 3.12, `from __future__ import annotations`, SQLAlchemy **`AsyncSession`** throughout (session model pinned
 in [`00-conventions.lld.md §4`](00-conventions.lld.md)). SQL is PostgreSQL 16. Snippets compile (§5). `Principal`,
@@ -392,7 +393,80 @@ path is reachable only by the audited admin plane on its own role.
 
 ---
 
-## 5. Verification performed
+## 5. Immediate revocation — the Redis deny-set (fail-closed)
+
+> Parent `09 §2.1`/`§6` add a **transient Redis deny-set** so an admin `force-logout`/`revoke-user` cuts an
+> **active** console session (and caller token) immediately, not at the next token TTL — the one reversal of the
+> 2026-10-22 "next-login" bound. This is the buildable mechanism. It is **not** a roster/SCIM: nothing is written
+> to Postgres; the set is transient, TTL-bounded, admin-triggered.
+
+### 5.1 The set — keys & TTL
+
+Two Redis key spaces, both checked on every authenticated request:
+
+```python
+# services/api/auth/denyset.py
+REVOKE_SUBJECT = "revoke:sub:{subject}"     # kills every session/token for a subject
+REVOKE_TOKEN   = "revoke:tok:{token_id}"    # kills one caller token (narrower blast radius)
+
+# TTL ≥ the max access-token TTL so a revoked subject can never outlive the entry and silently regain access.
+DENYSET_TTL_S = settings.max_access_token_ttl_s          # e.g. 3600 (09 §2.1 "≤1h")
+
+async def revoke_subject(redis, subject: str, *, reason: str) -> None:
+    await redis.set(REVOKE_SUBJECT.format(subject=subject), reason, ex=DENYSET_TTL_S)
+
+async def is_revoked(redis, *, subject: str | None, token_id: str | None) -> bool:
+    keys = [k for k in (
+        REVOKE_SUBJECT.format(subject=subject) if subject else None,
+        REVOKE_TOKEN.format(token_id=token_id) if token_id else None,
+    ) if k]
+    return bool(keys) and await redis.exists(*keys) > 0     # any hit = revoked; Redis outage → see §5.3
+```
+
+A subject re-logging in after the TTL expires is fine — the IdP re-asserts the live claim; the deny-set only
+needs to cover the *bounded* window in which a still-valid token would otherwise be honored.
+
+### 5.2 The check on the per-request path
+
+Both auth entrypoints consult the set **after** the token verifies but **before** the principal is trusted:
+
+```python
+# console/admin — in verify_token (09 §2), after signature + claims validate:
+if await is_revoked(redis, subject=principal.subject, token_id=None):
+    raise Unauthorized("session revoked")        # 401 → FE redirects to login (frontend-auth-access-plan)
+
+# caller — resolve_caller (09 §6), alongside the existing revoked_at / expires_at checks:
+if await is_revoked(redis, subject=tok.scopes.get("subject"), token_id=str(tok.id)):
+    raise Unauthorized("revoked")                # unifies the console-session kill with the caller plane
+```
+
+Postgres `api_tokens.revoked_at` stays authoritative for caller tokens (§6); the deny-set is the fast, unified
+fail-closed layer that *also* covers **console-session subjects**, which have no `api_tokens` row.
+
+### 5.3 Fail-closed on Redis unavailability
+
+Unlike best-effort telemetry (`10 §7` `_safe_emit`), the deny-set is a **security control**: if `is_revoked`
+cannot reach Redis, the request is **rejected** (`503`/`401`), never admitted — a revoked user must not slip
+through a cache outage. Redis is already a hard request-path dependency (rate-limit §6, idempotency
+`00-conventions §3`), so this adds no new failure mode, only a fail-*direction*.
+
+### 5.4 Writing the set — the admin action
+
+`POST /api/v1/org/revoke-user` (`08`, admin plane) calls `revoke_subject` / `revoke_token` and writes an
+append-only `audit_logs` row `security.revoke_user {actor, subject|token_id, reason}`. It is a **mutation**, not
+the `SECURITY DEFINER` org-read path (§4). No row is written to any user table — there is no user table
+(no roster, no SCIM).
+
+### 5.5 Isolation-suite case (the `09 §8` "immediate revocation")
+
+Add to the `09 §8` tenant/isolation suite: mint an active console session for user B; admin `revoke-user(B)`;
+assert B's **next** request (same still-valid token) returns `401`; assert a simulated Redis outage during the
+check also yields non-2xx (fail-closed); assert an *unrelated* user A is unaffected (the set is subject-scoped,
+not global).
+
+---
+
+## 6. Verification performed
 
 1. **Snippet compile** — every `python` block via `compile()` (same harness as `01`/`00` LLD); SQL blocks
    checked against PostgreSQL 16 syntax (policies, `SECURITY DEFINER`, `set_config`).

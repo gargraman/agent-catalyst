@@ -109,8 +109,20 @@ sees the vendor shape, only the mapped result:
 
 Requires the IdP to emit a groups/roles claim scoped to this product (configured on the IdP app registration;
 per-adapter notes in 18 §5). **No SCIM or directory sync is needed for authZ** — claims are read live from the
-token on each request, so an IdP grant/revoke takes effect on next login. (Async recipient *enumeration* —
-16 — does need the adapter's `members_of` where available; see 18 §4.)
+token on each request, so an IdP grant/revoke normally takes effect on next login. (Async recipient
+*enumeration* — 16 — does need the adapter's `members_of` where available; see 18 §4.)
+
+> **Immediate revocation — the deny-set exception (2026-10-25).** "Next login" bounds a *passive* grant/revoke,
+> but it is too slow when access must be cut **now** — a disabled user, a stolen token, an incident. So the
+> per-request auth path (`verify_token` for console, `resolve_caller` §6 for callers) also checks a **transient
+> Redis deny-set** (keyed by subject *and* by token id) and **fails closed**: a matching entry rejects the
+> request immediately, killing **active console sessions** *and* caller tokens on their next call. It is
+> populated by an **admin `force-logout` / `revoke-user` action** (08, admin plane); entries carry a TTL ≥ the
+> max access-token TTL so a revoked subject can't outlive the set. This is a *transient* revocation list — **not**
+> a persistent roster or deactivation store, and **not SCIM**: automated IdP-driven offboarding (an IdP pushing
+> `active:false`) stays out of scope, so the deny-set is admin-triggered, not IdP-pushed. It is the single
+> deliberate reversal of the 2026-10-22 rev 1/2 "claims are the SoR, next-login, no app-side deactivation list"
+> bound (`scope.md`); no roster, no 4th auth plane, claims remain the authZ system of record.
 
 ## 3. Workspace scoping — the tenancy guard (layer 1)
 
@@ -304,7 +316,10 @@ async def resolve_caller(authorization: str, db) -> CallerCtx:
 
 Token lifecycle: minted by publisher/admin, **secret shown exactly once** (only the `prefix` + hash
 persist), revocable (sets `revoked_at` → immediate), optional `expires_at`, per-token rate limit. Never
-logged, never in exports.
+logged, never in exports. Postgres `revoked_at` is the authoritative record and is already checked on every
+call above; the §2.1 **Redis deny-set** unifies this guarantee with **console sessions** (which have no
+`api_tokens` row and were previously bounded only by the ≤1h access-token TTL), so one admin `revoke-user`
+action cuts both planes at once, failing closed on the same per-request path.
 
 ## 7. RLS backstop (layer 2)
 

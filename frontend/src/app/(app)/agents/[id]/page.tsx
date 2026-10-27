@@ -35,7 +35,7 @@ import { useAuth, usePrincipal } from "@/lib/auth";
 import { ORG } from "@/lib/org";
 import { GateButton } from "@/components/gate";
 import { Term } from "@/components/term";
-import { EvalExplainer, EvalFailingBanner, NeedsReEvalBanner, EvalFailureSummary, publishGateDecision, PublishGateDialogs, type PublishGate } from "@/components/eval-explainer";
+import { EvalExplainer, EvalFailingBanner, NeedsReEvalBanner, ProfileOutdatedBanner, EvalFailureSummary, publishGateDecision, PublishGateDialogs, type PublishGate } from "@/components/eval-explainer";
 import { canUse, canManage } from "@/lib/access-policy";
 import { resolveToolRef, mcpRef } from "@/lib/tools";
 import { AccessNote } from "@/components/access-note";
@@ -113,6 +113,9 @@ export default function AgentDetailPage() {
   const model = getModel(agent.model);
   const manage = canManage(agent.accessPolicy, principal);
   const manageTitle = manage ? undefined : "Restricted by this agent's access policy";
+  // needsReEval (config drift) gates publish; profileOutdated (model sunset) is informational. When both
+  // apply on a draft, show only the gating one so two near-identical "run eval" banners don't stack.
+  const showNeedsReEval = agent.status === "draft" && publishGateDecision(agent, evals[0]?.verdict, policy) === "needs_reeval";
 
   return (
     <div className="space-y-6">
@@ -161,8 +164,15 @@ export default function AgentDetailPage() {
         <EvalFailingBanner agent={agent} onRunEval={() => setRunEvalOpen(true)} />
       )}
 
-      {agent.status === "draft" && publishGateDecision(agent, evals[0]?.verdict, policy) === "needs_reeval" && (
+      {showNeedsReEval && (
         <NeedsReEvalBanner agent={agent} onRunEval={() => setRunEvalOpen(true)} />
+      )}
+
+      {/* @backend profileOutdated: a DISTINCT informational flag from the "outdated" view over the existing
+          model_deprecation_scan detector (backend/08 /org/compliance) — NOT needsReEval, so it never gates publish.
+          Suppressed when the re-eval banner already shows to avoid stacking. */}
+      {agent.status !== "archived" && agent.profileOutdated && !showNeedsReEval && (
+        <ProfileOutdatedBanner agent={agent} onRunEval={() => setRunEvalOpen(true)} />
       )}
 
       {agent.status !== "archived" && (
