@@ -287,3 +287,22 @@ def test_api_key_not_leaked_in_error(monkeypatch):
     events = _collect(gateway.stream(_req(), api_key="SECRET123"))
     assert events[-1].type is EventType.ERROR
     assert "SECRET123" not in repr([e.data for e in events])
+
+
+def test_cost_clamps_inconsistent_usage(monkeypatch):
+    # T032 (converge F1) / FR-005 + edge-case "Inconsistent provider usage numbers": degenerate usage —
+    # reasoning_tokens > output_tokens AND cached_input_tokens > input_tokens — must never yield a negative
+    # cost, and must be deterministic. cost.py clamps billable slices with max(0, …); this verifies the
+    # guard end-to-end through the gateway USAGE path.
+    _patch_transport(monkeypatch, [_delta("x"), _usage_chunk(prompt=100, completion=50, cached=300, reasoning=500)])
+    profile = _profile({})  # pricing=_PRICING (input .6, output 2.4, cached_input .06, reasoning 2.4)
+    usages = [
+        next(e.data["usage"] for e in _collect(gateway.stream(_req(), api_key="k", profile=profile))
+             if e.type is EventType.USAGE)
+        for _ in range(2)
+    ]
+    # billable_input=max(0,100-300)=0, billable_output=max(0,50-500)=0 → cost = cached+reasoning slices only:
+    #   300*.06/1e6 + 500*2.4/1e6 = (18 + 1200)/1e6 = 0.001218
+    assert usages[0].cost_usd >= 0.0                                   # never negative (the clamp holds)
+    assert usages[0].cost_usd == pytest.approx(0.001218, abs=1e-9)    # exact + deterministic
+    assert usages[0].cost_usd == usages[1].cost_usd                   # reproducible

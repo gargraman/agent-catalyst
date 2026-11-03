@@ -135,3 +135,11 @@ description: "Task list — M1 Provider Gateway"
 3. US2 (cost) → validate. 4. US3 (substitutions) → validate. 5. US4 (Anthropic) → validate.
 6. Polish (fail-closed, error/secret, regressions, docs).
 Each behavior task: RED (show owner) → GREEN (smallest change) → keep prior tasks green. Commit per logical group. **PR only when asked.**
+
+---
+
+## Phase 8: Convergence
+
+*Appended by `/speckit-converge` (2026-11-03). Assessment: 39 requirements/acceptance criteria + 11 plan decisions + 6 constitution principles checked against the built code; 1 actionable finding (partial, MEDIUM). No MUST violations, no missing/contradicting/unrequested gaps.*
+
+- [X] T032 RED+GREEN: added `test_gateway.py::test_cost_clamps_inconsistent_usage` — degenerate usage (`reasoning=500 > output=50`, `cached=300 > input=100`) through `gateway.stream` asserts `cost_usd >= 0` (never negative), exact (`0.001218`), and reproducible across two runs. Verifies `cost.py`'s `max(0, …)` guard at the gateway/usage path, closing the assertion deferred at T003. Per FR-005 + edge-case "Inconsistent provider usage numbers" (partial). `pytest -q tests/test_gateway.py -k clamps_inconsistent` → 1 passed.
