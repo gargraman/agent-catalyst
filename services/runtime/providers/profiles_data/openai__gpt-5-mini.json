@@ -4,6 +4,8 @@
   "api_version": "2026-01",
   "availability": "active",
   "sunset_at": null,
+  "provisional": true,
+  "_note": "Runtime model. Pricing seeded from frontend/src/lib/data.ts; unreconciled until the owner-gated paid H2 cost reconciliation (docs/viability-gate.md). provisional=true → cost reported as estimate (FR-010).",
   "pricing_usd_per_mtok": {
     "input": 0.6,
     "output": 2.4,

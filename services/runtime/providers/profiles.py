@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 
 from runtime.providers.ir import NormalizedRequest
@@ -26,6 +27,7 @@ class CapabilityProfile:
     features: dict       # structured_output / forced_tool_choice / reasoning_control / prompt_caching / …
     availability: str = "active"      # active | deprecated | retired (16 §3)
     sunset_at: str | None = None
+    provisional: bool = False         # True = pricing unreconciled → cost labeled an estimate (FR-010/P7)
 
     def feature(self, k: str) -> bool:
         return bool(self.features.get(k))
@@ -66,8 +68,8 @@ def preflight_substitutions(profile: CapabilityProfile, req: NormalizedRequest) 
 def _profile_from_json(doc: dict) -> CapabilityProfile:
     """Map the on-disk profile JSON (pricing under `pricing_usd_per_mtok`) onto CapabilityProfile so
     cost.compute_cost indexes the same keys (input/output/cached_input/cache_write/reasoning/
-    batch_multiplier). Extra top-level keys (`_note`, `provisional`) are ignored here; provisional-cost
-    handling lands with its own test (FR-010)."""
+    batch_multiplier). `provisional` is read through to the profile (FR-010 → cost labeled estimate);
+    other extra top-level keys (`_note`) are ignored."""
     return CapabilityProfile(
         provider=doc["provider"],
         model=doc["model"],
@@ -77,16 +79,22 @@ def _profile_from_json(doc: dict) -> CapabilityProfile:
         features=dict(doc.get("features", {})),
         availability=doc.get("availability", "active"),
         sunset_at=doc.get("sunset_at"),
+        provisional=bool(doc.get("provisional", False)),
     )
 
 
+@lru_cache(maxsize=256)
 def resolve_profile(
     provider: str, model: str, api_version: str | None = None, *, dir: str | Path = _PROFILE_DIR
 ) -> CapabilityProfile:
     """Load the capability+pricing profile whose JSON `provider`+`model` match. Matches on file CONTENT,
     not filename, so model ids containing '/' or ':' (e.g. 'llama3.1:8b') need no filesystem-safe name.
     `api_version` is advisory (provider+model is the key). Fails closed (FR-008): a clear, caller-visible
-    error — never a guessed model/pricing — when no profile matches."""
+    error — never a guessed model/pricing — when no profile matches.
+
+    Cached (profiles are versioned, immutable data): the gateway calls this on every invoke, so the
+    glob+read+parse runs once per (provider, model, api_version, dir), not per request. CapabilityProfile
+    is frozen, so sharing a cached instance is safe. Misses (FileNotFoundError) are not cached."""
     directory = Path(dir)
     for path in sorted(directory.glob("*.json")):
         doc = json.loads(path.read_text())

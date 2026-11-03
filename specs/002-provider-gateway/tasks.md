@@ -50,12 +50,12 @@ description: "Task list — M1 Provider Gateway"
 
 **Independent Test**: issue a normalized request for openai and for ollama with mocked transport; both stream content deltas then exactly one USAGE event, in the shared vocabulary.
 
-- [ ] T008 [P] [US1] RED: `services/tests/test_providers.py` — openai path: monkeypatch `transport.stream_chunks` with canned LiteLLM-shaped chunks; assert `OpenAIAdapter().stream(...)` yields `EventType.TEXT_DELTA` content then one `EventType.USAGE` with raw `input_tokens/output_tokens/cached_input_tokens/reasoning_tokens` mapped per `contracts/usage-mapping.md`. Run `pytest -q tests/test_providers.py -k openai_usage` → MUST fail (no adapter). **Show owner.**
-- [ ] T009 [US1] GREEN: implement `services/runtime/providers/openai_adapter.py` on the transport seam — build request (honoring `max_tokens`→`max_completion_tokens`, emulation for downgraded features), map LiteLLM stream→`TEXT_DELTA`/`TOOL_CALL_*`, map usage→`NormalizedUsage` (raw; no cost here), `register_adapter`. `supports()` delegates to `preflight_substitutions`. Run `pytest -q tests/test_providers.py -k openai` → target green.
-- [ ] T010 [P] [US1] RED: add ollama path to `test_providers.py` — assert `OllamaAdapter().stream(...)` maps `prompt_eval_count`/`eval_count`→usage, cache/reasoning = 0. Run `pytest -q tests/test_providers.py -k ollama_usage` → MUST fail. **Show owner.**
-- [ ] T011 [US1] GREEN: implement `services/runtime/providers/ollama_adapter.py` on the transport seam (per research R4/R5). Run `pytest -q tests/test_providers.py -k ollama` → target green.
-- [ ] T012 [US1] RED: `services/tests/test_gateway.py` — assert `gateway.stream(req, api_key=...)` resolves the profile, picks the adapter, and passes through events ending in one USAGE, for both providers. Run `pytest -q tests/test_gateway.py -k passthrough` → MUST fail. **Show owner.**
-- [ ] T013 [US1] GREEN: implement `services/runtime/providers/gateway.py` orchestration (resolve-or-use-profile → `adapter_for` → stream passthrough → terminal USAGE), per `contracts/provider-adapter.md` (cost attachment lands in US2). Run `pytest -q tests/test_gateway.py -k passthrough`; regression `pytest -q tests/test_providers.py tests/test_runtime_purity.py`.
+- [X] T008 [P] [US1] RED: `services/tests/test_providers.py` — openai path: monkeypatch `transport.stream_chunks` with canned LiteLLM-shaped chunks; assert `OpenAIAdapter().stream(...)` yields `EventType.TEXT_DELTA` content then one `EventType.USAGE` with raw `input_tokens/output_tokens/cached_input_tokens/reasoning_tokens` mapped per `contracts/usage-mapping.md`. Run `pytest -q tests/test_providers.py -k openai_usage` → MUST fail (no adapter). **Show owner.**
+- [X] T009 [US1] GREEN: implement `services/runtime/providers/openai_adapter.py` on the transport seam — build request (honoring `max_tokens`→`max_completion_tokens`, emulation for downgraded features), map LiteLLM stream→`TEXT_DELTA`/`TOOL_CALL_*`, map usage→`NormalizedUsage` (raw; no cost here), `register_adapter`. `supports()` delegates to `preflight_substitutions`. Run `pytest -q tests/test_providers.py -k openai` → target green.
+- [X] T010 [P] [US1] RED: add ollama path to `test_providers.py` — assert `OllamaAdapter().stream(...)` maps `prompt_eval_count`/`eval_count`→usage, cache/reasoning = 0. Run `pytest -q tests/test_providers.py -k ollama_usage` → MUST fail. **Show owner.**
+- [X] T011 [US1] GREEN: implement `services/runtime/providers/ollama_adapter.py` on the transport seam (per research R4/R5). Run `pytest -q tests/test_providers.py -k ollama` → target green.
+- [X] T012 [US1] RED: `services/tests/test_gateway.py` — assert `gateway.stream(req, api_key=...)` resolves the profile, picks the adapter, and passes through events ending in one USAGE, for both providers. Run `pytest -q tests/test_gateway.py -k passthrough` → MUST fail. **Show owner.**
+- [X] T013 [US1] GREEN: implement `services/runtime/providers/gateway.py` orchestration (resolve-or-use-profile → `adapter_for` → stream passthrough → terminal USAGE), per `contracts/provider-adapter.md` (cost attachment lands in US2). Run `pytest -q tests/test_gateway.py -k passthrough`; regression `pytest -q tests/test_providers.py tests/test_runtime_purity.py`.
 
 **Checkpoint**: a request runs end-to-end through the gateway on two providers with one normalized shape.
 
@@ -67,10 +67,10 @@ description: "Task list — M1 Provider Gateway"
 
 **Independent Test**: for canned usage + a known profile, gateway's USAGE event carries `cost_usd` equal to the hand-calc literal; a LiteLLM `response_cost` in the mock is never reflected.
 
-- [ ] T014 [P] [US2] RED: in `test_providers.py`, `test_openai_cost_matches_hand_calc` — reuse the mvp literal (`compute_cost(gpt-5-mini profile, usage) == 0.001518`), driven through the adapter+gateway USAGE `cost_usd`. Run `pytest -q tests/test_providers.py -k cost_matches` → MUST fail (gateway not attaching cost). **Show owner.**
-- [ ] T015 [US2] GREEN: in `gateway.py`, attach cost on the terminal USAGE — `usage.cost_usd = quantize_usd(compute_cost(profile, usage))`; if `profile.provisional` mark the cost an estimate (FR-010). Run `pytest -q tests/test_providers.py -k cost_matches`.
-- [ ] T016 [P] [US2] RED+GREEN: `test_gateway.py::test_litellm_cost_field_ignored` — mock transport returns a bogus `response_cost`; assert gateway's `cost_usd` derives only from the profile (FR-003/P7). Run `pytest -q tests/test_gateway.py -k cost_ignored`.
-- [ ] T017 [P] [US2] `test_ollama_is_free` — ollama profile → `cost_usd == 0.0` through the gateway. Run `pytest -q tests/test_providers.py -k is_free`.
+- [X] T014 [P] [US2] RED: in `test_providers.py`, `test_openai_cost_matches_hand_calc` — reuse the mvp literal (`compute_cost(gpt-5-mini profile, usage) == 0.001518`), driven through the adapter+gateway USAGE `cost_usd`. Run `pytest -q tests/test_providers.py -k cost_matches` → MUST fail (gateway not attaching cost). **Show owner.**
+- [X] T015 [US2] GREEN: in `gateway.py`, attach cost on the terminal USAGE — `usage.cost_usd = quantize_usd(compute_cost(profile, usage))`; if `profile.provisional` mark the cost an estimate (FR-010). Run `pytest -q tests/test_providers.py -k cost_matches`.
+- [X] T016 [P] [US2] RED+GREEN: `test_gateway.py::test_litellm_cost_field_ignored` — mock transport returns a bogus `response_cost`; assert gateway's `cost_usd` derives only from the profile (FR-003/P7). Run `pytest -q tests/test_gateway.py -k cost_ignored`.
+- [X] T017 [P] [US2] `test_ollama_is_free` — ollama profile → `cost_usd == 0.0` through the gateway. Run `pytest -q tests/test_providers.py -k is_free`.
 
 **Checkpoint**: cost is ours, reconciled, and LiteLLM's number is provably ignored.
 

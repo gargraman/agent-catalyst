@@ -56,7 +56,10 @@ def adapter_for(provider: str) -> ProviderAdapter:
     if provider not in _ADAPTERS:
         module = _ADAPTER_MODULES.get(provider)
         if module:
-            importlib.import_module(module)
+            try:
+                importlib.import_module(module)
+            except ModuleNotFoundError:
+                pass  # listed but not yet implemented (e.g. anthropic pre-M1-US4) → fail closed below
     if provider not in _ADAPTERS:
         raise KeyError(f"no provider adapter registered for {provider!r}")
     return _ADAPTERS[provider]

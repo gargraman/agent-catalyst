@@ -21,6 +21,13 @@ def test_resolve_openai_gpt5_mini_profile():
     assert p.pricing["output"] == 2.4
     assert p.feature("structured_output") is True
     assert p.availability == "active"
+    assert p.provisional is True              # seeded pricing unreconciled until paid H2 (FR-010)
+
+
+def test_resolve_reads_provisional_flag():
+    # ollama local profiles are $0/exact → not provisional; openai seeds are provisional until reconciled
+    assert resolve_profile("ollama", "llama3.1:8b").provisional is False
+    assert resolve_profile("openai", "gpt-5").provisional is True
 
 
 def test_resolve_matches_on_content_not_filename():
