@@ -134,3 +134,63 @@ def test_gateway_cost_not_estimate_for_reviewed_profile(monkeypatch):
     usage_ev = next(e for e in _collect(gateway.stream(_req(), api_key="k", profile=reviewed))
                     if e.type is EventType.USAGE)
     assert usage_ev.data.get("cost_is_estimate", False) is False
+
+
+# --- US3: substitution merge onto the USAGE event ------------------------------------------------
+
+_PRICING = {"input": 0.6, "output": 2.4, "cached_input": 0.06, "reasoning": 2.4}
+
+
+def _profile(features):
+    return CapabilityProfile(
+        provider="openai", model="gpt-5-mini", api_version=None,
+        pricing=_PRICING, limits={}, features=features,
+    )
+
+
+def test_gateway_merges_preflight_substitutions_onto_usage(monkeypatch):
+    # the gateway calls adapter.supports() and surfaces the downgrades on the terminal USAGE event.
+    _patch_transport(monkeypatch, _COST_CHUNKS)
+    weak = _profile({})  # supports nothing
+    req = _req(response_format={"json_schema": {"schema": {"type": "object"}}}, reasoning={"effort": "high"})
+    usage_ev = next(e for e in _collect(gateway.stream(req, api_key="k", profile=weak))
+                    if e.type is EventType.USAGE)
+    by = {(s.feature, s.action) for s in usage_ev.data["substitutions"]}
+    assert ("structured_output", "emulated_via_prompt") in by
+    assert ("reasoning_control", "dropped") in by
+
+
+def test_gateway_no_substitutions_when_fully_supported(monkeypatch):
+    # no false positives: a capable profile running the same request records no downgrades.
+    _patch_transport(monkeypatch, _COST_CHUNKS)
+    full = _profile({"structured_output": True, "forced_tool_choice": True,
+                     "reasoning_control": True, "prompt_caching": True})
+    req = _req(response_format={"json_schema": {"schema": {"type": "object"}}}, reasoning={"effort": "high"})
+    usage_ev = next(e for e in _collect(gateway.stream(req, api_key="k", profile=full))
+                    if e.type is EventType.USAGE)
+    assert usage_ev.data.get("substitutions", []) == []
+
+
+def test_gateway_records_cache_hint_drop_on_capable_model(monkeypatch):
+    # code review F1: caching-capable profile, but M1 does not forward cache breakpoints → the drop MUST be
+    # recorded, never silent (P7). preflight is empty here (feature supported), so this proves the
+    # implementation-gap substitution surfaces.
+    _patch_transport(monkeypatch, _COST_CHUNKS)
+    capable = _profile({"prompt_caching": True})
+    req = _req(cache_hints=[{"index": 0}])
+    usage_ev = next(e for e in _collect(gateway.stream(req, api_key="k", profile=capable))
+                    if e.type is EventType.USAGE)
+    by = {(s.feature, s.action) for s in usage_ev.data["substitutions"]}
+    assert ("prompt_caching", "dropped") in by
+
+
+def test_gateway_records_budget_reasoning_drop_on_capable_model(monkeypatch):
+    # code review F2: reasoning-capable profile, but M1 maps only `effort` → a token-budget request is a
+    # recorded downgrade, not a silent drop.
+    _patch_transport(monkeypatch, _COST_CHUNKS)
+    capable = _profile({"reasoning_control": True})
+    req = _req(reasoning={"budget": 2000})
+    usage_ev = next(e for e in _collect(gateway.stream(req, api_key="k", profile=capable))
+                    if e.type is EventType.USAGE)
+    by = {(s.feature, s.action) for s in usage_ev.data["substitutions"]}
+    assert ("reasoning_control", "downgraded") in by

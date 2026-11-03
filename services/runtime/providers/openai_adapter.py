@@ -24,12 +24,14 @@ class OpenAIAdapter:
         self, req: NormalizedRequest, *, api_key: str, profile: CapabilityProfile
     ) -> AsyncIterator[NormalizedStreamEvent]:
         # LiteLLM routes OpenAI models by bare id (e.g. "gpt-5-mini").
+        messages, params, subs = _common.build_wire_request(profile, req)
         return _common.stream_via_transport(
             model=req.model,
-            messages=_common.build_messages(req),
+            messages=messages,
             api_key=api_key,
-            params=dict(req.params),
+            params=params,
             tools=req.tools or None,
+            substitutions=subs,
         )
 
 

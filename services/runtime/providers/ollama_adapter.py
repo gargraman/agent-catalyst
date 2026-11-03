@@ -23,12 +23,14 @@ class OllamaAdapter:
     def stream(
         self, req: NormalizedRequest, *, api_key: str, profile: CapabilityProfile
     ) -> AsyncIterator[NormalizedStreamEvent]:
+        messages, params, subs = _common.build_wire_request(profile, req)
         return _common.stream_via_transport(
             model=f"ollama/{req.model}",   # LiteLLM provider routing
-            messages=_common.build_messages(req),
+            messages=messages,
             api_key=api_key or "",
-            params=dict(req.params),
+            params=params,
             tools=req.tools or None,
+            substitutions=subs,
         )
 
 

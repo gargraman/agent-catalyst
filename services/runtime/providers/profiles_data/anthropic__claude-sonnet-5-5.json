@@ -1,0 +1,24 @@
+{
+  "provider": "anthropic",
+  "model": "claude-sonnet-5-5",
+  "api_version": null,
+  "availability": "active",
+  "sunset_at": null,
+  "provisional": true,
+  "_note": "Runtime model (frontend default for several workspaces). input/output pricing sourced from frontend/src/lib/data.ts (inUsd 2 / outUsd 10, 1M context). cache/reasoning rates not in data.ts — omitted; compute_cost falls back to input/output rates (conservative) until paid H2 reconciliation. provisional=true → estimate (FR-010/P7). features from the claude-api skill: Claude Sonnet 5.5 rejects forced tool_choice (any/tool → 400) → forced_tool_choice=false (gateway emulates via prompt).",
+  "pricing_usd_per_mtok": {
+    "input": 2.0,
+    "output": 10.0
+  },
+  "limits": {
+    "context_tokens": 1000000,
+    "max_output_tokens": 64000
+  },
+  "features": {
+    "structured_output": true,
+    "forced_tool_choice": false,
+    "reasoning_control": true,
+    "prompt_caching": true,
+    "tool_call_format": "anthropic"
+  }
+}

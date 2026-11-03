@@ -1,0 +1,24 @@
+{
+  "provider": "anthropic",
+  "model": "claude-opus-5-5",
+  "api_version": null,
+  "availability": "active",
+  "sunset_at": null,
+  "provisional": true,
+  "_note": "Runtime model. input/output pricing sourced from frontend/src/lib/data.ts (inUsd 4 / outUsd 20, 1M context). cached_input/cache_write/reasoning rates are NOT in data.ts and are intentionally omitted — cost.compute_cost falls back to the input/output rate for those slices (a conservative over-estimate, never an undercharge) until the owner-gated paid H2 reconciliation. provisional=true → cost reported as estimate (FR-010/P7). features sourced from the claude-api skill: Claude Opus 5.5 rejects forced tool_choice (any/tool → 400), so forced_tool_choice=false and the gateway emulates via prompt (US3).",
+  "pricing_usd_per_mtok": {
+    "input": 4.0,
+    "output": 20.0
+  },
+  "limits": {
+    "context_tokens": 1000000,
+    "max_output_tokens": 64000
+  },
+  "features": {
+    "structured_output": true,
+    "forced_tool_choice": false,
+    "reasoning_control": true,
+    "prompt_caching": true,
+    "tool_call_format": "anthropic"
+  }
+}

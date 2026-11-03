@@ -7,7 +7,8 @@ Raw token counts only — cost is attached by the gateway (never here, never fro
 """
 from __future__ import annotations
 
-from typing import AsyncIterator, Callable
+import json
+from typing import TYPE_CHECKING, AsyncIterator, Callable
 
 from runtime.providers import transport
 from runtime.providers.ir import (
@@ -16,6 +17,10 @@ from runtime.providers.ir import (
     NormalizedStreamEvent,
     NormalizedUsage,
 )
+from runtime.providers.profiles import Substitution, preflight_substitutions
+
+if TYPE_CHECKING:
+    from runtime.providers.profiles import CapabilityProfile
 
 
 def build_messages(req: NormalizedRequest) -> list[dict]:
@@ -25,6 +30,104 @@ def build_messages(req: NormalizedRequest) -> list[dict]:
         messages.append({"role": "system", "content": req.system})
     messages.extend(req.messages)
     return messages
+
+
+def _json_emulation_note(response_format: dict) -> str:
+    """Instruction that emulates structured output on a model lacking native structured_output."""
+    schema = response_format.get("json_schema", response_format)
+    return (
+        "You MUST respond with a single valid JSON value and nothing else — no prose, no markdown "
+        "fences. It MUST conform to this JSON Schema:\n"
+        + json.dumps(schema, separators=(",", ":"))
+    )
+
+
+def _forced_tool_name(tool_choice: dict) -> str | None:
+    fn = tool_choice.get("function")
+    if isinstance(fn, dict) and fn.get("name"):
+        return fn["name"]
+    return tool_choice.get("name")
+
+
+def _tool_emulation_note(tool_choice: dict) -> str:
+    """Instruction that emulates a forced tool call on a model lacking native forced_tool_choice."""
+    name = _forced_tool_name(tool_choice)
+    target = f"the tool named {name!r}" if name else "the required tool"
+    return f"You MUST call {target} to produce your answer; do not reply with free-form text."
+
+
+def build_wire_request(
+    profile: "CapabilityProfile | None", req: NormalizedRequest
+) -> tuple[list[dict], dict, list[Substitution]]:
+    """Translate a NormalizedRequest into the (messages, params, substitutions) honoring the capability
+    profile (contract obligation #6 / P7). Returns the runtime-discovered substitutions so the gateway can
+    merge them with the preflight list.
+
+    The capability-downgrade DECISION (which requested features the profile cannot honor) is taken from
+    `profiles.preflight_substitutions` — the SINGLE authority — so the wire and the substitution ledger
+    cannot drift. For each feature preflight flags as downgraded we OMIT it from the wire and, for the
+    `emulated_via_prompt` rules (structured_output, forced_tool_choice), append an instruction to the
+    system turn (so the recorded Substitution is never a lie). Features preflight does not flag are
+    forwarded natively.
+
+    Beyond capability gaps, this also records downgrades that are an M1 IMPLEMENTATION gap rather than a
+    capability gap — a feature the profile SUPPORTS but this milestone does not yet forward on the wire —
+    so they are never silent (the bug class F1/F2 from code review):
+      * prompt-cache breakpoints: the wire mechanism is deferred to M7, so `cache_hints` on a
+        caching-capable model is recorded `prompt_caching: dropped`.
+      * token-budget reasoning: M1 maps only `effort`, so a `reasoning.budget` on a reasoning-capable
+        model is recorded `reasoning_control: downgraded`.
+    The caller still owns model routing + the tools list.
+    """
+    preflight = preflight_substitutions(profile, req) if profile is not None else []
+    downgraded = {s.feature for s in preflight}
+    messages = build_messages(req)
+    params = dict(req.params)
+    notes: list[str] = []
+    extra: list[Substitution] = []
+
+    # structured output ↔ response_format
+    if req.response_format is not None:
+        if "structured_output" in downgraded:
+            notes.append(_json_emulation_note(req.response_format))   # emulated_via_prompt (per preflight)
+        else:
+            params["response_format"] = req.response_format
+
+    # forced tool ↔ tool_choice. "forced_tool_choice" ∈ downgraded ⇒ a dict (forced) choice the profile
+    # lacks (preflight's rule); a string ("auto"/"none") or a supported forced choice is forwarded as-is.
+    if req.tool_choice is not None:
+        if "forced_tool_choice" in downgraded:
+            notes.append(_tool_emulation_note(req.tool_choice))
+        else:
+            params["tool_choice"] = req.tool_choice
+
+    # reasoning control ↔ reasoning
+    if req.reasoning is not None and "reasoning_control" not in downgraded:
+        effort = req.reasoning.get("effort")
+        if effort is not None:
+            params["reasoning_effort"] = effort
+        if "budget" in req.reasoning:
+            extra.append(Substitution(
+                "reasoning_control", "downgraded",
+                "token-budget reasoning not forwarded in M1 (only effort is mapped)",
+            ))
+
+    # prompt caching: M1 never forwards cache breakpoints (wire mechanism deferred to M7). When the profile
+    # SUPPORTS caching, preflight recorded nothing — so record the drop here so it is never silent (P7).
+    if req.cache_hints and "prompt_caching" not in downgraded:
+        extra.append(Substitution(
+            "prompt_caching", "dropped", "cache breakpoints not forwarded on the wire until M7",
+        ))
+
+    if notes:
+        note = "\n\n".join(notes)
+        if messages and messages[0].get("role") == "system":
+            head = messages[0]
+            messages = [{**head, "content": f"{head['content']}\n\n{note}"}, *messages[1:]]
+        else:
+            messages = [{"role": "system", "content": note}, *messages]
+
+    return messages, params, extra
 
 
 def map_openai_usage(usage) -> NormalizedUsage:
@@ -43,6 +146,35 @@ def map_openai_usage(usage) -> NormalizedUsage:
     )
 
 
+def map_anthropic_usage(usage) -> NormalizedUsage:
+    """LiteLLM Anthropic Usage → NormalizedUsage (usage-mapping.md ⚠ divergence). Robust to BOTH shapes
+    LiteLLM might emit (we cannot confirm which without a live call in M1 — so handle either; code review F3):
+
+    * NATIVE Anthropic shape — `input_tokens` is EXCLUSIVE of cache; we add `cache_read_input_tokens` +
+      `cache_creation_input_tokens` back so `input_tokens` is INCLUSIVE (our convention / cost.py).
+    * OpenAI-NORMALIZED shape — `prompt_tokens` is already INCLUSIVE of cache (no `input_tokens` attr);
+      we defer to `map_openai_usage` (reads `prompt_tokens_details.cached_tokens`) and add NO cache back.
+
+    Detection is by the presence of the native `input_tokens` attribute. `reasoning_tokens` mapped if the
+    response exposes an extended-thinking count, else 0 (honest absence). Missing usage → NormalizedUsage(0, 0).
+    The canned chunks in test_anthropic_adapter.py pin BOTH shapes; a live run only needs to confirm which."""
+    if usage is None:
+        return NormalizedUsage(0, 0)
+    if getattr(usage, "input_tokens", None) is None:
+        # OpenAI-normalized shape (prompt_tokens inclusive) — no add-back.
+        return map_openai_usage(usage)
+    cache_read = getattr(usage, "cache_read_input_tokens", 0) or 0
+    cache_creation = getattr(usage, "cache_creation_input_tokens", 0) or 0
+    base_input = getattr(usage, "input_tokens", 0) or 0
+    return NormalizedUsage(
+        input_tokens=base_input + cache_read + cache_creation,   # make inclusive (add cache back in)
+        output_tokens=getattr(usage, "output_tokens", 0) or 0,
+        cached_input_tokens=cache_read,
+        cache_write_tokens=cache_creation,
+        reasoning_tokens=getattr(usage, "reasoning_tokens", 0) or 0,
+    )
+
+
 async def stream_via_transport(
     *,
     model: str,
@@ -51,11 +183,13 @@ async def stream_via_transport(
     params: dict,
     tools: list[dict] | None = None,
     usage_mapper: Callable[[object], NormalizedUsage] = map_openai_usage,
+    substitutions: list[Substitution] | None = None,
 ) -> AsyncIterator[NormalizedStreamEvent]:
     """Drive the LiteLLM transport seam and yield normalized events: TEXT_DELTA as content streams,
     then exactly one terminal USAGE carrying raw NormalizedUsage (cost attached by the gateway).
-    `substitutions` on the USAGE event is runtime-discovered-only (empty here in M1); the gateway
-    merges preflight substitutions. Tool-call events are deferred to M2 (content only in M1)."""
+    `substitutions` are the runtime-discovered downgrades from build_wire_request (M1 wire-implementation
+    gaps — cache/budget); the gateway merges these with the preflight substitutions from supports().
+    Tool-call events are deferred to M2 (content only in M1)."""
     kwargs: dict = {"model": model, "messages": messages, "api_key": api_key, **params}
     if tools:
         kwargs["tools"] = tools
@@ -73,5 +207,6 @@ async def stream_via_transport(
             usage = usage_mapper(chunk_usage)
 
     yield NormalizedStreamEvent(
-        EventType.USAGE, {"usage": usage or NormalizedUsage(0, 0), "substitutions": []}
+        EventType.USAGE,
+        {"usage": usage or NormalizedUsage(0, 0), "substitutions": list(substitutions or [])},
     )
