@@ -15,18 +15,65 @@ from __future__ import annotations
 from typing import Any, AsyncIterator
 
 
+class TransportError(Exception):
+    """Normalized wrapper for ANY failure from the LiteLLM transport (provider/SDK/network). Raised ONLY
+    by this seam, so the gateway can catch it specifically (FR-009/P8) — our own adapter/mapping bugs raise
+    their own types and propagate uncaught, never misattributed as a provider error (code review F3).
+    Carries a generic `retryable` hint (classified here, where the underlying exception is available —
+    code review F5) and the HTTP `status` when litellm exposed one."""
+
+    def __init__(self, message: str, *, retryable: bool = False, status: int | None = None):
+        super().__init__(message)
+        self.retryable = retryable
+        self.status = status
+
+
+# Class-name fragments that indicate a transient (retryable) failure when no HTTP status is available.
+_RETRYABLE_NAME_HINTS = (
+    "timeout", "connection", "ratelimit", "rate_limit", "unavailable", "overloaded",
+    "internalserver", "serviceunavailable", "protocol", "reset", "eof", "disconnect", "read",
+)
+
+
+def _is_retryable(exc: BaseException) -> bool:
+    status = getattr(exc, "status_code", None)
+    if isinstance(status, int):
+        if status in (408, 409, 429) or status >= 500:
+            return True
+        if 400 <= status < 500:
+            return False
+    name = type(exc).__name__.lower()
+    return any(hint in name for hint in _RETRYABLE_NAME_HINTS)
+
+
 async def stream_chunks(**kwargs: Any) -> AsyncIterator[Any]:
-    """Call `litellm.acompletion(stream=True, drop_params=False, **kwargs)` and yield raw chunks.
+    """Call `litellm.acompletion(stream=True, drop_params=False, stream_options={include_usage}, **kwargs)`
+    and yield raw chunks.
 
     Callers pass provider-native kwargs (model, messages, api_key, max_tokens, tools, …). We force
-    stream=True and default drop_params=False (R2). The returned chunks are LiteLLM's unified streaming
-    objects; adapters map them to NormalizedStreamEvent and raw NormalizedUsage. This function is the
-    test seam — in tests it is replaced wholesale, so litellm is never imported there.
+    stream=True, default drop_params=False (R2), and default `stream_options={"include_usage": True}` so the
+    provider actually REPORTS usage on the stream — OpenAI-style providers omit it otherwise, and WE need it
+    to compute cost (P7); without it every stream would read as degraded (code review F1). litellm applies
+    include_usage per provider; the exact per-provider behavior is confirmed at M2 live integration.
+
+    Any provider/SDK/network failure is wrapped as `TransportError` (the single litellm boundary) so the
+    gateway can distinguish a provider failure from a bug in our own code (code review F3). The returned
+    chunks are LiteLLM's unified streaming objects; adapters map them to NormalizedStreamEvent and raw
+    NormalizedUsage. This function is the test seam — in tests it is replaced wholesale, so litellm is never
+    imported there.
     """
     import litellm  # lazy: keeps `import runtime.providers.transport` cheap + purity-safe
 
     kwargs["stream"] = True
     kwargs.setdefault("drop_params", False)
-    response = await litellm.acompletion(**kwargs)
-    async for chunk in response:
-        yield chunk
+    kwargs.setdefault("stream_options", {"include_usage": True})
+    try:
+        response = await litellm.acompletion(**kwargs)
+        async for chunk in response:
+            yield chunk
+    except TransportError:
+        raise
+    except Exception as exc:  # noqa: BLE001 — the single litellm boundary: normalize ALL provider failures
+        raise TransportError(
+            str(exc), retryable=_is_retryable(exc), status=getattr(exc, "status_code", None)
+        ) from exc

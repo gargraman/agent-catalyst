@@ -195,6 +195,7 @@ async def stream_via_transport(
         kwargs["tools"] = tools
 
     usage: NormalizedUsage | None = None
+    usage_seen = False
     async for chunk in transport.stream_chunks(**kwargs):
         choices = getattr(chunk, "choices", None) or []
         if choices:
@@ -205,8 +206,13 @@ async def stream_via_transport(
         chunk_usage = getattr(chunk, "usage", None)
         if chunk_usage is not None:
             usage = usage_mapper(chunk_usage)
+            usage_seen = True
 
-    yield NormalizedStreamEvent(
-        EventType.USAGE,
-        {"usage": usage or NormalizedUsage(0, 0), "substitutions": list(substitutions or [])},
-    )
+    # Emit USAGE only when the provider actually reported usage. A stream that ends with NO usage object
+    # is degenerate (usage-mapping.md) — we do NOT synthesize a zero USAGE that would read as a success;
+    # the gateway detects the missing USAGE and emits a degraded ERROR instead (P8).
+    if usage_seen:
+        yield NormalizedStreamEvent(
+            EventType.USAGE,
+            {"usage": usage, "substitutions": list(substitutions or [])},
+        )

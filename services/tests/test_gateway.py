@@ -14,7 +14,7 @@ import pytest
 
 from runtime.providers import gateway, transport
 from runtime.providers.cost import compute_cost
-from runtime.providers.ir import EventType, NormalizedRequest
+from runtime.providers.ir import EventType, NormalizedRequest, NormalizedStreamEvent
 from runtime.providers.profiles import CapabilityProfile, resolve_profile
 
 
@@ -194,3 +194,96 @@ def test_gateway_records_budget_reasoning_drop_on_capable_model(monkeypatch):
                     if e.type is EventType.USAGE)
     by = {(s.feature, s.action) for s in usage_ev.data["substitutions"]}
     assert ("reasoning_control", "downgraded") in by
+
+
+# --- Polish: fail-closed models, transport-error normalization, secret non-leakage ----------------
+
+def _raising_transport(monkeypatch, exc):
+    async def _boom(**kwargs):
+        raise exc
+        yield  # make this an async generator (unreachable)
+    monkeypatch.setattr(transport, "stream_chunks", _boom)
+
+
+def test_unknown_model_fails_closed(monkeypatch):
+    # FR-008: an unknown (provider, model) is a clear, caller-visible error — never a guessed model/pricing.
+    _patch_transport(monkeypatch, _COST_CHUNKS)
+    with pytest.raises((FileNotFoundError, LookupError, ValueError)):
+        _collect(gateway.stream(_req(model="does-not-exist"), api_key="k"))
+
+
+def test_retired_model_not_executed(monkeypatch):
+    # gateway behavior #2: a retired profile must NOT run as if active.
+    _patch_transport(monkeypatch, _COST_CHUNKS)
+    retired = CapabilityProfile(
+        provider="openai", model="gpt-retired", api_version=None,
+        pricing=_PRICING, limits={}, features={}, availability="retired",
+    )
+    with pytest.raises(gateway.ModelRetiredError):
+        _collect(gateway.stream(_req(model="gpt-retired"), api_key="k", profile=retired))
+
+
+def test_transport_error_normalized(monkeypatch):
+    # FR-009/P8: a transport failure (the seam raises TransportError) surfaces as a normalized ERROR event —
+    # stable type, retryable hint carried from the seam, no raw SDK type, no faked USAGE/success.
+    _raising_transport(monkeypatch, transport.TransportError("upstream timed out", retryable=True, status=408))
+    events = _collect(gateway.stream(_req(), api_key="k"))
+    assert events and events[-1].type is EventType.ERROR
+    err = events[-1].data["error"]
+    assert err["type"] == "provider_error" and err["retryable"] is True and err["status"] == 408
+    assert all(e.type is not EventType.USAGE for e in events)
+
+
+def test_adapter_bug_not_normalized_as_provider_error(monkeypatch):
+    # code review F3 (honest failure): a non-TransportError reaching the gateway is OUR bug, not a provider
+    # failure — it must propagate uncaught, never be swallowed/mislabeled as provider_error.
+    _raising_transport(monkeypatch, ValueError("bug in our mapping code"))
+    with pytest.raises(ValueError):
+        _collect(gateway.stream(_req(), api_key="k"))
+
+
+def test_gateway_does_not_double_error_when_adapter_surfaces_error(monkeypatch):
+    # code review F2: an adapter that yields its own ERROR and ends without USAGE must NOT get a second
+    # 'degraded' ERROR appended by the gateway.
+    class _ErroringAdapter:
+        provider = "openai"
+
+        def supports(self, profile, req):
+            return []
+
+        async def stream(self, req, *, api_key, profile):
+            yield NormalizedStreamEvent(
+                EventType.ERROR, {"error": {"type": "provider_error", "retryable": False, "message": "boom"}}
+            )
+
+    monkeypatch.setattr(gateway, "adapter_for", lambda provider: _ErroringAdapter())
+    errors = [e for e in _collect(gateway.stream(_req(), api_key="k", profile=_profile({})))
+              if e.type is EventType.ERROR]
+    assert len(errors) == 1                               # exactly one, no spurious 'degraded'
+    assert errors[0].data["error"]["type"] == "provider_error"
+
+
+def test_interrupted_stream_is_degraded(monkeypatch):
+    # P8: a stream that ends with no USAGE is NOT a silent success — the gateway emits a degraded ERROR.
+    _patch_transport(monkeypatch, [_delta("partial, then the connection dropped")])  # content, no usage chunk
+    events = _collect(gateway.stream(_req(), api_key="k"))
+    assert any(e.type is EventType.ERROR for e in events)
+    assert all(e.type is not EventType.USAGE for e in events)
+
+
+def test_api_key_not_leaked_on_success(monkeypatch):
+    # FR-012/P5/SC-006: the api_key appears in zero emitted payloads on a normal stream.
+    _patch_transport(monkeypatch, _COST_CHUNKS)
+    events = _collect(gateway.stream(_req(), api_key="SECRET123"))
+    assert "SECRET123" not in repr([e.data for e in events])
+
+
+def test_api_key_not_leaked_in_error(monkeypatch):
+    # even when a provider error message embeds the key, it must be scrubbed from the ERROR event.
+    _raising_transport(
+        monkeypatch,
+        transport.TransportError("auth failed for key SECRET123", retryable=False, status=401),
+    )
+    events = _collect(gateway.stream(_req(), api_key="SECRET123"))
+    assert events[-1].type is EventType.ERROR
+    assert "SECRET123" not in repr([e.data for e in events])

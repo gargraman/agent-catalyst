@@ -4,6 +4,28 @@
 > everything speaks one normalized dialect; below it, each provider's quirks are contained. This is where
 > model-agnosticism either holds or quietly leaks — and where cost accuracy is won or lost.
 
+> **BUILT STATE (2026-11-03, feature `specs/002-provider-gateway`, M1).** This design is implemented in
+> `services/runtime/providers/` and verified (159 unit / 20 integration tests; runtime purity green).
+> Deltas from the design as-written, reconciled here:
+> - **Transport decision LOCKED = LiteLLM transport-only** (not the native-SDK option floated in §1's
+>   delta). All three adapters route through one seam, `transport.py` → `litellm.acompletion(stream=True,
+>   drop_params=False)`; litellm's `response_cost` is never read. The per-provider usage-mapping divergence
+>   (Anthropic cache_read/cache_creation, §cost) is handled in our mappers, not by switching SDKs.
+> - **Adapters built:** `openai_adapter`, `ollama_adapter`, net-new `anthropic_adapter`, over shared
+>   `_common` plumbing (`build_wire_request` + `stream_via_transport`). Structured `TOOL_CALL_*` events are
+>   **deferred to M2** (C1) — M1 adapters emit `TEXT_DELTA` + one terminal `USAGE` only.
+> - **Profiles are versioned JSON** in `runtime/providers/profiles_data/` (loaded by `resolve_profile`,
+>   content-matched on provider+model, `@lru_cache`, fail-closed). 8 profiles seeded; pricing sourced from
+>   `mvp/profiles` + `frontend/src/lib/data.ts` (judge `claude-haiku-5-5` price cited from the claude-api
+>   skill), all `provisional` until the owner-gated paid H2 reconciliation. **Judge-model naming
+>   reconciliation (Haiku 4.5 vs approved `claude-haiku-5-5`) is deferred to M3.**
+> - **Gateway hardening done:** fail-closed unknown model (FileNotFoundError) + retired-model guard
+>   (`ModelRetiredError`); transport failures normalized to one `ERROR` event (no raw SDK type; api_key
+>   scrubbed); a stream that ends with no `USAGE` → degraded `ERROR` (never silent success). Retry/
+>   fallback/circuit-breaking (§1) are **not yet built** — deferred (fallback model is a frontend-modelled
+>   field; circuit breaker is M3/M6, F8).
+> - Real Vault key custody is **P1**; the M1 gateway takes `api_key` from config/env.
+
 ## 1. What the gateway owns (and what it refuses to trust)
 
 Owns: the normalized request/response IR, per-provider adapters, **our own cost computation**, retry/
