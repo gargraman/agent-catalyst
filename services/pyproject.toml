@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "agent-catalyst-services"
 version = "0.0.0"
@@ -13,8 +17,18 @@ dependencies = [
 
 [project.optional-dependencies]
 # psycopg (sync) is required by Alembic's SYNC_URL; asyncpg drives the async request/job path.
-api = ["fastapi", "uvicorn", "sqlalchemy>=2.0", "asyncpg", "psycopg[binary]>=3", "alembic", "redis"]
+# litellm is TRANSPORT ONLY (M1 provider gateway, research R1): it carries bytes to/from providers;
+# cost/usage/substitutions stay ours (never litellm's response_cost), drop_params=False.
+api = ["fastapi", "uvicorn", "sqlalchemy>=2.0", "asyncpg", "psycopg[binary]>=3", "alembic", "redis", "litellm>=1.0"]
 test = ["pytest>=8", "pytest-asyncio"]
+
+# Editable/wheel package discovery. setuptools flat-layout auto-discovery fails on this tree
+# (multiple top-level packages: api, runtime, migrations), so declare the real source packages
+# explicitly. `migrations` is Alembic scripts (run via alembic.ini script_location, not imported as a
+# package) and `tests` are not distributable — both are intentionally excluded. pytest still makes the
+# repo root importable via pythonpath below, so `import migrations` in tests keeps working.
+[tool.setuptools.packages.find]
+include = ["api*", "runtime*", "evals*", "ingestion*", "mcp*"]
 
 [tool.pytest.ini_options]
 # Make the services/ root importable (api.*, runtime.*, evals.*) without an install step.

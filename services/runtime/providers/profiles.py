@@ -3,13 +3,17 @@
 A profile is versioned DATA per (provider, model, api_version): pricing + feature flags. The
 gateway refuses to run a request feature the model lacks silently — it records a Substitution.
 CapabilityProfile + Substitution are the data contracts; preflight_substitutions is implemented.
-resolve_profile (the profile-JSON loader) is intentionally deferred to a later M1 batch.
+resolve_profile loads versioned profile JSON from profiles_data/ by content match (provider+model).
 """
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
+from pathlib import Path
 
 from runtime.providers.ir import NormalizedRequest
+
+_PROFILE_DIR = Path(__file__).parent / "profiles_data"
 
 
 @dataclass(frozen=True)
@@ -59,7 +63,35 @@ def preflight_substitutions(profile: CapabilityProfile, req: NormalizedRequest) 
     return subs
 
 
-def resolve_profile(provider: str, model: str, api_version: str | None = None) -> CapabilityProfile:
-    """Load + cache the profile JSON for (provider, model, api_version). Profile-file loading is a
-    later M1 sub-batch; tests construct CapabilityProfile directly."""
-    raise NotImplementedError("M1 — profile loader lands in a later batch")
+def _profile_from_json(doc: dict) -> CapabilityProfile:
+    """Map the on-disk profile JSON (pricing under `pricing_usd_per_mtok`) onto CapabilityProfile so
+    cost.compute_cost indexes the same keys (input/output/cached_input/cache_write/reasoning/
+    batch_multiplier). Extra top-level keys (`_note`, `provisional`) are ignored here; provisional-cost
+    handling lands with its own test (FR-010)."""
+    return CapabilityProfile(
+        provider=doc["provider"],
+        model=doc["model"],
+        api_version=doc.get("api_version"),
+        pricing=dict(doc["pricing_usd_per_mtok"]),
+        limits=dict(doc.get("limits", {})),
+        features=dict(doc.get("features", {})),
+        availability=doc.get("availability", "active"),
+        sunset_at=doc.get("sunset_at"),
+    )
+
+
+def resolve_profile(
+    provider: str, model: str, api_version: str | None = None, *, dir: str | Path = _PROFILE_DIR
+) -> CapabilityProfile:
+    """Load the capability+pricing profile whose JSON `provider`+`model` match. Matches on file CONTENT,
+    not filename, so model ids containing '/' or ':' (e.g. 'llama3.1:8b') need no filesystem-safe name.
+    `api_version` is advisory (provider+model is the key). Fails closed (FR-008): a clear, caller-visible
+    error — never a guessed model/pricing — when no profile matches."""
+    directory = Path(dir)
+    for path in sorted(directory.glob("*.json")):
+        doc = json.loads(path.read_text())
+        if doc.get("provider") == provider and doc.get("model") == model:
+            return _profile_from_json(doc)
+    raise FileNotFoundError(
+        f"no capability profile for provider={provider!r} model={model!r} in {directory}"
+    )

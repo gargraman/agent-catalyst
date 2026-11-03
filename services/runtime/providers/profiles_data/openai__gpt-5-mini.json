@@ -1,0 +1,26 @@
+{
+  "provider": "openai",
+  "model": "gpt-5-mini",
+  "api_version": "2026-01",
+  "availability": "active",
+  "sunset_at": null,
+  "pricing_usd_per_mtok": {
+    "input": 0.6,
+    "output": 2.4,
+    "cached_input": 0.06,
+    "cache_write": 0.75,
+    "reasoning": 2.4,
+    "batch_multiplier": 0.5
+  },
+  "limits": {
+    "context_tokens": 400000,
+    "max_output_tokens": 128000
+  },
+  "features": {
+    "structured_output": true,
+    "forced_tool_choice": true,
+    "reasoning_control": true,
+    "prompt_caching": true,
+    "tool_call_format": "openai"
+  }
+}
