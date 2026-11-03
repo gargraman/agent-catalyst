@@ -19,7 +19,10 @@ dependencies = [
 # psycopg (sync) is required by Alembic's SYNC_URL; asyncpg drives the async request/job path.
 # litellm is TRANSPORT ONLY (M1 provider gateway, research R1): it carries bytes to/from providers;
 # cost/usage/substitutions stay ours (never litellm's response_cost), drop_params=False.
-api = ["fastapi", "uvicorn", "sqlalchemy>=2.0", "asyncpg", "psycopg[binary]>=3", "alembic", "redis", "litellm>=1.0"]
+# litellm pinned to a compatible-minor range: its streamed-chunk + usage shapes are what our adapters map,
+# and those are re-proven against the live wire only at M2 — an unbounded floor could silently reshape them
+# (wrong usage → wrong cost). Tested against 1.106.6; widen deliberately after re-verifying the mapping.
+api = ["fastapi", "uvicorn", "sqlalchemy>=2.0", "asyncpg", "psycopg[binary]>=3", "alembic", "redis", "litellm~=1.106"]
 test = ["pytest>=8", "pytest-asyncio"]
 
 # Editable/wheel package discovery. setuptools flat-layout auto-discovery fails on this tree

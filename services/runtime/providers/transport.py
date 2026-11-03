@@ -12,7 +12,15 @@ module (and runtime/) stays cheap and keeps the P6 purity invariant intact.
 """
 from __future__ import annotations
 
+import os
 from typing import Any, AsyncIterator
+
+# Force litellm's BUNDLED local model-cost map. litellm otherwise fetches a remote prices map from GitHub
+# on first import (retries with backoff) — cold-start latency and surprise egress that fails in an air-
+# gapped pilot. We compute cost ourselves from our own profiles (P7/R3) and never read litellm's cost, so
+# its map is dead weight here. Set BEFORE the lazy `import litellm` below so the production import never
+# fetches. Must stay above any litellm import in this process to take effect.
+os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
 
 
 class TransportError(Exception):

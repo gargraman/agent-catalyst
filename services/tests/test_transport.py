@@ -79,3 +79,13 @@ def test_transport_classifies_statusless_connection_error_retryable(monkeypatch)
     with pytest.raises(transport.TransportError) as ei:
         _drive(model="m", messages=[], api_key="k")
     assert ei.value.retryable is True
+
+
+def test_transport_pins_litellm_to_local_cost_map():
+    # Importing the transport module MUST force litellm's bundled local cost map, so the seam never makes a
+    # surprise outbound fetch of the remote model_prices map on import. We compute cost ourselves (P7), so
+    # litellm's map is unused anyway; fetching it adds cold-start latency + egress and fails in an air-gapped
+    # pilot. The module sets this before its lazy `import litellm`, so the production import never fetches.
+    import os
+
+    assert os.environ.get("LITELLM_LOCAL_MODEL_COST_MAP") == "True"
