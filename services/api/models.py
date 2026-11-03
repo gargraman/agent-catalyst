@@ -12,7 +12,7 @@ import uuid
 
 from sqlalchemy import Boolean, Enum, ForeignKey, Integer, MetaData, String, Text, Uuid, func
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+from sqlalchemy.orm import DeclarativeBase, Mapped, declared_attr, mapped_column, relationship
 
 from runtime.hashing import compute_snapshot_hash
 from runtime.snapshot import RetrievalRef, SkillRef, ToolRef, VersionSnapshot
@@ -40,9 +40,16 @@ def _opt_str(x) -> str | None:
 
 
 class WorkspaceScoped:
-    """Every tenant-owned table carries workspace_id (RLS keys on it — 0002/0004, 09 §6)."""
+    """Every tenant-owned table carries workspace_id (RLS keys on it — 0002/0004, 09 §6).
 
-    workspace_id: Mapped[uuid.UUID] = mapped_column(index=True)
+    The FK + index is provided here (via declared_attr) so subclasses don't redeclare it; the mixin
+    also marks a table as tenant-scoped for future RLS-policy automation (0.c). ``Workspace`` is the
+    tenant ROOT and deliberately does NOT use this mixin.
+    """
+
+    @declared_attr
+    def workspace_id(cls) -> Mapped[uuid.UUID]:
+        return mapped_column(ForeignKey("workspaces.id"), index=True)
 
 
 # --------------------------------------------------------------------------------------------------
@@ -59,7 +66,6 @@ class Workspace(Base):
 class Agent(Base, WorkspaceScoped):
     __tablename__ = "agents"
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, server_default=func.gen_random_uuid())
-    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workspaces.id"), index=True)
     name: Mapped[str] = mapped_column(String(80))
     status: Mapped[str] = mapped_column(_AGENT_STATUS, default="draft")
     active_version_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
@@ -73,7 +79,6 @@ class AgentVersion(Base, WorkspaceScoped):
     __tablename__ = "agent_versions"
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, server_default=func.gen_random_uuid())
     agent_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("agents.id"), index=True)
-    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workspaces.id"), index=True)
     label: Mapped[str] = mapped_column(String(40))
     system_prompt: Mapped[str] = mapped_column(Text)
     prompt_hash: Mapped[str] = mapped_column(Text)
@@ -157,7 +162,6 @@ class AgentVersion(Base, WorkspaceScoped):
 class KnowledgeBase(Base, WorkspaceScoped):
     __tablename__ = "knowledge_bases"
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, server_default=func.gen_random_uuid())
-    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workspaces.id"), index=True)
     slug: Mapped[str] = mapped_column(Text)
     name: Mapped[str] = mapped_column(Text)
     embedding_model: Mapped[str] = mapped_column(Text)
@@ -171,7 +175,6 @@ class KnowledgeBase(Base, WorkspaceScoped):
 class RetrievalBinding(Base, WorkspaceScoped):
     __tablename__ = "retrieval_bindings"
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, server_default=func.gen_random_uuid())
-    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workspaces.id"), index=True)
     version_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("agent_versions.id"), index=True)
     kb_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("knowledge_bases.id"))
     kb_index_version: Mapped[int] = mapped_column(Integer)
@@ -183,7 +186,6 @@ class RetrievalBinding(Base, WorkspaceScoped):
 class SkillBinding(Base, WorkspaceScoped):
     __tablename__ = "skill_bindings"
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, server_default=func.gen_random_uuid())
-    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workspaces.id"), index=True)
     version_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("agent_versions.id"), index=True)
     skill_id: Mapped[uuid.UUID] = mapped_column(Uuid)  # registry deferred: no FK yet
     skill_content_hash: Mapped[str] = mapped_column(Text)
@@ -192,7 +194,6 @@ class SkillBinding(Base, WorkspaceScoped):
 class ToolBinding(Base, WorkspaceScoped):
     __tablename__ = "tool_bindings"
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, server_default=func.gen_random_uuid())
-    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workspaces.id"), index=True)
     version_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("agent_versions.id"), index=True)
     kind: Mapped[str] = mapped_column(_TOOL_KIND)
     tool_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)

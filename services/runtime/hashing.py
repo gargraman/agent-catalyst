@@ -145,6 +145,6 @@ def compute_snapshot_hash(av) -> str:
         "profile_features": av.profile_snapshot.get("features") or {},
         # A1: the fallback model's profile features are snapshotted too, so a fallback capability
         # change is a DRIFT_TRIGGER like the primary's. {} when no fallback is pinned.
-        "fallback_profile_features": (av.profile_snapshot.get("fallback") or {}).get("features", {}),
+        "fallback_profile_features": (av.profile_snapshot.get("fallback") or {}).get("features") or {},
     }
     return sha256_hex(payload)

@@ -150,7 +150,7 @@ def run_h1(policy: EvalPolicy | None = None) -> dict:
         "control_verdict": control_verdict,
         "seed_verdicts": seed_verdicts,
         "detection_rate": detected / len(seed_verdicts),
-        "false_positive_rate": false_positive / 1,
+        "false_positive_rate": float(false_positive),
         "note": "engine-plumbing only; GO bars need real judge calls + κ≥0.60 raters (owner-gated)",
     }
 

@@ -121,3 +121,11 @@ def test_profile_snapshot_json_null_coalesces_like_absent_or_empty():
     nulled = make_av(profile_snapshot={"features": None, "fallback": None})
     h = compute_snapshot_hash(nulled)  # must not raise (old code did on fallback=None)
     assert h == compute_snapshot_hash(absent) == compute_snapshot_hash(empty)
+
+
+def test_profile_snapshot_nested_fallback_features_null_coalesces():
+    """fallback.features: null (nested JSON null) must coalesce to {} too, symmetric with the primary
+    branch — else two identical fallback configs hash differently (code-review finding, 2nd pass)."""
+    absent = make_av(profile_snapshot={"fallback": {}})
+    nested_null = make_av(profile_snapshot={"fallback": {"features": None}})
+    assert compute_snapshot_hash(nested_null) == compute_snapshot_hash(absent)
