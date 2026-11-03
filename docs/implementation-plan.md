@@ -1,31 +1,89 @@
-# Agent Platform — Phase 1 Critique + Phase 2 TDD Implementation Plan
+# Agent Platform — Architecture Review + Spec-Driven Implementation Roadmap
 
 ## Context
 
 **Why this plan exists.** `agent-catalyst` is an internal platform to build → configure → test → publish
-LLM agents, whose only defensible engineering lives in two places (`docs/scope.md`): the **provider
-abstraction / runtime** and the **eval + drift-detection core**. Today **only `frontend/` is built** — a
-mock-only Next.js console (253 `@backend` seams, drop-in-replaceable typed stores). The backend is
-**fully *designed* but unbuilt**: `docs/backend/00–18` (HLD) + `docs/backend/lld/*` (buildable LLD) spec a
-`services/` tree (`api`, `runtime`, `evals`, `ingestion`, `mcp`, `sandbox`) that **does not exist on disk**.
+LLM agents, whose highest-risk engineering is the **provider abstraction / runtime** and the **eval +
+drift-detection core** (`docs/scope.md`). The Next.js frontend is built but mock-only (253 `@backend`
+seams). The standalone `mvp/` viability experiment now has Phase-1 helpers, a narrow H2 provider harness,
+and a local live-call log. `services/` also contains foundation code (hashing/provider primitives, API
+helpers, migrations, and tests), but no end-to-end API, runtime invocation path, or worker. The HLD/LLD
+remain the design basis for those production services.
 
-This document executes the user's two requested phases **before any implementation code**:
-- **Phase 1** — architectural verification & critique of the HLD/LLD.
-- **Phase 2** — an iterative TDD implementation plan (contract-first, Red→Green→Refactor per module).
+This document is the architecture critique and production roadmap. Spec Kit feature artifacts will own
+the reviewable behavior requirements and actionable tasks for each bounded change.
 
-**Decisions locked with the user (this session):**
-- **Sequencing = C (de-risk on kept TDD code).** No throwaway spike. Build the gateway + runtime + eval
-  cores *once* under full TDD, then run the `mvp-spec.md` H1/H2 de-risk experiments **on that production
-  code** as a GO/NO-GO gate before building the rest of P1. Resolves the contradiction between the brief's
-  "strict TDD from line one" and `mvp-spec.md`'s "throwaway spike, minimal tests."
-- **Scope = P1 + promoted P0.** Chat core, gateway, runtime, eval/drift, publish/export, minimal RAG,
-  security/tenancy, observability/cost, deployment/scaling, **plus** the promoted P0 items
-  (adoption/enforcement `14`, org governance `15`, owner notifications `16`). P2 (tools/MCP/skills/full
-  guardrails/connectors/long-term memory/sandbox) is **out of scope for this plan**.
+**SDD adoption status.** GitHub Spec Kit was selected on 2026-10-31, and project constitution v1.0.0 was
+ratified on 2026-10-31 at `.specify/memory/constitution.md`. Feature specifications, plans, tasks,
+requirements checklists, and initialized Codex integration remain absent. Existing documents
+(`scope.md`, `spec.md`, `mvp-spec.md`, backend designs, and integration maps) are evidence and design
+inputs; they are not a substitute for a reviewed feature `spec.md` → `plan.md` → `tasks.md` chain. The
+first bounded feature is completion of the standalone `mvp/` viability experiment. The user approved the
+H1 task/domain/schema and protocol in principle; exact corpus sources, labels, prompt lesions, and
+acceptance examples remain to be frozen in reviewed feature artifacts. H1 stays blocked until the
+approved two-rater calibration prerequisite is available.
 
-**Build cadence (the user's TDD rule).** For every module: **contract/types first → output the failing
-test files and get confirmation → minimum implementation to green → refactor.** Implementation code is
-never written before its tests are confirmed.
+The required SDD artifact set is incomplete: the project constitution is ratified, but each feature still
+needs `spec.md`, `plan.md`, `tasks.md`, and the Spec Kit requirements checklist. Add `research.md`,
+`data-model.md`, `quickstart.md`, and API contracts when the feature plan needs them. The checklist and
+supporting artifacts must be generated/reviewed through the official Spec Kit workflow, not represented by
+this roadmap alone. Do not begin experiment implementation until this feature set and its unresolved
+decisions are reviewed.
+
+**Blocking gaps before that feature is ready:**
+- H1's task, source domain (public release notes/changelogs), and candidate schema are approved, but the
+  exact corpus/URLs/hashes, required-fact labels, prompt lesions, and acceptance examples are not frozen.
+- The current OpenAI H2 profile is stale: it marks deprecated `gpt-5-mini` active and its published
+  input/output/cached-input prices do not match OpenAI's listed prices. `gpt-5.6-terra` + Ollama and a
+  $10 combined hosted-spend cap are selected, but the profile, provider-specific cache semantics, and
+  worst-case cost preflight must be reconciled before the H2 rerun. The existing live log cannot be
+  retroactively used as cost evidence.
+- The user approved Haiku 5.5 (`claude-haiku-5-5`, effort `medium`), 20 development documents, 60
+  calibration pairs, 50/50 held-out arms, κ ≥ 0.60, repeatability checks, and the $10 cap. However, two
+  independent human raters are not available. This makes the approved H1 calibration protocol
+  infeasible. The user chose to preserve the gate and keep H1 blocked until two independent raters are
+  available; do not substitute a weaker calibration method. No H1 provider calls are authorized while
+  this blocker remains.
+- Production design documents still name Claude Haiku 4.5 as the judge (`backend/00`, `backend/05`,
+  `backend/07`, `eval-gap-analysis`, and diagrams). Haiku 5.5 is approved for the H1 experiment only;
+  this does not select the production judge. Reconcile the production model/settings/pricing and capability
+  profiles before specifying the production eval/drift feature.
+- The existing design corpus overlaps (`scope.md`, `spec.md`, backend designs, frontend map); feature
+  specifications must turn those inputs into user-visible acceptance scenarios and stable API contracts,
+  not mechanically convert every `@backend` comment into a task.
+- `uv 0.13.6` and `specify-cli 1.2.5` are installed in the user tool directory; `specify version`
+  confirms CLI 1.2.5 on Python 3.12.13. Project initialization remains pending. The system Git/Python
+  shims fail because Xcode Command Line Tools are absent; their installer cannot run here without an
+  active GUI session. Only the ratified constitution has been added under `.specify/`; no Spec Kit scaffold
+  or Codex skill integration has been created. The official
+  [existing-project guide](https://github.github.io/spec-kit/guides/existing-projects.html) calls for a
+  reviewable baseline before initialization, and Git cannot currently inspect or record one.
+  Resolve the toolchain/baseline path before initializing Spec Kit or treating its generated artifacts
+  as authoritative.
+
+**Sequence confirmed 2026-10-31.** Finish the standalone `mvp/` H1/H2 experiment and record its
+GO/NO-GO **before starting or extending production backend modules**. The existing partial M0 foundation
+is historical work; it does not change this gate. On GO, continue the production plan from M0, then M1–M3;
+on NO-GO, stop backend expansion and revisit the product hypothesis. The old choice-C sequence (build
+M1–M3 first, then validate) is superseded.
+
+**Product boundary and scope.** The first release is an **internal pilot** for one corporate deployment.
+The eventual backend target is the full current frontend capability surface, phased rather than silently
+dropping UI features. The initial pilot plan covers P1 plus promoted P0 (chat core, gateway/runtime,
+eval/drift, publish/export, minimal RAG, security/tenancy, observability/cost, deployment, adoption and
+governance). Current UI surfaces classified P2 (tools/MCP, skills, channels/connectors, full guardrails,
+long-term memory, sandbox, and advanced spend/concurrency controls) remain follow-on phases, not first-
+pilot scope. Voice remains deferred.
+
+**Build cadence (confirmed TDD rule, governed by SDD).** For each feature: approved behavior spec →
+clarification → implementation plan with acceptance-criterion-to-verification mapping and named commands
+→ quality checklist and dependency-ordered tasks → consistency analysis → implementation. With the
+Codex integration, invoke these through installed `$speckit-*` skills rather than generic slash-command
+notation. During implementation, settle the contract in the reviewed artifacts → write and run the Red
+test before production code → show the test files and expected-failure evidence and get confirmation →
+make the minimum change to reach Green → refactor while keeping all affected checks green. Production
+types, interfaces, validators, and migrations follow this same test-first order. The exploratory `mvp/`
+code does not waive this cadence for `services/`.
 
 ---
 
@@ -77,7 +135,7 @@ contracts that *do not yet exist in the design* and must be designed as the modu
 
 ---
 
-## Phase 2 — Iterative TDD Implementation Plan
+## Production implementation roadmap (after the viability gate)
 
 > **Every module and every `.a/.b/.c` step below is governed by the ritual in "Working process, progress
 > tracking, debugging & environments"** — the DoR/DoD gate (§A), the three-layer tracking (§B), the
@@ -87,23 +145,21 @@ contracts that *do not yet exist in the design* and must be designed as the modu
 ### Module dependency DAG (build order)
 
 ```
-                    ┌────────────────────────────────────────────────┐
-  STAGE 0 (gate)    │ M0  data model + snapshot_hash + conventions    │  P0 foundation
-                    └───────────────┬────────────────────────────────┘
-                                    │
-  STAGE 1           ┌───────────────▼───────────┐   ┌──────────────────┐
-  (defensible       │ M1 provider gateway (#1)   │──▶│ M2 runtime.invoke │
-   cores +          └───────────────┬───────────┘   │    shared core    │
-   DE-RISK GATE)                    │               └─────────┬────────┘
-                                    │                         │
-                                    └────────▶ ┌──────────────▼───────┐
-                                               │ M3 eval/drift (#2)    │
-                                               └──────────┬────────────┘
-                              ╔═══════════════════════════▼══════════════════════════╗
-                              ║  DE-RISK GATE: run H1/H2 on M1–M3 → GO/NO-GO          ║
-                              ║  (mvp-spec.md §2); write back to scope.md             ║
-                              ╚═══════════════════════════┬══════════════════════════╝
-                                                          │ GO
+  PRE-PRODUCTION     ┌───────────────────────────────────────────────────┐
+                     │ `mvp/` H1 + H2 experiment → documented GO / NO-GO │
+                     └──────────────────────────┬────────────────────────┘
+                                                │ GO only
+  STAGE 0            ┌──────────────────────────▼───────────────────────┐
+  (foundation)       │ M0 data model + snapshot_hash + conventions       │
+                     └──────────────────────────┬───────────────────────┘
+                                                │
+  STAGE 1            ┌──────────────────────────▼──────┐  ┌─────────────┐
+  (defensible        │ M1 provider gateway (#1)        │─▶│ M2 runtime  │
+   cores)             └──────────────────────────┬──────┘  │ .invoke     │
+                                                │         └──────┬──────┘
+                                                └───────▶┌───────▼──────┐
+                                                         │ M3 eval/drift│
+                                                         └──────────────┘
   STAGE 2           ┌──────────┬──────────────┬──────────┴───────┐
   (product          │ M4 API   │ M5 security/ │ M6 obs/cost      │ M7 minimal RAG
    surface)         │ surface  │   tenancy    │   wiring         │  (+ indirect-inj)
@@ -118,10 +174,28 @@ contracts that *do not yet exist in the design* and must be designed as the modu
                     └────────────────────────┴───────────────────────────────┘
 ```
 
-**Why this order:** M0 is the P0 gate — `VersionSnapshot`/`snapshot_hash` is the identity everything anchors
-to. M1→M2→M3 are the two defensible cores + the spine; building them first lets the **de-risk gate** run on
-real TDD'd code (choice C). Stage 2–4 are mostly "boring reliable software" but carry the highest-severity
-*operational* findings (rate limiting, correlation, budget durability, SSRF, parallel contention).
+### PRE-PRODUCTION — Standalone viability experiment and gate
+
+Complete this gate in `mvp/` before starting or extending production backend modules. The current H2
+harness is exploratory evidence only; it is not a pass. H1 and the combined decision remain open.
+
+- **H2:** one `NormalizedRequest` drives at least two providers (the current hosted OpenAI + local Ollama
+  pair), including streaming; calculated cost is within the pre-locked ±5% hand-calculation tolerance;
+  every required capability downgrade is recorded as a `Substitution`. A second hosted vendor is a later
+  confidence check, not part of the currently written two-provider pass bar.
+- **H1:** the approved protocol uses 20 public-text development documents, 60 separate
+  pairwise calibration examples, and 100 held-out documents (50 unchanged controls + 50 seeded
+  regressions). It retains the existing ≥80% regression-detection and <10% false-positive targets.
+  Dataset, judge, calibration sample, agreement threshold, schema, and threshold-tuning method must be
+  fixed in reviewed Spec Kit artifacts before measurement. Although `κ ≥ 0.60` is approved, the required
+  independent human raters are unavailable, so H1 cannot currently be measured as specified.
+- **Output:** reproducible scorecard, saved assertions/run metadata, tuned threshold, GO/NO-GO, and write-
+  back to `scope.md`. GO unlocks M0 onward; NO-GO stops expansion pending a product/technical decision.
+
+**Why this order:** the confirmed pre-production gate keeps unresolved model/eval risk from being hidden
+inside a larger backend build. After GO, M0 establishes `VersionSnapshot`/`snapshot_hash`; M1→M2→M3 build
+the production provider/runtime/eval core. Stage 2–4 address the product surface and high-severity
+operational findings (rate limiting, correlation, budget durability, SSRF, and parallel contention).
 
 **AI-module testing (M1, M3, M7).** These get the **two-layer** treatment (per the `ai-eval` approach):
 Layer-1 deterministic unit/integration tests **+** a Layer-2 versioned-prompt eval set scored vs a frozen
@@ -207,26 +281,15 @@ Source: `05`, `05L`, `eval-gap-analysis.md`.
   >20% judge-errored → `eval_failed`, distinct from `verdict=fail`); publish gate (PASS older than
   `latest_trigger_time`→409; low_confidence w/o override→409); concurrency (two finalizes serialize on the
   per-version advisory lock; stale older PASS after a newer trigger does **not** set `publishable`).
-  **Finding tests:** F18 — judge pinned at **temperature=0** (determinism: same candidate twice → same
-  verdict); per-case variance surfaced (a significance guard or documented repeat-count); `pairwise_win_rate`
+  **Finding tests:** F18 — judge uses a fixed model ID, prompt/rubric hash, and provider-supported API
+  settings; repeat-run variance is reported (do not require `temperature=0` on providers that reject it);
+  `pairwise_win_rate`
   all-ties does **not** auto-pass. F20 — the eval suite/case authoring path exists in P1 (reconcile the
   phasing).
 - **3.b (Green):** `deterministic.py` + `judge.py` (fixed/versioned, cached, batched) + `drift.py` (verdict
   + publishable + `DRIFT_TRIGGERS` invalidation) + the eval worker + `assert_publishable`.
 - **3.c (Refactor):** verdict cache keyed `(caseId, baselineHash, candidateHash, judgeVersion)`; Batch API;
   deterministic pre-filter before judge.
-
-#### ▶ DE-RISK GATE (choice C) — run H1/H2 on M1–M3
-Not a module; a **milestone gate** before Stage 2. Using the TDD'd gateway + runtime + eval:
-- **H2:** one `NormalizedRequest` drives ≥2 providers (cheap-hosted + local Ollama) incl. streaming;
-  computed cost vs hand-calc within **±5%** (lock the tolerance first); every capability downgrade recorded
-  as a `Substitution`.
-- **H1:** on a frozen baseline + a 20–30 case suite (non-sensitive task per `mvp-spec.md §9`), seeded
-  regressions flagged at **≥80% detection, <10% false-positive**, with a **calibrated judge (Cohen's
-  κ ≥ 0.6)** on a human-labeled holdout.
-- **Output:** fill the GO/NO-GO, record the empirically-tuned `Q_THRESHOLD`, and **write back to
-  `scope.md`** (Models + Evaluation + decision log) — making `spec.md`'s "assumes the viability MVP has
-  passed" finally true. A NO-GO stops Stage 2 (rethink the core, not just the plumbing).
 
 ---
 
@@ -348,52 +411,56 @@ step**, so the processes we've set are followed, not just intended.
 Every module runs the same loop; each row names the **governing skill/process** and its hard gate. A step
 does not advance until its gate is green.
 
-| Step | Governing process | Gate (must be true to advance) |
-|------|-------------------|-------------------------------|
-| **Module start (DoR)** | `superpowers:executing-plans` + `using-git-worktrees` | Plan step exists; a tracked task is opened (§B); an isolated branch/worktree exists; contract/types drafted first |
-| **.a RED** | `superpowers:test-driven-development` | Failing test files written **and shown to the user for confirmation before any impl** (your brief's rule); any pasted code snippet compiles (the LLD "snippet-compile" convention) |
-| **.b GREEN** | `superpowers:verification-before-completion` | Minimum impl; the exact test command is **run and its output pasted** — no "done/passing" claim without evidence (CLAUDE.md) |
-| **.c REFACTOR** | `/simplify` then `/code-review` | Tests stay green; reuse/simplify/efficiency pass applied; no behavior change |
-| **mid-step failure** | `superpowers:systematic-debugging` | Root cause reproduced by a test **before** any fix (§C) |
-| **Module done (DoD)** | `superpowers:requesting-code-review` + `ai-eval` (M1/M3/M7) | All tests green (evidence); `lint`/`build` green; AI modules show a **PASS drift report**; review done; a plain report of what was / was **not** verified (CLAUDE.md); PR opened **only when asked**, never to `main` |
+| Step | Spec Kit / engineering gate | Gate (must be true to advance) |
+|------|----------------------------|-------------------------------|
+| **Repository bootstrap / feature start (DoR)** | `$speckit-constitution` once, then `$speckit-specify` + `$speckit-clarify` per feature | Constitution is ratified; user outcome and acceptance scenarios are unambiguous; data/security boundaries and compatibility are explicit |
+| **Plan** | `$speckit-plan` | Design fits the existing service boundaries; APIs, data ownership, failure behavior, privacy, and operational needs are specified |
+| **Readiness** | `$speckit-checklist` + `$speckit-tasks` + `$speckit-analyze` | Every acceptance criterion maps to a dependency-ordered task, a verification method, and a named command; blocking ambiguity or cross-artifact conflict is resolved before implementation |
+| **.a RED** | `$speckit-implement` + approved task + TDD | Add the smallest relevant failing test before production code; run it and retain evidence of the expected behavioral failure; show test files and evidence to the user and get confirmation before implementation |
+| **.b GREEN** | Verification | Make the minimum change; run the focused test, then relevant regression tests and applicable plan checks; retain command/output evidence and make no pass claim without it |
+| **.c REFACTOR** | Review | Refactor without changing approved behavior; rerun affected tests and checks and keep them green |
+| **Module done (DoD)** | `$speckit-converge` + CI/review | Tests, lint/build, security/eval gates, and review evidence are complete; report what was and was not verified; PR only when asked |
 
 ### B. Progress tracking (three layers, always in sync)
 
-1. **Harness task list** — one task per module (M0–M12) **+** the de-risk gate; each `.a/.b/.c` step is a
-   subtask flipped `in_progress → completed` as it runs. Created at execution start (can't create in plan
-   mode). This is the live source of truth the session reports from.
-2. **This plan file as a living backlog** — the status table below; each step gets a checkbox; the file is
-   edited as modules complete (it is the durable record across sessions).
-3. **Git + CI as the objective signal** — branch/worktree per module, a commit per GREEN step (convention
-   inferred from `git log`), a PR per module (on request). A module is only "green" when its CI gates pass:
-   the two-layer test suite, a drift PASS (AI modules), the secret-scan, and the tenant-isolation suite.
+1. **Spec Kit artifacts** — one ratified project constitution at `.specify/memory/constitution.md`; one
+   bounded feature per `specs/<feature>/` directory with `spec.md`, `plan.md`, `tasks.md`, and the generated
+   requirements checklist. Add `research.md`, `data-model.md`, `quickstart.md`, and contracts when required
+   by the feature plan. These reviewed artifacts are the actionable source of truth; `mvp/` viability is
+   the first feature.
+2. **This plan file as the roadmap** — the stage/module status table below records cross-feature order and
+   completion; it must not duplicate per-feature task detail.
+3. **Git + CI as the evidence signal** — feature branches/worktrees and CI evidence after the repo's Git
+   toolchain is operational. A production module is green only when its deterministic suite, required AI
+   eval, secret scan, and tenant-isolation checks pass.
 
 **Module status table** (maintained in this file as work proceeds):
 
 | Module | Stage | Core? | DoD gate (headline) | State |
 |--------|-------|-------|---------------------|-------|
-| M0 data model | 0 | — | hash property tests + RLS zero-rows | ☐ todo |
-| M1 gateway | 1 | #1 | cross-provider contract + validators (F1–F4) | ☐ todo |
-| M2 runtime.invoke | 1 | spine | pipeline + deadline + AsyncSession-under-load | ☐ todo |
-| M3 eval/drift | 1 | #2 | verdict branches + publish-gate + determinism (F18) | ☐ todo |
-| **DE-RISK GATE** | 1 | — | **GO: ≥80% / <10% / κ≥0.6 + cost ±5%; write back scope.md** | ☐ todo |
+| MVP viability experiment (`mvp/`) | Pre-production | — | H1/H2 evidence, reproducible scorecard, documented GO/NO-GO | H2 harness implemented; local log has 8 calls, including one empty Ollama output; assertion report not retained; the OpenAI profile has stale lifecycle/pricing. User approved H1 candidates/protocol and H2 `gpt-5.6-terra` + Ollama under a $10 cap; exact corpus is unpinned and two human calibration raters are unavailable. Existing OpenAI log is historical evidence only. |
+| **DE-RISK GATE** | Pre-production | — | H1 ≥80% detection / <10% false positives with calibrated judge; H2 cross-provider/stream/cost/substitution bars; write back to scope | Blocked until the experiment spec is complete and evidence is reproducible |
+| M0 data model | 0 (after GO) | — | hash property tests + RLS zero-rows | **Data-model layer built + verified (feature `specs/001-m0-data-model`, 2026-11-03):** SQLAlchemy 2.0 async ORM (`services/api/models.py`), tenant-scoped `AsyncSession` factory as `ac_app` (`services/api/db.py` + `tenancy.py`), pure `VersionSnapshot` + `AgentVersion.to_snapshot()` (`services/runtime/snapshot.py`, reuses `hashing.py`), and migration `0004` (knowledge_bases + tool/skill/retrieval bindings + enums + RLS). 132 unit / 19 integration tests green on live Postgres (cross-tenant isolation, fail-closed, clone-stable + kb_index-excluded snapshot, immutability-raises, runtime purity). **Flagged follow-ups:** (a) `agent_versions` lacks doc columns `status`/`created_by`/`note`/`unique(agent_id,label)` — reconcile in a later migration; (b) binding `*_id` registry FKs + per-binding immutability triggers deferred (M4+); (c) `0.a` finding tests F16/F17 (validated-model hashing, CHECK constraints) not yet done. M1+ production expansion still gated on the viability GO. |
+| M1 gateway | 1 (after GO) | #1 | cross-provider contract + validators (F1–F4) | Blocked on viability GO; standalone MVP adapters do not complete production gateway |
+| M2 runtime.invoke | 1 (after GO) | spine | pipeline + deadline + AsyncSession-under-load | Blocked on viability GO |
+| M3 eval/drift | 1 (after GO) | #2 | verdict branches + publish-gate + determinism (F18) | Blocked on viability GO |
 | M4 API | 2 | — | typed SSE frames (F9) + idempotent creates (F14) | ☐ todo |
 | M5 security | 2 | — | isolation suite + `rate_limit()` (F5) + P1 SSRF (F19) | ☐ todo |
 | M6 obs/cost | 2 | — | failure-rate counters (F12) + correlation (F13) + budget durability (F7) | ☐ todo |
 | M7 min-RAG | 2 | — | right-chunk + indirect-injection scan (F6) | ☐ todo |
 | M8–M10 P0 | 3 | — | reg-gate / org-metadata-only / notify-once | ☐ todo |
 | M11 deploy/scaling | 4 | — | worker split (F21) + concurrency suite (F7/F8) | ☐ todo |
-| M12 frontend wiring | 4 | — | 253 @backend seams swapped; client==OpenAPI | ☐ todo |
+| M12 frontend wiring | 4 | — | All current frontend backend seams covered by approved feature specs and wired to the OpenAPI contract | ☐ todo |
 
 ### C. Debugging protocol (by failure class)
 
-Governing rule for all classes: **`superpowers:systematic-debugging`** — reproduce with a test, find root
-cause, then fix; never patch speculatively, never fix a failing eval by loosening a threshold.
+Governing rule for all classes: reproduce the failure, identify its root cause, then fix; never patch
+speculatively or fix a failing eval by loosening a threshold without a reviewed experiment decision.
 
 | Failure class | First move | Tools / substrate |
 |---------------|-----------|-------------------|
 | Deterministic test fail | the RED test *is* the repro; bisect to root cause | pytest `-x`, the failing assertion |
-| Eval/drift regression or flaky verdict | inspect the failing case's trace; confirm judge is `temp=0` + κ in-band; if a real behavior gap, **add a regression eval case** (feedback loop), don't move the bar | per-call JSONL log, Langfuse trace, the two-layer harness |
+| Eval/drift regression or flaky verdict | inspect the failing case's trace; confirm pinned model ID, fixed API settings, prompt/rubric hash, and calibration result; inspect repeated-run verdict flips. Do not assume `temperature=0`; if a real behavior gap, **add a regression eval case** (feedback loop), don't move the bar | per-call JSONL log, Langfuse trace, the two-layer harness |
 | Provider / transport failure | reproduce with a fault-injecting adapter stub | breaker state (Redis), retry/backoff + `Substitution` records |
 | Tenancy / RLS leak | run the isolation suite; trace the `SET LOCAL` GUC | `pg_policies`, GUC trace, fail-closed default |
 | Cost mismatch | reconcile computed ↔ hand-calc ↔ provider billing | capability profiles (the SoT), `compute_cost` |
@@ -404,39 +471,54 @@ Local observability available from day one: Langfuse UI, structured JSON logs ke
 
 ### D. Environments & go-live ladder (local → qa → prod)
 
-> **Terminology:** in *this* repo "sandbox" is the **P2 gVisor tool-exec unit** (out of scope here), **not**
-> a staging env. The pre-prod ladder is **local (docker compose) → qa → prod** (`settings.env ∈ dev|qa|prod`).
+> **Terminology:** in *this* repo "sandbox" is the **P2 gVisor tool-exec unit** (a follow-on phase, not
+> the first internal pilot), **not** a staging env. The pre-prod ladder is **local (docker compose) → qa →
+> prod** (`settings.env ∈ dev|qa|prod`).
 
 - **Local-first, always.** `deploy/compose` brings up Postgres+pgvector, Redis, Vault, Langfuse v3 +
-  ClickHouse, MinIO. Models = **cheap-hosted + local Ollama** (zero/near-zero spend). **Everything through
-  Stage 1 + the de-risk gate runs entirely locally** on cheap/local models.
+  ClickHouse, MinIO. The standalone experiment uses local Ollama plus only explicitly approved, capped
+  hosted-model spend; H1 cannot be assumed to run entirely locally. No production backend expansion starts
+  before the documented viability GO.
 - **Spend safety (scope.md ≤ $100/mo).** Live provider spend is gated on an explicit greenlight; the
   **enforced budget cap (M6) must be verified locally** (it actually refuses over-spend) **before any real
   provider key is ever loaded**.
-- **Secrets safety (CLAUDE.md).** No real keys/tokens/PAT-bearing remotes in code, commits, or output —
+- **Secrets safety.** No real keys/tokens/PAT-bearing remotes in code, commits, or output —
   ever; Vault only; dev uses cheap/local creds.
-- **Deploy safety (CLAUDE.md).** Feature branches/worktrees only; **never** push to `main`/prod or run a
+- **Deploy safety.** Feature branches/worktrees only; **never** push to `main`/prod or run a
   deploy without explicit in-session confirmation (a push to an auto-deploy branch *is* a prod deploy).
 - **Per-stage pre-live checklist** (gate before promoting beyond local):
 
   | Stage | Must be green locally before promotion |
   |-------|----------------------------------------|
-  | 1 | de-risk **GO** (≥80% detection / <10% FP / κ≥0.6) + cost within ±5% on cheap/local models |
-  | 2 | tenant-isolation suite green; **secret-scan clean** (no secret in logs/traces/export); rate limits active; budget cap refuses over-spend; playground first-token **p95 < 2s** |
-  | 3 | org read metadata-only + audited; registration gate enforced |
-  | 4 | concurrency suite green (eval fan-out ≠ prod-breaker trip); full compose stack healthy end-to-end; `frontend` build+lint green — **then, only with explicit confirmation**, promote qa → prod |
+  | Viability gate | H1/H2 pass bars and judge agreement threshold locked before measurement; scorecard reproducible; scope decision recorded |
+  | Internal pilot | Tenant-isolation suite green; secret scan clean; rate limits active; budget cap refuses over-spend; playground first-token p95 < 2s |
+  | Governance | Registration gate enforced; cross-workspace report metadata-only for private resources and audited |
+  | Ship | Concurrency suite green; full compose stack healthy end-to-end; frontend build/lint green — then, only with explicit confirmation, promote QA → prod |
 
 - **How to run it:** services via compose + `uvicorn`; frontend `cd frontend && npm run dev` (**verify Next
   16.3.8 APIs against `node_modules/next/dist/docs/` first**); use the `run` skill to drive/screenshot the
   app; `ai-monitor` once anything is live.
 
-## Cross-cutting TDD conventions (apply to every module)
+## Cross-cutting SDD + TDD conventions (apply to every feature)
 
-- **Contract-first.** Types/interfaces (Pydantic v2 at boundaries; frozen dataclasses for
-  `VersionSnapshot`/`RunContext`) before any class that implements them. For M1/M3/M7 the *net-new*
-  contracts (F1–F5 validators, tokenizer, `rate_limit()`) are designed as step `.a`.
-- **Strict Red→Green→Refactor.** Output the **failing test files first and get confirmation** before
-  implementation code (the user's rule). One todo per TDD step.
+- **Design the contract first; implement it test-first.** Define intended contracts in the reviewed feature
+  spec/plan. Then add and run tests before production types/interfaces, Pydantic v2 boundary models, frozen
+  dataclasses (`VersionSnapshot`/`RunContext`), validators, migrations, or behavior. For M1/M3/M7, F1–F5
+  validators, the tokenizer, and `rate_limit()` are contract/design work in `.a`; executable code follows
+  their Red tests.
+- **Strict Red→Green→Refactor.** RED must fail for the intended behavioral assertion, not because the
+  test cannot compile or the environment is broken. Output the **test files and expected-failure evidence
+  first and get confirmation** before implementation code (the user's rule). GREEN is the smallest change
+  plus focused and relevant regression checks. REFACTOR preserves the approved behavior and reruns affected
+  checks. Keep one todo per TDD step; never skip or weaken a test to force Green.
+- **Keep bootstrap non-behavioral.** If a test needs a package skeleton or harness setup before it can run,
+  list that setup in the task and keep it free of the behavior the Red test is meant to prove.
+- **Resolve ambiguity at the spec boundary.** If a test exposes an unspecified or conflicting behavior,
+  pause implementation, update and review the feature artifacts, then update verification to match the
+  approved decision. Record and get project-owner approval for any exception to test-first sequencing.
+- **Right-sized verification.** Docs-only changes use link, consistency, and rendering checks; they do not
+  need invented unit tests. For AI behavior, deterministic tests remain ordinary CI checks; live model calls
+  and paid evaluations follow the approved frozen-set, calibration, preflight, and spend gates.
 - **Defensive AI boundaries.** Every LLM call result passes a strict validator (F1/F2/F3) before it's
   trusted; transport gets breaker + capped backoff + fallback (M1).
 - **Observability-ready.** Structured JSON logs with a correlation id threaded UI→API→runtime→provider
@@ -446,7 +528,7 @@ Local observability available from day one: Langfuse UI, structured JSON logs ke
 - **Commit convention:** infer from `git log` (no enforced style yet in this repo); never commit to
   `main`; branch + PR only when explicitly asked. No deploy/push without in-session confirmation.
 
-## Load-bearing first files (from `spec.md`)
+## First production file candidates (after viability GO; refine per feature plan)
 `services/runtime/providers/abstraction.py` (IR + adapters + profile resolution + **the F1–F4 validators +
 tokenizer**) · `providers/profiles/*.json` · `runtime/invoke.py` · `evals/drift.py` (+ `deterministic.py`,
 `judge.py`) · `api/models.py` + `migrations/` · `api/publish/endpoint.py` · `api/errors.py` +
@@ -456,12 +538,13 @@ tokenizer**) · `providers/profiles/*.json` · `runtime/invoke.py` · `evals/dri
 
 ## Verification (how each stage proves itself)
 
-- **Per module:** the module's own Red tests pass (Green), then the Refactor keeps them green. No module is
-  "done" until its failing tests existed first and now pass.
-- **Stage 1 + DE-RISK GATE (headline):** provider-abstraction contract tests (same `NormalizedRequest`
-  across ≥2 providers; substitutions recorded; cost within ±5% of hand-calc); drift seeded-regression
-  (≥80% flagged, <10% FP on an unchanged agent) **with κ ≥ 0.6**; the GO/NO-GO is filled and written back
-  to `scope.md`. **A NO-GO halts Stage 2.**
+- **Per module:** each behavior change starts with a valid Red result for the expected behavior; the new
+  focused test and relevant regression tests pass at Green, then remain green after Refactor. No module is
+  "done" until test-first evidence and all applicable checks named by its feature plan are retained.
+- **Pre-production viability gate:** H2 contract tests (same `NormalizedRequest` across ≥2 providers,
+  recorded substitutions, cost within ±5% of hand-calc) and H1 seeded-regression measurements (≥80%
+  detection, <10% FP) with judge agreement at the criterion locked before measurement; write the result to
+  `scope.md`. **A NO-GO halts production backend expansion.**
 - **Stage 2:** publish with no/failed/low-confidence eval → 409; export cURL runs + streams + **no secret
   in output/logs/traces/export** (automated scan); tenant-isolation suite green (incl. DB-level
   EXECUTE-denial); builder + published rate limits return 429; an HTTP tool refuses an internal-IP URL;

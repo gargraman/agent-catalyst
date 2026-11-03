@@ -14,8 +14,16 @@ guardrails, model-agnosticism, and a drift-aware evaluation core.
 engineering goes into exactly two things: **(1) the provider abstraction / runtime** and **(2) the
 eval + drift-detection core.** Everything else is assembled from free/OSS frameworks.
 
-**Assumes the viability MVP has passed** (drift harness flags quality drops on model swap; provider
-abstraction holds across ≥2 providers) and turns that into a phased build spec.
+**The viability MVP has not passed yet.** The standalone H2 harness has live-call records for OpenAI
+`gpt-5-mini` and Ollama `llama3.1:8b`, but its saved log lacks the token/substitution/assertion report and
+contains one empty Ollama output among four. H1 (baseline, judge calibration, regression detection) is not
+implemented. Treat the phased plan below as a target design, not approval to claim the viability gate
+passed; see [`mvp-spec.md`](./mvp-spec.md) for current evidence and pass criteria.
+
+**Release boundary confirmed 2026-10-31:** the first product release is an internal pilot for one
+corporate deployment. The eventual backend target is the full capability surface already represented in
+the frontend; P1/P0 is the pilot slice and existing P2 surfaces remain later phases. This is not approval
+for an external commercial launch.
 
 **Decisions locked with the user (2026-10-04):** real internal tooling · portable/container deploy
 (no cloud lock-in) · **LangChain/LangGraph** for orchestration · **voice dropped** · OSS preferred ·
@@ -118,7 +126,9 @@ reproducible (capability profile + retrieval + tool schemas snapshotted per vers
 
 ### A3. Out of scope (decisions, not gaps)
 Voice · fine-tuning / model hosting · external marketplace · billing/chargeback beyond internal cost
-accounting · non-LLM workflow automation.
+accounting · non-LLM workflow automation · **stateful coding agents** (repo working tree / resumable
+uncommitted edits / PR authorship — inverts stateless `invoke()`; see
+`backend/data-isolation-topology.md §7`).
 
 ---
 
@@ -435,12 +445,17 @@ RBAC + audit hardening; usage/cost dashboards.
 
 ---
 
-## First files to create (on implementation)
+## Production file candidates (after viability GO)
+
+These are architecture candidates, not an approved task order. The standalone `mvp/` feature and its
+GO/NO-GO gate come first; a Spec Kit feature plan must order and scope production work after GO.
+
 - `services/runtime/providers/abstraction.py` — IR + adapter interface + profile resolution + LiteLLM
   wrapping (B2). *Load-bearing.*
 - `services/runtime/providers/profiles/*.json` — per-(provider,model,version) profiles.
 - `services/runtime/retrieval/retriever.py` — pgvector retrieval + RetrievalConfig (B6).
-- `services/runtime/mcp/worker.py` — MCP connect/discover/invoke in egress-restricted sandbox (B7).
+- `services/runtime/mcp/worker.py` — **P2 follow-on**: MCP connect/discover/invoke in egress-restricted
+  sandbox (B7); not part of the first internal pilot.
 - `services/evals/drift.py` — baseline, deterministic + judge scoring, verdict, publish gate (B5).
   *Defensible core.*
 - `services/api/models.py` (Alembic) — full data model, P2 tables stubbed (B3).

@@ -50,6 +50,9 @@ def clamp_limit(limit: int | None) -> int:
 def validate_sort(sort: str | None, allowed: set[str], default: str) -> str:
     """Whitelist the sort key (leading ``-`` = descending); unknown → ``InputInvalid``."""
     key = sort or default
-    if key.lstrip("-") not in allowed:
+    # Strip exactly ONE leading '-' (DESC marker). lstrip('-') would strip all of them, so '--name'
+    # or '-----name' would wrongly pass the whitelist and return a malformed ORDER BY key.
+    base = key[1:] if key.startswith("-") else key
+    if base not in allowed:
         raise InputInvalid("unsupported sort key", detail={"sort": sort, "allowed": sorted(allowed)})
     return key

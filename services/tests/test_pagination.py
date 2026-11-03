@@ -52,3 +52,16 @@ def test_validate_sort_allows_descending_prefix():
 def test_validate_sort_rejects_unknown_key():
     with pytest.raises(E.InputInvalid):
         P.validate_sort("password", {"created_at", "name"}, "created_at")
+
+
+# --- regression (code-review finding 3): single-dash strip, not lstrip ----------------------------
+def test_validate_sort_accepts_single_dash_desc():
+    assert P.validate_sort("-created_at", {"created_at"}, "created_at") == "-created_at"
+    assert P.validate_sort("created_at", {"created_at"}, "created_at") == "created_at"
+
+
+def test_validate_sort_rejects_multiple_leading_dashes():
+    # lstrip('-') would have let these through as "created_at"; only ONE leading '-' is a DESC marker.
+    for bad in ("--created_at", "-----created_at"):
+        with pytest.raises(E.InputInvalid):
+            P.validate_sort(bad, {"created_at"}, "created_at")

@@ -23,6 +23,7 @@ containers); where it **extends or pushes back**, the delta is argued inline (se
 | # | Doc | What it covers |
 |---|---|---|
 | — | [README.md](README.md) | This index |
+| — | [data-isolation-topology.md](data-isolation-topology.md) | **Cross-cutting synthesis** — tenant/agent/user separation, pgvector KB isolation, shared-infra map, deployment-topology options (pooled/bridge/silo), and the stateful-coding-agent out-of-scope gap analysis |
 | 00 | [00-overview.md](00-overview.md) | The one-shared-runtime principle, service/module layout, the `runtime.invoke()` entry point, config, the deltas-from-spec table |
 | 01 | [01-data-model.md](01-data-model.md) | Full SQL DDL + SQLAlchemy, enums, **RLS**, version-snapshot immutability, Alembic, indexes |
 | 02 | [02-provider-gateway.md](02-provider-gateway.md) | **Hard core #1** — IR, adapter Protocol, capability profiles, our own cost calc, substitutions, retry/fallback/circuit-breaker |
@@ -95,6 +96,8 @@ flowchart LR
 - **Phasing:** P1 (chat core, RAG, eval/drift, publish/export, guardrails baseline, cost accounting) is
   specified at full implementation depth; P2 (MCP, sub-agents, full guardrail library, spend/concurrency
   enforcement, RBAC hardening, connectors) is designed but lighter. Matches `spec.md Part C`.
-- These docs are a **design**, not generated from code — the backend (`services/`) is not yet built.
-  `spec.md "First files to create"` + `backend-integration-plan.md` milestones M1–M7 are the build order.
+- These docs are a **design**, not generated from code. `services/` now contains foundation modules
+  (provider IR/cost/validation, hashing, API helpers, migrations, and focused tests), but no end-to-end
+  API/runtime/worker. `spec.md "First files to create"` + `backend-integration-plan.md` milestones M1–M7
+  are the production build order.
 - Every doc cross-references the others as `(NN)`; follow the `→ Next:` footer to read in sequence.

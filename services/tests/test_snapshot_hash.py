@@ -110,3 +110,14 @@ def test_params_float_repr_is_stable():
     b = make_av()
     b.model_config_["params"]["temperature"] = Decimal("0.2")  # == float 0.2 semantically
     assert compute_snapshot_hash(a) == compute_snapshot_hash(b)
+
+
+# --- regression (code-review finding 1/2): stored JSON null in profile_snapshot --------------------
+def test_profile_snapshot_json_null_coalesces_like_absent_or_empty():
+    """A stored JSON null ("features": null / "fallback": null) must behave like an absent key /
+    {} — no AttributeError on the fallback branch, and the same hash as the empty/absent forms."""
+    absent = make_av(profile_snapshot={})
+    empty = make_av(profile_snapshot={"features": {}, "fallback": {}})
+    nulled = make_av(profile_snapshot={"features": None, "fallback": None})
+    h = compute_snapshot_hash(nulled)  # must not raise (old code did on fallback=None)
+    assert h == compute_snapshot_hash(absent) == compute_snapshot_hash(empty)

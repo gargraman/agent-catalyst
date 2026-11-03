@@ -11,7 +11,7 @@
 | | State |
 |---|---|
 | **Designed** | ✅ Hybrid: stateless invoke + optional server-side session memory via a LangGraph checkpointer. |
-| **Backend implemented** | ❌ No backend exists yet (frontend is mock-only). |
+| **Backend implemented** | ⚠️ Foundation modules and migrations exist, but no end-to-end API/runtime or session checkpointer is implemented. |
 | **Frontend implemented** | ⚠️ Memory settings are now **captured as config** (`AgentConfig`), but nothing enforces them: the Playground is ephemeral and the export snippet has no `session_id`. |
 
 ## What the design intends

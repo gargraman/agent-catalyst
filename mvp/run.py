@@ -28,6 +28,13 @@ def _cmd_h2(_args: list[str]) -> int:
     return 0
 
 
+def _cmd_h1(_args: list[str]) -> int:
+    # Offline: mocked judge, no provider calls, no API key. Plumbing evidence only (see h1_eval docstring).
+    from experiments.h1_eval import main as h1_main
+
+    return h1_main()
+
+
 def _stub(phase: str):
     def _run(_args: list[str]) -> int:
         print(f"not yet ({phase})")
@@ -40,7 +47,7 @@ _COMMANDS = {
     "h2": _cmd_h2,
     "baseline": _stub("Phase 3"),
     "calibrate": _stub("Phase 4"),
-    "h1": _stub("Phase 5"),
+    "h1": _cmd_h1,
     "tune": _stub("Phase 6"),
     "scorecard": _stub("Phase 7"),
 }

@@ -139,9 +139,12 @@ def compute_snapshot_hash(av) -> str:
             }
             for b in sorted(av.retrieval_bindings, key=lambda b: str(b.kb_id))
         ],
-        "profile_features": av.profile_snapshot.get("features", {}),
+        # `or {}` guards a stored JSON null (profile_snapshot may carry "features": null /
+        # "fallback": null, not an absent key) — .get(k, {}) returns None in that case, and the
+        # chained .get("features", …) on the fallback branch would raise AttributeError.
+        "profile_features": av.profile_snapshot.get("features") or {},
         # A1: the fallback model's profile features are snapshotted too, so a fallback capability
         # change is a DRIFT_TRIGGER like the primary's. {} when no fallback is pinned.
-        "fallback_profile_features": av.profile_snapshot.get("fallback", {}).get("features", {}),
+        "fallback_profile_features": (av.profile_snapshot.get("fallback") or {}).get("features", {}),
     }
     return sha256_hex(payload)

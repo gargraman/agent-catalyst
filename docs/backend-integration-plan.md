@@ -9,24 +9,30 @@ The frontend console is built and runs on **mock data**, but no longer reads `da
 and writes go through a client store (`frontend/src/lib/store.ts`) seeded from `frontend/src/lib/data.ts`,
 auth/tenancy is a mock IdP profile — claim-based, IdP-agnostic (`auth.tsx` + `iam.ts` + `permissions.ts` + `access-policy.ts`),
 and the runtime token check is a deterministic decode (`runtime-access.ts`). This plan turns that into a
-real product: build the backend per `docs/spec.md` (Python/FastAPI + LangGraph + LiteLLM +
+real internal pilot: build the backend per `docs/spec.md` (Python/FastAPI + LangGraph + LiteLLM +
 Postgres/pgvector + Redis + Vault + Langfuse + MinIO, portable containers), wire the existing UI to it,
-deploy it, and run agents safely for multiple tenants. The frontend data types were authored to mirror
-backend entities, so integration is mostly **"swap the data source behind `store.ts`,"** not a UI rewrite.
+and run agents safely across workspaces in one corporate deployment. The frontend data types were
+authored to mirror backend entities, but mock-only flows still need real authorization, persistence,
+failure behavior, and operational semantics; matching shapes does not make integration a store swap.
 
-The code already carries the integration contract inline: **~120 `@backend` markers** name the exact
-endpoint for every store hook/action and lib mock (`grep -rn "@backend" frontend/src`). Companion docs
-own the detail this roadmap deliberately does not duplicate:
+The frontend currently contains **253 `@backend` marker occurrences** (counted with
+`rg -c '@backend' frontend/src`; markers are not distinct endpoint counts). They identify candidate
+integration seams and must be reconciled with user-visible acceptance scenarios in feature specs.
+Companion docs own the detail this roadmap deliberately does not duplicate:
 - **`docs/backend-integration-map.md`** — authoritative code-location → endpoint/contract index.
 - **`docs/frontend-auth-access-plan.md`** — the dual (console vs runtime) auth/access model.
 - **`docs/archive/people-ops-workspace-plan.md`** (archived; historical) — the multi-workspace seed (security + People Ops).
 - **`docs/backend/00`–`11`** — the detailed backend "HOW" beneath this plan's "WHAT"
   (`08-api-surface.md` is the authority for endpoint paths).
 
-Scope follows the spec phasing: **P1 = chat core + RAG + eval/drift + publish/export**; **P2 = MCP,
-sub-agents, full guardrails, spend/concurrency quotas, RBAC hardening**. Voice is out. (Phasing nuance
-from `docs/backend`: RBAC *roles*, per-token *rate limits*, and HTTP-tool *egress allow-lists* are P1;
-*concurrency + spend quotas*, the *MCP sandbox*, and the *human-approval gate* for high-risk tools are P2.)
+**Release scope confirmed 2026-10-31:** first release is an internal pilot for one corporate deployment;
+the eventual backend target is the full current frontend capability surface. P1 plus promoted P0
+(chat core, RAG, eval/drift, publish/export, adoption/enforcement, governance, and owner notifications)
+form the initial pilot. Existing UI surfaces classified P2 (MCP, sub-agents, skills, channels/connectors,
+full guardrails, spend/concurrency controls, and related hardening) remain follow-on phases, not features
+to omit permanently. Voice is deferred. (Phasing nuance from `docs/backend`: RBAC roles, per-token rate
+limits, and HTTP-tool egress allow-lists are P1; concurrency + spend quotas, the MCP sandbox, and the
+human-approval gate for high-risk tools are P2.)
 
 ---
 
@@ -246,7 +252,7 @@ per-resource policy (visibility `workspace|restricted` + use/manage by role and 
 |---|---|
 | Data isolation | Row-level `workspace_id` + RLS; **pgvector namespaced per KB and workspace** (filter on both); schema-per-tenant only for unusually large tenants |
 | Secret isolation | **Per-workspace DEK** in Vault; provider/tool/source keys scoped to the workspace; never cross-tenant, never in logs/exports |
-| Provider keys | Support **BYO per-workspace** (true isolation + per-tenant cost) with an optional platform-shared pool fallback |
+| Provider keys | **Platform-exclusive key custody**; users do not supply provider keys. Vaulted credentials are injected server-side; see `backend/14` |
 | Compute isolation | Runtime workers are **stateless**; each task carries tenant context; no shared in-memory tenant state |
 | Memory / sessions | LangGraph checkpointer keyed by `(workspace_id, agent_id, session_id)`; long-term memory scoped per workspace/end-user |
 | Fairness (noisy neighbor) | Per-workspace + per-endpoint **rate limits, concurrency caps (Redis semaphores), spend quotas** (pre-call reservation + reconciliation); per-tenant or weighted queues |
@@ -359,14 +365,10 @@ single-tenant) is demoable in ~15-19 pw; multi-tenant + security hardening (M6-M
 
 ---
 
-## Open decisions (recommended first; confirm before M1)
-1. **Auth:** Auth.js + **org IdP OIDC**, claim-based and IdP-agnostic via the identity adapter (Okta is the
-   reference adapter — `backend/18`) — **locked** (FE already built against this model; see
-   `frontend-auth-access-plan.md`). Keycloak / in-house superseded.
-2. **Deploy:** Compose-on-VM now, k8s-ready *(recommended)* · k8s from day one.
-3. **FE integration:** OpenAPI-generated typed client *(recommended; the `@backend` markers + the
+## Open decisions (confirm before the relevant feature plan)
+1. **Deploy:** Compose-on-VM now, k8s-ready *(recommended for the internal pilot)* · k8s from day one.
+2. **FE integration:** OpenAPI-generated typed client *(recommended; the `@backend` markers + the
    integration map assume it)* · hand-written fetch wrappers.
-4. **Provider keys:** per-workspace BYO *(recommended for real multi-tenant)* · platform shared pool.
-   FE already models `provider_keys` per workspace (vaulted, masked).
-5. **Tenant isolation:** shared DB + row-scoping + RLS — **locked** by `docs/backend/01,09`
-   (`SET LOCAL app.workspace_id`). Schema/DB-per-tenant only for outlier tenants.
+**Resolved constraints:** claim-based org-IdP identity, platform-exclusive provider-key custody, and
+shared-DB row scoping + RLS (`SET LOCAL app.workspace_id`) are locked by the current decision log and
+`docs/backend/01,09,14,18`. Do not reopen the superseded BYO-key option in feature plans.
