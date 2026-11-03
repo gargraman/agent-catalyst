@@ -7,7 +7,6 @@
 """
 from __future__ import annotations
 
-import os
 from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
 from uuid import UUID
@@ -15,19 +14,16 @@ from uuid import UUID
 from sqlalchemy.pool import NullPool
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from api.settings import get_settings
 from api.tenancy import set_workspace_scope
 
+# URLs come from the typed settings layer (single source; driver-validated fail-closed — api/settings.py).
+_settings = get_settings()
 # Superuser/owner (migrations + tooling). BYPASSES RLS — never use on the request path.
-ASYNC_URL = os.environ.get(
-    "AC_DATABASE_URL", "postgresql+asyncpg://ac:ac_dev_pw@localhost:5433/agent_catalyst"
-)
-SYNC_URL = os.environ.get(
-    "AC_DATABASE_SYNC_URL", "postgresql+psycopg://ac:ac_dev_pw@localhost:5433/agent_catalyst"
-)
+ASYNC_URL = _settings.database_url
+SYNC_URL = _settings.database_sync_url
 # Non-superuser app role — the request/job path. RLS applies. Dev password; prod via Vault (09).
-APP_ASYNC_URL = os.environ.get(
-    "AC_APP_DATABASE_URL", "postgresql+asyncpg://ac_app:ac_app_pw@localhost:5433/agent_catalyst"
-)
+APP_ASYNC_URL = _settings.app_database_url
 
 # Lazy singletons so importing this module never opens a connection (keeps unit tests infra-free).
 _app_engine = None

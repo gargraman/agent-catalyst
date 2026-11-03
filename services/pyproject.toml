@@ -3,14 +3,17 @@ name = "agent-catalyst-services"
 version = "0.0.0"
 description = "Agent Catalyst backend services (api · runtime · evals · ingestion)"
 requires-python = ">=3.12"
-# Declared for documentation; M0's infra-free unit tests need only pydantic (installed).
-# DB/Redis/FastAPI deps are exercised in the integration batch once the compose stack is up.
+# Base = the infra-free core the unit run needs: settings (pydantic-settings) + runtime schema
+# validation (jsonschema). DB/Redis/FastAPI deps live in [api] and are exercised in the integration batch.
 dependencies = [
     "pydantic>=2.0",
+    "pydantic-settings>=2.0",
+    "jsonschema>=4",
 ]
 
 [project.optional-dependencies]
-api = ["fastapi", "uvicorn", "sqlalchemy>=2.0", "asyncpg", "alembic", "redis"]
+# psycopg (sync) is required by Alembic's SYNC_URL; asyncpg drives the async request/job path.
+api = ["fastapi", "uvicorn", "sqlalchemy>=2.0", "asyncpg", "psycopg[binary]>=3", "alembic", "redis"]
 test = ["pytest>=8", "pytest-asyncio"]
 
 [tool.pytest.ini_options]
