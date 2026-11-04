@@ -27,11 +27,13 @@ class ProviderAdapter(Protocol):
         ...
 
     def stream(
-        self, req: NormalizedRequest, *, api_key: str, profile: CapabilityProfile
+        self, req: NormalizedRequest, *, api_key: str, profile: CapabilityProfile,
+        timeout: float | None = None,
     ) -> AsyncIterator[NormalizedStreamEvent]:
         """Call the provider (via transport.stream_chunks) and yield normalized events: TEXT_DELTA as
         content streams, then exactly one final USAGE event carrying a NormalizedUsage with RAW token
-        counts (cost attached by the gateway, not here)."""
+        counts (cost attached by the gateway, not here). `timeout` (seconds, default None) bounds the
+        underlying transport call; None leaves transport behavior unchanged."""
         ...
 
 

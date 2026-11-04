@@ -251,7 +251,7 @@ def test_gateway_does_not_double_error_when_adapter_surfaces_error(monkeypatch):
         def supports(self, profile, req):
             return []
 
-        async def stream(self, req, *, api_key, profile):
+        async def stream(self, req, *, api_key, profile, timeout=None):
             yield NormalizedStreamEvent(
                 EventType.ERROR, {"error": {"type": "provider_error", "retryable": False, "message": "boom"}}
             )
@@ -287,6 +287,36 @@ def test_api_key_not_leaked_in_error(monkeypatch):
     events = _collect(gateway.stream(_req(), api_key="SECRET123"))
     assert events[-1].type is EventType.ERROR
     assert "SECRET123" not in repr([e.data for e in events])
+
+
+def test_gateway_threads_timeout_to_transport(monkeypatch):
+    # T012 (research D5 / review C5): an explicit timeout threads gateway → adapter → stream_via_transport
+    # → the litellm call, so the transport itself is bounded (defense in depth beyond the invoke deadline).
+    captured: dict = {}
+
+    async def _fake(**kwargs):
+        captured.update(kwargs)
+        for c in _CHUNKS:
+            yield c
+
+    monkeypatch.setattr(transport, "stream_chunks", _fake)
+    _collect(gateway.stream(_req(), api_key="k", timeout=12.5))
+    assert captured.get("timeout") == 12.5
+
+
+def test_gateway_omits_timeout_by_default(monkeypatch):
+    # Default is None → the kwarg is NOT forwarded, so M1's existing (unbounded-transport) behavior and its
+    # mocked tests are unaffected.
+    captured: dict = {}
+
+    async def _fake(**kwargs):
+        captured.update(kwargs)
+        for c in _CHUNKS:
+            yield c
+
+    monkeypatch.setattr(transport, "stream_chunks", _fake)
+    _collect(gateway.stream(_req(), api_key="k"))
+    assert "timeout" not in captured
 
 
 def test_cost_clamps_inconsistent_usage(monkeypatch):

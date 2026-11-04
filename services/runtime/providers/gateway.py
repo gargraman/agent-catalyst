@@ -55,7 +55,8 @@ def _normalize_error(exc: TransportError, api_key: str) -> dict:
 
 
 async def stream(
-    req: NormalizedRequest, *, api_key: str, profile: CapabilityProfile | None = None
+    req: NormalizedRequest, *, api_key: str, profile: CapabilityProfile | None = None,
+    timeout: float | None = None,
 ) -> AsyncIterator[NormalizedStreamEvent]:
     """Resolve the profile, select the provider adapter, and stream normalized events.
 
@@ -69,7 +70,11 @@ async def stream(
     substitutions (US3/P7). Runtime hardening (P8): a transport/adapter failure is normalized to a single
     ERROR event with no raw SDK type and the api_key scrubbed (FR-009/FR-012); a stream that ends without a
     USAGE is reported as a degraded ERROR, never a silent success. Our own post-processing is kept OUT of
-    the transport try/except so a bug here is never misattributed as a provider error (honest failure)."""
+    the transport try/except so a bug here is never misattributed as a provider error (honest failure).
+
+    `timeout` (seconds) is threaded to the transport/litellm call so the provider call itself is bounded
+    (research D5); `None` (the default) leaves transport behavior unchanged — M2a's deadline enforcement
+    also lives in the invoke pipeline, and this is defense in depth at the wire."""
     profile = profile or resolve_profile(req.provider, req.model, req.api_version)
     if getattr(profile, "availability", "active") == "retired":
         raise ModelRetiredError(
@@ -78,7 +83,7 @@ async def stream(
     adapter = adapter_for(req.provider)
     preflight = adapter.supports(profile, req)
 
-    stream_iter = adapter.stream(req, api_key=api_key, profile=profile)
+    stream_iter = adapter.stream(req, api_key=api_key, profile=profile, timeout=timeout)
     saw_usage = False
     saw_error = False
     while True:

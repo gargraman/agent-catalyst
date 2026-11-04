@@ -21,7 +21,8 @@ class OllamaAdapter:
         return preflight_substitutions(profile, req)
 
     def stream(
-        self, req: NormalizedRequest, *, api_key: str, profile: CapabilityProfile
+        self, req: NormalizedRequest, *, api_key: str, profile: CapabilityProfile,
+        timeout: float | None = None,
     ) -> AsyncIterator[NormalizedStreamEvent]:
         messages, params, subs = _common.build_wire_request(profile, req)
         return _common.stream_via_transport(
@@ -31,6 +32,7 @@ class OllamaAdapter:
             params=params,
             tools=req.tools or None,
             substitutions=subs,
+            timeout=timeout,
         )
 
 

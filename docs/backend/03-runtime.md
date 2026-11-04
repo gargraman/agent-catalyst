@@ -4,6 +4,20 @@
 > (00 §1). This is the graph that the playground, eval workers, and published endpoint all execute. It
 > sits above the gateway (02) and below the thin HTTP callers (08).
 
+> **⚠ Built-state note (M2a, 2026-11-04 — feature `specs/003-runtime-invoke-spine`).** The design below
+> specifies the *full* LangGraph runtime (guardrails → retrieval → tool loop → checkpointer). **M2a built
+> only the spine**, and deliberately as a **plain async pipeline, not LangGraph** (research D1): a single
+> generate-and-stream turn needs no graph, nodes, or checkpointer, and LangGraph is deferred to the first
+> feature that genuinely branches/loops (the tool cycle). What exists on disk today
+> (`services/runtime/{invoke,io,tokens,run,context}.py`): one pure `invoke`/`invoke_result` that reads a
+> frozen `VersionSnapshot`, validates input + checks the context budget **fail-closed before any provider
+> call**, streams through the gateway (02), re-surfaces every event class (text/reasoning/tool-call/stop),
+> bounds the work by `ctx.deadline_s`, and emits **exactly one honest `RunRecord`** to a context sink
+> (the runtime does **not** persist — the API/worker caller owns persistence). **Still unbuilt vs this
+> doc:** input/output guardrails (06), retrieval (04), the tool-execution loop + approval gate, the
+> checkpointer/session memory, and output validate/repair (→ **M2b**). The §2 graph is the target, not the
+> current implementation.
+
 ## 1. Responsibilities
 
 The runtime turns a frozen `VersionSnapshot` + inputs into a stream of `NormalizedStreamEvent`s by

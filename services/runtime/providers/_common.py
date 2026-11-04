@@ -184,6 +184,7 @@ async def stream_via_transport(
     tools: list[dict] | None = None,
     usage_mapper: Callable[[object], NormalizedUsage] = map_openai_usage,
     substitutions: list[Substitution] | None = None,
+    timeout: float | None = None,
 ) -> AsyncIterator[NormalizedStreamEvent]:
     """Drive the LiteLLM transport seam and yield normalized events: TEXT_DELTA as content streams,
     then exactly one terminal USAGE carrying raw NormalizedUsage (cost attached by the gateway).
@@ -193,6 +194,10 @@ async def stream_via_transport(
     kwargs: dict = {"model": model, "messages": messages, "api_key": api_key, **params}
     if tools:
         kwargs["tools"] = tools
+    if timeout is not None:
+        # Bound the litellm call itself (research D5). Omitted when None so M1's existing behavior and its
+        # mocked tests are unchanged; litellm accepts `timeout` as a request-level bound.
+        kwargs["timeout"] = timeout
 
     usage: NormalizedUsage | None = None
     usage_seen = False

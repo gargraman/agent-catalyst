@@ -21,7 +21,8 @@ class OpenAIAdapter:
         return preflight_substitutions(profile, req)
 
     def stream(
-        self, req: NormalizedRequest, *, api_key: str, profile: CapabilityProfile
+        self, req: NormalizedRequest, *, api_key: str, profile: CapabilityProfile,
+        timeout: float | None = None,
     ) -> AsyncIterator[NormalizedStreamEvent]:
         # LiteLLM routes OpenAI models by bare id (e.g. "gpt-5-mini").
         messages, params, subs = _common.build_wire_request(profile, req)
@@ -32,6 +33,7 @@ class OpenAIAdapter:
             params=params,
             tools=req.tools or None,
             substitutions=subs,
+            timeout=timeout,
         )
 
 

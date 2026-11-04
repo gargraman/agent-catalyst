@@ -26,7 +26,8 @@ class AnthropicAdapter:
         return preflight_substitutions(profile, req)
 
     def stream(
-        self, req: NormalizedRequest, *, api_key: str, profile: CapabilityProfile
+        self, req: NormalizedRequest, *, api_key: str, profile: CapabilityProfile,
+        timeout: float | None = None,
     ) -> AsyncIterator[NormalizedStreamEvent]:
         # LiteLLM routes Anthropic by the "anthropic/<model>" id.
         messages, params, subs = _common.build_wire_request(profile, req)
@@ -38,6 +39,7 @@ class AnthropicAdapter:
             tools=req.tools or None,
             usage_mapper=_common.map_anthropic_usage,
             substitutions=subs,
+            timeout=timeout,
         )
 
 
