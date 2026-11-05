@@ -6,19 +6,21 @@ guard (D8). DELETE/duplicate are deferred.
 """
 from __future__ import annotations
 
+import datetime
 import hashlib
 import json as _json
 import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Header, Response
-from sqlalchemy import select, text
+from sqlalchemy import select, text, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from api.deps import idempotency_guard, rate_limit, resolve_workspace, tenant_db
 from api.errors import ConflictStale, InputInvalid, NotFound
 from api.models import Agent, AgentVersion
+from runtime.hashing import compute_snapshot_hash
 from runtime.providers.profiles import _PROFILE_DIR
 from api.pagination import Page, clamp_limit, decode_cursor, encode_cursor
 from api.schemas.agents import AgentCreate, AgentOut, AgentPatch, VersionOut
@@ -45,6 +47,23 @@ async def _load_agent(session: AsyncSession, agent_id: str) -> Agent | None:
         return None
     stmt = select(Agent).where(Agent.id == aid).options(selectinload(Agent.versions))
     return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def _version_belongs(session: AsyncSession, agent_id: str, version_id: str) -> uuid.UUID:
+    """Validate that `version_id` is a well-formed UUID AND belongs to THIS agent (same workspace via RLS).
+    Prevents pointing an agent at another agent's version, and a malformed/absent id → typed 400/404 (not a
+    500 / FK IntegrityError)."""
+    try:
+        vid = uuid.UUID(version_id)
+        aid = uuid.UUID(agent_id)
+    except (ValueError, TypeError):
+        raise InputInvalid("malformed version id", detail={"version_id": version_id})
+    row = (await session.execute(
+        select(AgentVersion.id).where(AgentVersion.id == vid, AgentVersion.agent_id == aid))).first()
+    if row is None:
+        raise NotFound("version not found for this agent",
+                       detail={"agent_id": agent_id, "version_id": version_id})
+    return vid
 
 
 async def _etag(session: AsyncSession, agent_id: str) -> str:
@@ -90,8 +109,15 @@ async def create_agent(
             system_prompt=body.system_prompt, prompt_hash=_prompt_hash(body.system_prompt),
             model_config_={"provider": body.provider, "model": body.model, "params": {}},
             profile_snapshot=profile, io_contract=body.io_contract, snapshot_hash="",
+            # Set the config defaults EXPLICITLY: column server-defaults apply at flush, but the hash is
+            # computed pre-flush, so an unset field would hash as None here yet {} once loaded — diverging
+            # from to_snapshot(). Setting {} makes the pre-flush hash equal the authoritative recomputed one.
+            guardrail_config={}, memory_config={}, context_config={},
         )
-        v.snapshot_hash = _prompt_hash(body.system_prompt + body.provider + body.model)  # content id (slice)
+        # The AUTHORITATIVE content hash the runtime/RunRecord use (compute over empty bindings pre-flush —
+        # no I/O). Stored == to_snapshot() recomputes, so version-id ↔ run content-hash comparisons hold.
+        v.retrieval_bindings, v.tool_bindings, v.skill_bindings = [], [], []
+        v.snapshot_hash = compute_snapshot_hash(v)
         session.add(v)
         await session.flush()
         agent.active_version_id = v.id
@@ -112,8 +138,11 @@ async def list_agents(
     stmt = select(Agent).options(selectinload(Agent.versions)).order_by(Agent.created_at.desc(), Agent.id.desc())
     cur = decode_cursor(cursor)
     if cur is not None:
-        _, last_id = cur
-        stmt = stmt.where(Agent.id < uuid.UUID(last_id))
+        # keyset on the SAME ordering key (created_at, id) as the ORDER BY — a row-value seek, so the next
+        # page can't drop/repeat rows (id alone is a random uuid4, unrelated to created_at order).
+        sort_value, last_id = cur
+        cur_dt = datetime.datetime.fromisoformat(sort_value)
+        stmt = stmt.where(tuple_(Agent.created_at, Agent.id) < tuple_(cur_dt, uuid.UUID(last_id)))
     rows = list((await session.execute(stmt.limit(n + 1))).scalars().all())
     next_cursor = None
     if len(rows) > n:
@@ -153,6 +182,10 @@ async def patch_agent(
         etag_val = int(if_match)                       # xmin is a 32-bit xid; asyncpg binds it as an int
     except (TypeError, ValueError):
         raise ConflictStale("malformed If-Match ETag", detail={"agent_id": agent_id})
+    # A re-point MUST target a version of THIS agent (validated/scoped) — never a foreign version or a
+    # malformed id landing as a 500 (F3).
+    if body.active_version_id is not None:
+        await _version_belongs(session, agent_id, body.active_version_id)
     res = await session.execute(
         text("update agents set name = coalesce(:name, name), status = coalesce(:status, status), "
              "active_version_id = coalesce(:av, active_version_id) "
@@ -185,14 +218,28 @@ async def create_version(
     if agent is None or not agent.versions:
         raise NotFound("agent (or its base version) not found", detail={"agent_id": agent_id})
     latest = sorted(agent.versions, key=lambda v: v.created_at)[-1]
-    new_label = label or f"v{len(agent.versions) + 1}"
+    # Label uniqueness (F5): reject an explicit duplicate; auto-derive the lowest free vN (count+1 breaks once
+    # a custom label exists). A durable unique(agent_id,label) constraint is deferred to M4-remainder.
+    existing = {v.label for v in agent.versions}
+    if label is not None:
+        if label in existing:
+            raise InputInvalid("version label already exists", detail={"label": label})
+        new_label = label
+    else:
+        k = 1
+        while f"v{k}" in existing:
+            k += 1
+        new_label = f"v{k}"
     clone = AgentVersion(
         workspace_id=latest.workspace_id, agent_id=latest.agent_id, label=new_label,
-        system_prompt=latest.system_prompt, prompt_hash=latest.prompt_hash, snapshot_hash=latest.snapshot_hash,
+        system_prompt=latest.system_prompt, prompt_hash=latest.prompt_hash, snapshot_hash="",
         model_config_=latest.model_config_, profile_snapshot=latest.profile_snapshot,
         io_contract=latest.io_contract, guardrail_config=latest.guardrail_config,
         memory_config=latest.memory_config, context_config=latest.context_config,
     )
+    # Recompute the authoritative snapshot_hash (same config as latest → same hash, consistent with F4).
+    clone.retrieval_bindings, clone.tool_bindings, clone.skill_bindings = [], [], []
+    clone.snapshot_hash = compute_snapshot_hash(clone)
     session.add(clone)
     await session.flush()
     return _version_out(clone)

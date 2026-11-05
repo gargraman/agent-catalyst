@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from api.deps import PROVIDER_API_KEY, rate_limit, resolve_workspace, tenant_db
 from api.errors import NotFound
 from api.models import Agent
+from api.routers.agents import _version_belongs
 from api.routers.invoke import _load_version
 from api.schemas.evals import DimensionOut, EvalRunIn, EvalRunOut, FailingCaseOut, PublishIn, PublishOut
 from evals.drift import EvalPolicy
@@ -89,8 +90,11 @@ async def publish_version(
     agent = (await session.execute(select(Agent).where(Agent.id == aid))).scalar_one_or_none()
     if agent is None:
         raise NotFound("agent not found", detail={"agent_id": agent_id})
+    # The published version MUST belong to THIS agent (validated/scoped) — never a foreign version, never a
+    # malformed id landing as a 500 / FK error (F2).
+    vid = await _version_belongs(session, agent_id, body.version_id)
     # ADVISORY (D6): publish proceeds regardless of eval state — NEVER raise publish.eval_gate here.
     agent.status = "published"
-    agent.active_version_id = uuid.UUID(body.version_id)
+    agent.active_version_id = vid
     await session.flush()
     return PublishOut(agent_id=agent_id, version_id=body.version_id, status="published", advisory_verdict=None)

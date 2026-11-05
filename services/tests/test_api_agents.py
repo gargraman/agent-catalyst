@@ -9,9 +9,16 @@ import uuid
 
 import pytest
 
+import uuid as _uuid
+
+from sqlalchemy import select
+from sqlalchemy.orm import selectinload
+
 from api import deps
+from api.db import tenant_session
 from api.deps import idempotency_guard
 from api.errors import IdempotencyInProgress
+from api.models import AgentVersion, RetrievalBinding
 from runtime.providers import gateway
 from tests._api_helpers import client, dev_headers, parse_sse, seed_workspace
 from tests._invoke_helpers import make_gateway, stop_ev, text_ev, usage_ev
@@ -143,3 +150,66 @@ async def test_create_endpoint_honors_idempotency_key():
     async with client() as c:
         ok = await c.post("/api/v1/agents", headers=dev_headers(workspace=ws, idempotency_key="k-endpoint-2"), json=_CREATE)
     assert ok.status_code == 201
+
+
+# ---- post-review hardening (code-review 2026-11-05, F1–F5) ----------------------------------------
+
+@pytest.mark.integration
+async def test_list_pagination_is_complete_across_pages():
+    """F1 — keyset pages must not drop/repeat rows (id is random uuid4, unrelated to created_at order)."""
+    ws = await seed_workspace()
+    created: set[str] = set()
+    async with client() as c:
+        for i in range(3):
+            r = await c.post("/api/v1/agents", headers=dev_headers(workspace=ws), json={**_CREATE, "name": f"A{i}"})
+            created.add(r.json()["id"])
+        seen: set[str] = set()
+        cursor, pages = None, 0
+        while pages < 10:
+            url = "/api/v1/agents?limit=1" + (f"&cursor={cursor}" if cursor else "")
+            page = (await c.get(url, headers=dev_headers(workspace=ws))).json()
+            seen.update(a["id"] for a in page["items"])
+            cursor = page["next_cursor"]
+            pages += 1
+            if not cursor:
+                break
+    assert created == seen and len(seen) == 3          # every agent returned exactly once across pages
+
+
+@pytest.mark.integration
+async def test_stored_snapshot_hash_is_authoritative():
+    """F4 — the stored/returned snapshot_hash equals what the runtime recomputes via to_snapshot()."""
+    ws = await seed_workspace()
+    async with client() as c:
+        created = (await c.post("/api/v1/agents", headers=dev_headers(workspace=ws), json=_CREATE)).json()
+    vid, stored = created["versions"][0]["id"], created["versions"][0]["snapshot_hash"]
+    async with tenant_session(ws) as s:
+        v = (await s.execute(
+            select(AgentVersion).where(AgentVersion.id == _uuid.UUID(vid)).options(
+                selectinload(AgentVersion.retrieval_bindings).selectinload(RetrievalBinding.kb),
+                selectinload(AgentVersion.tool_bindings), selectinload(AgentVersion.skill_bindings)))).scalar_one()
+        assert stored and v.to_snapshot().snapshot_hash == stored
+
+
+@pytest.mark.integration
+async def test_patch_foreign_active_version_rejected():
+    """F3 — re-pointing to a version of ANOTHER agent is rejected (no cross-agent mispublish)."""
+    ws = await seed_workspace()
+    async with client() as c:
+        a1 = await c.post("/api/v1/agents", headers=dev_headers(workspace=ws), json=_CREATE)
+        a2 = await c.post("/api/v1/agents", headers=dev_headers(workspace=ws), json=_CREATE)
+        a1id, a1etag = a1.json()["id"], a1.headers["ETag"]
+        a2_version = a2.json()["versions"][0]["id"]
+        r = await c.patch(f"/api/v1/agents/{a1id}", headers=dev_headers(workspace=ws, if_match=a1etag),
+                          json={"active_version_id": a2_version})
+    assert r.status_code == 404                         # a2's version is not a1's
+
+
+@pytest.mark.integration
+async def test_duplicate_version_label_rejected():
+    """F5 — an explicit label that already exists is rejected."""
+    ws = await seed_workspace()
+    async with client() as c:
+        aid = (await c.post("/api/v1/agents", headers=dev_headers(workspace=ws), json=_CREATE)).json()["id"]
+        r = await c.post(f"/api/v1/agents/{aid}/versions", headers=dev_headers(workspace=ws), params={"label": "v1"})
+    assert r.status_code == 400 and r.json()["error"]["code"] == "input.invalid"

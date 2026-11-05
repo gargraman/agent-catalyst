@@ -53,3 +53,27 @@ async def test_publish_is_advisory_not_gated():
     assert body["status"] == "published"
     assert body["agent_id"] == aid and body["version_id"] == vid
     assert "advisory" in body["advisory_note"].lower()
+
+
+# ---- post-review hardening (code-review 2026-11-05, F2) -------------------------------------------
+
+async def test_publish_malformed_version_is_400():
+    """F2 — a malformed version_id → typed 400, not an unhandled 500."""
+    ws, aid, vid = await _seed()
+    async with client() as c:
+        r = await c.post(f"/api/v1/agents/{aid}/publish",
+                         headers=dev_headers(workspace=ws), json={"version_id": "not-a-uuid"})
+    assert r.status_code == 400 and r.json()["error"]["code"] == "input.invalid"
+
+
+async def test_publish_foreign_version_is_404_no_cross_agent_mispublish():
+    """F2 — publishing a version that belongs to ANOTHER agent is rejected (no cross-agent mispublish)."""
+    ws = await seed_workspace()
+    aid1 = await seed_agent(ws)
+    await seed_version(ws, aid1)
+    aid2 = await seed_agent(ws)
+    v2 = await seed_version(ws, aid2)                    # v2 belongs to aid2
+    async with client() as c:
+        r = await c.post(f"/api/v1/agents/{aid1}/publish",
+                         headers=dev_headers(workspace=ws), json={"version_id": v2})
+    assert r.status_code == 404                          # v2 is not aid1's version
