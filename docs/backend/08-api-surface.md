@@ -1,5 +1,22 @@
 # 08 — API Surface (REST + SSE, Pydantic, OpenAPI → export)
 
+> **⚙️ BUILT STATE (M4a thin-API slice — feature `specs/005-thin-api-tenancy`, 2026-11-05).** A **thin slice**
+> of this surface is built and verified in `services/api/` (FastAPI `main`/`deps`/`sse`/`schemas`/`routers`),
+> wrapping the pure `runtime` + `evals` (purity preserved — only `api` imports FastAPI, P6). **Built:**
+> **console-session plane** `POST /api/v1/agents/:id/invoke` as **SSE** over the same `runtime.invoke` (§4
+> frames `run_start`/`text_delta`/`reasoning_delta`/`tool_call_*`/`usage`/`error`/`done`); agents
+> **create/get/list/PATCH + POST-version** with the typed Pydantic contracts + the §1 **error envelope** +
+> cursor pagination; **idempotent create** (`409 idempotency.in_progress`) and **`If-Match`/ETag** optimistic
+> concurrency via Postgres **`xmin`** (`409 conflict.stale`); `POST eval-runs` running the M3 engine **inline**;
+> and **advisory `POST publish`** (returns the verdict, **does NOT raise `409 publish.eval_gate`** — owner
+> decision #3). **Fail-closed tenancy (P5):** every request is workspace-authorized (403/401) then served on an
+> `ac_app` RLS session (`tenant_session`); **negative cross-tenant → 404 verified on live Postgres**. Fully
+> mocked at the provider boundary (no live/paid calls). **NOT yet built (deferred):** the caller bearer-token
+> plane + token mint, the `/api/v1/org/*` admin plane, the full 253-seam CRUD, real OIDC (18)/Vault/RBAC, the
+> async worker + `GET /jobs/:id`, the Redis idempotency replay store, real rate-limit thresholds, the real
+> (κ-calibrated) publish gate, and the OpenAPI→FE-client drift CI (M12). The sections below describe the full
+> target surface.
+
 > Implements `spec.md §B11` (REST + OpenAPI 3.1, not GraphQL) and `§B2.5` (IO contract). The contract
 > is the one the built frontend already expects — see `docs/backend-integration-map.md` (code→endpoint)
 > and `docs/backend-integration-plan.md` Part 2 (`data.ts`→API mapping). This doc is the
