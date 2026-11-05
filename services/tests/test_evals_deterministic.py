@@ -141,3 +141,13 @@ def test_evalcase_det_spec_drives_required_fields_override():
     r = run_deterministic(out, case.det_spec())
     assert r.passed is True
     assert r.checks["required_fields"] is True
+
+
+def test_non_triage_override_skips_severity_enum():
+    """FR-006 (post-review fix) — a non-triage case (required_fields override, no `severity`) must NOT soft-fail
+    on the severity enum. The severity check only applies when `severity` is part of the case's contract."""
+    out = {"answer": "the capital is Paris"}
+    r = run_deterministic(out, {"required_fields": ["answer"]})
+    assert r.passed is True
+    assert r.hard_fail is False
+    assert "severity_enum" not in r.checks          # check did not fire for a non-triage contract

@@ -17,7 +17,7 @@ from runtime.invoke import invoke_result
 from evals.breaker import CircuitBreaker
 from evals.deterministic import run_deterministic
 from evals.drift import efficiency_delta, score_quality, verdict_with_reason
-from evals.judge import JUDGE_VERSION, judge_case
+from evals.judge import JUDGE_VERSION, _fail_closed, judge_case
 from evals.types import (
     BaselineAggregate,
     CaseScore,
@@ -73,8 +73,13 @@ async def run_eval(
             continue
 
         # 3) Advisory judge via the instance breaker (F8). Baseline per-case output drives the pairwise call.
+        # The judge is ADVISORY and must never crash the run: a breaker-open or any judge/transport error
+        # degrades to a fail-closed (low_confidence) verdict for this case, exactly like unparseable judge JSON.
         baseline_out = baseline.per_case.get(case.id, "")
-        jv = await breaker.call(judge_case, case, baseline_out, cand.text, eval_ctx, rng=rng)
+        try:
+            jv = await breaker.call(judge_case, case, baseline_out, cand.text, eval_ctx, rng=rng)
+        except Exception as exc:  # CircuitOpenError or a judge/transport failure — never abort the suite
+            jv = _fail_closed(f"judge unavailable ({type(exc).__name__}) — advisory score skipped")
         quality = score_quality(jv.rubric_scores, case.rubric_weights())
         case_scores.append(
             CaseScore(case.id, det, jv, quality, cand_cost, cand_latency, failed=not det.passed))
@@ -83,8 +88,11 @@ async def run_eval(
     n = len(case_scores)
     det_all_green = not any(cs.det.hard_fail for cs in case_scores)
     judged = [cs for cs in case_scores if cs.judge is not None]
+    # A fail-closed (low_confidence) judge verdict means the judge could NOT score this case — count it as a
+    # non-score, not a quality-0, so a transient judge hiccup cannot fabricate a quality drop and flip the verdict.
+    scored = [cs for cs in judged if not cs.judge.low_confidence]
 
-    quality_c = statistics.fmean([cs.quality for cs in judged]) if judged else 0.0
+    quality_c = statistics.fmean([cs.quality for cs in scored]) if scored else 0.0
     quality_b = float(baseline.quality)
 
     cand_total_cost = float(sum(float(cs.candidate_cost_usd or 0.0) for cs in case_scores))
@@ -96,6 +104,14 @@ async def run_eval(
 
     # Verdict (FR-008 ordering) + specific reason (FR-009). Pairwise is NOT a parameter here — advisory only.
     v, reason = verdict_with_reason(n, det_all_green, quality_b, quality_c, eff, policy)
+
+    # Evidence honesty (P8): if we cleared the correctness floor but the judge produced NO usable quality score
+    # for ANY case (e.g. a total judge outage — every judged case failed closed), the quality axis has no
+    # evidence. Report low_confidence rather than a fabricated quality-0 "fail" — never a confident verdict on
+    # no evidence. (A hard-assertion failure is still a definitive fail and is left untouched.)
+    if v != "low_confidence" and det_all_green and judged and not scored:
+        v, reason = "low_confidence", ("Judge produced no usable quality score for any case (judge "
+                                       "unavailable) — the quality axis cannot be assessed.")
 
     # Per-dimension candidate means (1-5). Baseline dims are None — the baseline is an aggregate, not re-judged.
     dim_values: dict[str, list[float]] = {}

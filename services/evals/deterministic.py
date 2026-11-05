@@ -97,8 +97,10 @@ def run_deterministic(output: str | dict, case: Mapping[str, Any]) -> DetResult:
         field in data and data[field] not in _EMPTY_VALUES for field in required
     )
 
-    # --- severity enum (soft) ---
-    checks["severity_enum"] = data.get("severity") in SEVERITY_ENUM
+    # --- severity enum (soft) — only when `severity` is part of this case's contract. A case that overrides
+    # required_fields to a non-triage contract (FR-006) has no `severity`, so this check must not spuriously fire.
+    if "severity" in required:
+        checks["severity_enum"] = data.get("severity") in SEVERITY_ENUM
 
     # --- expected-value match when provided (soft) ---
     expected = case.get("expected")

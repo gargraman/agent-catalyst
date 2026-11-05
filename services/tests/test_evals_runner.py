@@ -11,6 +11,7 @@ from evals.drift import EvalPolicy
 from evals.runner import run_eval
 from evals.types import EvalRunResult
 from tests._evals_helpers import (
+    JUDGE_MODEL,
     VALID_OUTPUT,
     candidate_snapshot,
     make_baseline,
@@ -18,6 +19,34 @@ from tests._evals_helpers import (
     make_eval_case,
     make_routed_gateway,
 )
+from tests._invoke_helpers import priced_usage, stop_ev, text_ev, usage_ev
+
+
+def _counting_judge_gateway(judge_behaviors):
+    """A gateway that returns the candidate output for the candidate model and, for each successive JUDGE
+    call, the next behavior in `judge_behaviors` (a dict → that JSON body; "garbage" → unparseable text;
+    "raise" → provider exception). The last behavior repeats if there are more calls than entries."""
+    state = {"i": -1}
+
+    async def _stream(req, *, api_key, profile=None, timeout=None):
+        if getattr(req, "model", None) == JUDGE_MODEL:
+            state["i"] += 1
+            beh = judge_behaviors[min(state["i"], len(judge_behaviors) - 1)]
+            if beh == "raise":
+                raise RuntimeError("judge provider 503")
+            body = "not json {" if beh == "garbage" else json.dumps(beh)
+            yield text_ev(body)
+            yield usage_ev(priced_usage(cost_usd=0.0001))
+            yield stop_ev()
+        else:
+            yield text_ev(json.dumps(VALID_OUTPUT))
+            yield usage_ev(priced_usage(cost_usd=0.001))
+            yield stop_ev()
+
+    return _stream
+
+
+_GOOD = {"rubric": {"accuracy": 5.0, "completeness": 5.0}, "pairwise": "candidate", "rationale": "great"}
 
 
 def _cases(n: int, ws: str = "ws_1"):
@@ -125,3 +154,39 @@ def test_all_tie_pairwise_does_not_crash_and_rate_is_zero(monkeypatch):
                                _policy(), make_context(), workspace_id="ws_1"))
     assert res.pairwise_rate == 0.0                      # ties are not head-to-head wins
     assert res.verdict == "pass"                         # candidate quality 50 == baseline 50, cost within
+
+
+# ---- post-review hardening (code-review 2026-11-05) — regression tests for the robustness fixes -----
+
+def test_low_confidence_judge_excluded_from_quality(monkeypatch):
+    """A fail-closed (low_confidence) judge verdict is a NON-score, not a quality-0 — it must not drag the
+    quality mean and flip an otherwise-passing candidate to fail (advisory judge, FR-016)."""
+    # c0, c1 score 5/5 (quality 100); c2's judge output is garbage → low_confidence, excluded from quality.
+    gw = _counting_judge_gateway([_GOOD, _GOOD, "garbage"])
+    monkeypatch.setattr(gateway, "stream", gw)
+    res = asyncio.run(run_eval(_cases(3), candidate_snapshot(), _baseline(3, quality=90.0, cost_usd=0.003),
+                               _policy(), make_context(), workspace_id="ws_1"))
+    assert res.quality == 100.0                          # mean of the 2 SCORED cases only (not dragged to 66.7)
+    assert res.verdict == "pass"                         # q_drop -10 → pass; the low_confidence case didn't gate
+
+
+def test_judge_exception_does_not_abort_the_run(monkeypatch):
+    """An advisory judge/transport exception degrades that case to fail-closed — it must never abort the
+    whole suite (the deterministic floor already ran)."""
+    gw = _counting_judge_gateway([_GOOD, "raise", _GOOD])   # middle judge call explodes
+    monkeypatch.setattr(gateway, "stream", gw)
+    res = asyncio.run(run_eval(_cases(3), candidate_snapshot(), _baseline(3, quality=90.0, cost_usd=0.003),
+                               _policy(), make_context(), workspace_id="ws_1"))
+    assert isinstance(res, EvalRunResult)               # completed with a verdict — did not raise
+    assert res.verdict == "pass"                         # the 2 scored cases (100) carry the verdict
+
+
+def test_total_judge_outage_is_low_confidence_not_fail(monkeypatch):
+    """P8 evidence honesty — if EVERY judge call fails (total outage) past the correctness floor, there is no
+    quality signal, so the verdict is low_confidence, NOT a fabricated quality-0 'fail'."""
+    gw = _counting_judge_gateway(["raise"])             # every judge call raises
+    monkeypatch.setattr(gateway, "stream", gw)
+    res = asyncio.run(run_eval(_cases(3), candidate_snapshot(), _baseline(3, quality=90.0, cost_usd=0.003),
+                               _policy(), make_context(), workspace_id="ws_1"))
+    assert res.verdict == "low_confidence"
+    assert "judge" in res.reason.lower()
