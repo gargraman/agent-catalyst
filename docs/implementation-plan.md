@@ -13,15 +13,17 @@ remain the design basis for those production services.
 This document is the architecture critique and production roadmap. Spec Kit feature artifacts will own
 the reviewable behavior requirements and actionable tasks for each bounded change.
 
-**SDD adoption status.** GitHub Spec Kit was selected on 2026-10-31, and project constitution v1.0.0 was
-ratified on 2026-10-31 at `.specify/memory/constitution.md`. Feature specifications, plans, tasks,
-requirements checklists, and initialized Codex integration remain absent. Existing documents
-(`scope.md`, `spec.md`, `mvp-spec.md`, backend designs, and integration maps) are evidence and design
-inputs; they are not a substitute for a reviewed feature `spec.md` → `plan.md` → `tasks.md` chain. The
-first bounded feature is completion of the standalone `mvp/` viability experiment. The user approved the
-H1 task/domain/schema and protocol in principle; exact corpus sources, labels, prompt lesions, and
-acceptance examples remain to be frozen in reviewed feature artifacts. H1 stays blocked until the
-approved two-rater calibration prerequisite is available.
+**SDD adoption status (updated 2026-11-06).** GitHub Spec Kit was selected on 2026-10-31 and project
+constitution v1.0.0 ratified the same day (`.specify/memory/constitution.md`). The toolchain is now live
+and **seven features have been driven through the full `spec → clarify → plan → tasks → checklist →
+analyze → implement` chain** under `specs/`: `001-m0-data-model`, `002-provider-gateway`,
+`003-runtime-invoke-spine` (M2a), `004-eval-drift-engine` (M3a), `005-thin-api-tenancy` (M4a),
+`006-resource-crud-sync` (M4-remainder backend), and `007-ai-output-trust-boundary` (M2b — the AI-output
+trust boundary). Existing documents (`scope.md`, `spec.md`, `mvp-spec.md`, backend designs, integration
+maps) are evidence/design inputs, not a substitute for each feature's reviewed artifact chain. The
+standalone `mvp/` viability experiment delivered its GO/NO-GO (advisory-gate decision logged in
+`scope.md`); **H1 remains blocked** until the approved two-rater κ≥0.60 calibration prerequisite is
+available (the publish gate stays advisory until then).
 
 The required SDD artifact set is incomplete: the project constitution is ratified, but each feature still
 needs `spec.md`, `plan.md`, `tasks.md`, and the Spec Kit requirements checklist. Add `research.md`,
@@ -261,7 +263,9 @@ Source: `02`, `02L`. **Contract-first: design the three net-new contracts F1–F
 #### M2 — `runtime.invoke` shared core + graph
 Source: `03`, `03L`, `00`. The single entry point all four callers share.
 
-> **Built-state (2026-11-04, feature `specs/003-runtime-invoke-spine`): M2 was split into M2a (spine, DONE) + M2b (validators, pending).** M2a shipped the shared `invoke`/`invoke_result` **as a plain async pipeline, not LangGraph** (research D1 — LangGraph is deferred to the first genuinely branching feature; a single generate-and-stream turn does not need a graph). Built: validate-IO → budget pre-check (`tokens.count_tokens`, over-estimating) → gateway stream → event re-surfacing (incl. reasoning/tool-call/stop) → `deadline_s`-bounded execution (+ wire-level transport timeout) → exactly one honest `RunRecord` via a context sink. **Deferred to M2b** (the AI-output trust boundary): input/output **guardrail** steps, output **validate/repair** vs `output_schema` (F1/F2), **tool-call enforcement** (F3). **Not in M2a scope at all** (later milestones, as originally designed): LangGraph graph/checkpointer, sub-agent depth/fan-out caps, DB-persisted Run+Spans and persist-then-reconcile spend atomicity (the runtime only *emits* the Run to a sink — D2/D3; persistence belongs to the API/worker caller). `stop_reason` on a deadline is the gateway/stop value carried through; the Run's outcome is `timeout`.
+> **Built-state (2026-11-04, feature `specs/003-runtime-invoke-spine`): M2 was split into M2a (spine, DONE) + M2b (validators, DONE 2026-11-06).** M2a shipped the shared `invoke`/`invoke_result` **as a plain async pipeline, not LangGraph** (research D1 — LangGraph is deferred to the first genuinely branching feature; a single generate-and-stream turn does not need a graph). Built: validate-IO → budget pre-check (`tokens.count_tokens`, over-estimating) → gateway stream → event re-surfacing (incl. reasoning/tool-call/stop) → `deadline_s`-bounded execution (+ wire-level transport timeout) → exactly one honest `RunRecord` via a context sink. **Not in M2a scope at all** (later milestones, as originally designed): LangGraph graph/checkpointer, sub-agent depth/fan-out caps, DB-persisted Run+Spans and persist-then-reconcile spend atomicity (the runtime only *emits* the Run to a sink — D2/D3; persistence belongs to the API/worker caller). `stop_reason` on a deadline is the gateway/stop value carried through; the Run's outcome is `timeout`.
+>
+> **M2b built-state (2026-11-06, feature `specs/007-ai-output-trust-boundary`): the AI-output trust boundary is now ENFORCED.** The shared `_pipeline` gained two modes: **pass-through** (plain text, no tools → live streaming, unchanged) and **buffered validated mode** (json output OR bound tools → buffer each turn, validate, correct, emit only the final validated events). Wired the already-tested validators into the pipeline — output **validate/repair** vs `output_schema` (F1/F2) and **tool-call enforcement** (F3) — behind a **bounded self-correction loop**: one repair re-ask on bad/empty-schema JSON, one feed-back re-ask on a rejected tool call, under a dedicated `ctx.max_corrections` budget (default 2) and the existing deadline. New fail-closed outcomes `output_invalid` / `tool_call_rejected`; new `RunRecord.correction_turns` (persisted into `runs.usage`, no migration); intermediate correction turns suppressed from the client stream but fully accounted (summed usage/cost, P7/P8). A **valid tool call is surfaced but NOT executed** — real tool execution/sandbox and the **guardrail execution engine** (`guardrail_config` stays data-only) remain **deferred to P2**. API/SSE layer unchanged (new outcomes ride the existing `error`+`done` frames). 388 tests green; `runtime/` purity intact (P6); no live calls.
 
 
 - **2.a (Red):** `invoke(snapshot, inputs, ctx)` pipeline order (validate IO → budget pre-check → input

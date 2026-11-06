@@ -35,6 +35,57 @@ def validate_input(inputs, io_contract: dict) -> list[str]:
     return _schema_errors(schema, inputs)
 
 
+def tool_schemas_from_snapshot(snapshot) -> dict[str, dict]:
+    """Map each BOUND tool's name → its argument JSON-schema, for `validate_tool_call` (M2b F3, research D4).
+
+    Each `ToolRef.schema_snapshot` is a provider-shaped tool def; we tolerate both the Anthropic (`input_schema`)
+    and OpenAI (`parameters`) dialects. Defs without a usable name are skipped (the model can only legitimately
+    call a tool it was given by name); a named def with no schema maps to `{}` (accept any args), matching the
+    existing `validate_tool_call` empty-schema behavior."""
+    out: dict[str, dict] = {}
+    for t in (snapshot.tools or ()):
+        d = t.schema_snapshot or {}
+        name = d.get("name")
+        if not isinstance(name, str) or not name:
+            continue
+        out[name] = d.get("input_schema") or d.get("parameters") or {}
+    return out
+
+
+def build_correction_messages(messages: list[dict], assistant_text: str, defects: dict,
+                              available_tools: tuple[str, ...] = ()) -> list[dict]:
+    """Return a NEW messages list (original + one bounded correction turn) using plain normalized roles (M2b D3).
+
+    `defects` = {"output": RepairNeeded|None, "tools": [(tool_call_dict, ToolCallRejected), ...]}. Tool-call
+    feedback takes precedence over output repair (FR-014 precedence). `available_tools` is the full set of bound
+    tool names (caller-supplied) so the feedback names the real tools even on a `bad_args` rejection (which does
+    not populate `ToolCallRejected.available`). No provider-native tool-result messages — the runtime does not
+    execute tools (P2); plain user-role feedback is provider-agnostic and sufficient. The original is not mutated."""
+    out = list(messages)
+    tool_defects = defects.get("tools") or []
+    output_defect = defects.get("output")
+    if tool_defects:
+        attempts = ", ".join(f"{tc.get('name')}({tc.get('args')})" for tc, _ in tool_defects)
+        reasons = "; ".join(r.detail for _, r in tool_defects)
+        schema_errs = "; ".join(e for _, r in tool_defects for e in (r.errors or ()))
+        # union the bound-tool set with any per-rejection availability so the list is accurate for bad_args too
+        available = sorted(set(available_tools) | {n for _, r in tool_defects for n in (r.available or ())})
+        avail_str = ", ".join(available) if available else "(none)"
+        msg = f"That tool call was invalid: {reasons}."
+        if schema_errs:
+            msg += f" Argument errors: {schema_errs}."
+        msg += f" Available tools: {avail_str}. Call a valid tool or answer directly."
+        out.append({"role": "assistant", "content": f"Attempted tool call(s): {attempts}"})
+        out.append({"role": "user", "content": msg})
+    elif output_defect is not None:
+        errs = "; ".join(output_defect.errors) if output_defect.errors else output_defect.detail
+        out.append({"role": "assistant", "content": assistant_text})
+        out.append({"role": "user", "content": (
+            f"Your previous response was invalid ({output_defect.reason}): {errs}. "
+            "Return ONLY valid JSON matching the required schema.")})
+    return out
+
+
 def build_normalized_request(snapshot, inputs) -> NormalizedRequest:
     """Assemble the M1 NormalizedRequest from the frozen snapshot + validated inputs (FR-001 assembly)."""
     mc = snapshot.model_config or {}

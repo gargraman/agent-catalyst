@@ -24,7 +24,9 @@ class Outcome(str, Enum):
     PROVIDER_ERROR = "provider_error"     # gateway surfaced a normalized provider failure
     TIMEOUT = "timeout"                   # deadline reached before terminal stop
     DEGRADED = "degraded"                 # stream ended with no usage report (gateway degraded ERROR)
-    BOUNDED_EXIT = "bounded_exit"         # RESERVED — tool-call loop bound; not produced in M2a (D6)
+    OUTPUT_INVALID = "output_invalid"     # json output could not be made schema-valid within budget (M2b, F1/F2)
+    TOOL_CALL_REJECTED = "tool_call_rejected"  # a tool call could not be made valid within budget (M2b, F3)
+    BOUNDED_EXIT = "bounded_exit"         # RESERVED — tool-call loop bound; not produced (M2a D6 / M2b unused)
 
 
 @dataclass(frozen=True)
@@ -48,6 +50,7 @@ class RunRecord:
     latency_ms: int
     caller: str | None = None
     max_tool_calls: int | None = None             # carried from ctx (FR-010); not enforced in M2a (D6)
+    correction_turns: int = 0                     # extra model turns spent on self-correction (M2b, FR-014); 0 when clean
     usage: NormalizedUsage | None = None          # absent on pre-call rejections
     cost_usd: Decimal | None = None               # carried from the gateway, never recomputed (FR-014/P7)
     cost_is_estimate: bool = False

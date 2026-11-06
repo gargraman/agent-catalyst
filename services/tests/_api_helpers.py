@@ -65,12 +65,14 @@ async def seed_agent(workspace_id: str, name: str = "Seed Agent") -> str:
         return str(a.id)
 
 
-async def seed_version(workspace_id: str, agent_id: str, label: str = "v1") -> str:
+async def seed_version(workspace_id: str, agent_id: str, label: str = "v1",
+                       io_contract: dict | None = None) -> str:
     async with tenant_session(workspace_id) as s:
         v = AgentVersion(
             workspace_id=uuid.UUID(workspace_id), agent_id=uuid.UUID(agent_id), label=label,
             system_prompt="You are a test agent.", prompt_hash="ph-test", snapshot_hash="sh-test",
-            model_config_=_MODEL_CONFIG, profile_snapshot=PROFILE_SNAPSHOT, io_contract=_IO_CONTRACT,
+            model_config_=_MODEL_CONFIG, profile_snapshot=PROFILE_SNAPSHOT,
+            io_contract=io_contract or _IO_CONTRACT,
         )
         s.add(v)
         await s.flush()

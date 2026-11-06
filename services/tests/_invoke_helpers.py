@@ -17,7 +17,7 @@ from runtime.providers.ir import (
     NormalizedUsage,
 )
 from runtime.providers.profiles import Substitution
-from runtime.snapshot import VersionSnapshot
+from runtime.snapshot import ToolRef, VersionSnapshot
 
 # A profile_snapshot in the on-disk profile JSON shape (what the M4 to_snapshot() will freeze), so the
 # runtime can build the FROZEN CapabilityProfile from it via _profile_from_json (review finding F1).
@@ -146,6 +146,44 @@ def make_gateway(events, *, per_event_delay: float = 0.0):
                 await asyncio.sleep(per_event_delay)
             yield ev
     return _stream
+
+
+def make_multi_turn_gateway(turns, *, per_event_delay: float = 0.0):
+    """A gateway.stream mock that returns a DIFFERENT event-list per call (M2b correction loop).
+
+    `turns` is a list of event-lists; the Nth call to stream yields turns[N]. Calls beyond the list repeat
+    the last turn. `calls` records how many times the gateway was invoked (assert correction-turn counts)."""
+    state = {"n": 0}
+    async def _stream(req, *, api_key, profile=None, timeout=None):
+        i = min(state["n"], len(turns) - 1)
+        state["n"] += 1
+        for ev in turns[i]:
+            if per_event_delay:
+                await asyncio.sleep(per_event_delay)
+            yield ev
+    _stream.calls = state  # type: ignore[attr-defined]
+    return _stream
+
+
+JSON_IO = {
+    "input_schema": {"type": "object", "properties": {"message": {"type": "string"}}, "required": ["message"]},
+    "output_format": "json",
+    "output_schema": {"type": "object",
+                      "properties": {"severity": {"type": "string"}, "score": {"type": "number"}},
+                      "required": ["severity", "score"]},
+}
+
+
+def make_tool_ref(name: str | None, args_schema: dict | None = None, *, key: str = "input_schema") -> ToolRef:
+    """Build a bound ToolRef with a provider-shaped schema_snapshot ({name, input_schema|parameters})."""
+    snap: dict = {}
+    if name is not None:
+        snap["name"] = name
+    if args_schema is not None:
+        snap[key] = args_schema
+    return ToolRef(kind="http", schema_snapshot=snap, config_snapshot={}, risk_tier="low",
+                   requires_approval=False, subagent_config_id=None, auth_mode=None, mcp_scopes=(),
+                   tool_id="t1", mcp_tool_id=None)
 
 
 def collect(async_iter):
