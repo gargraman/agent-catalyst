@@ -16,6 +16,19 @@
 > async worker + `GET /jobs/:id`, the Redis idempotency replay store, real rate-limit thresholds, the real
 > (κ-calibrated) publish gate, and the OpenAPI→FE-client drift CI (M12). The sections below describe the full
 > target surface.
+>
+> **⚙️ BUILT STATE ADDENDUM (M4-remainder — feature `specs/006-resource-crud-sync`, 2026-11-05).** The plain,
+> non-secret resource CRUD is now built + verified in `services/api/` (migration `0005` adds workspace-scoped RLS
+> tables). **Built:** `tools` + `mcp-servers`/`mcp-tools` + `skills` catalog CRUD (archive/restore, `xmin` ETag,
+> idempotent create, duplicate→`409`; `http_config` secret-rejection FR-021; skill publish = **unsigned provenance
+> stub**, published-content-edit→draft); `knowledge-bases` metadata CRUD (`ingestion-jobs` honest-deferred, M7);
+> `workspace/settings` + `members` roster (console role **stored, not enforced** — RBAC → M5); durable `runs`
+> history + `metrics/{dashboard,runs,evals}` (invoke + eval persist identity+metrics only — **no raw content**,
+> SC-009 — closing the M4a in-memory-sink gap). A deterministic `drift.py` flags bound agents for re-eval on a
+> trigger-surface edit. **365 tests green** (live Postgres, purity intact, no live/paid calls). **Still deferred:**
+> provider keys/tokens/tool-approval + Vault, OIDC/Vault/RBAC/access-policy (M5), real ingestion (M7), channels
+> (P2), workspace-root create/delete, async worker. **Frontend wiring (US2) pending a Node toolchain** — OpenAPI
+> emitted to `frontend/openapi.json`; status tracked in `docs/backend-integration-status.md` (0/253 seams wired).
 
 > Implements `spec.md §B11` (REST + OpenAPI 3.1, not GraphQL) and `§B2.5` (IO contract). The contract
 > is the one the built frontend already expects — see `docs/backend-integration-map.md` (code→endpoint)

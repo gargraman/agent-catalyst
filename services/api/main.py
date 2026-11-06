@@ -9,7 +9,9 @@ from __future__ import annotations
 from fastapi import FastAPI
 
 from api.errors import AppError, app_error_handler
-from api.routers import agents, evals, invoke
+from api.routers import (
+    agents, evals, invoke, knowledge, members, runs, skills, tools, workspaces,
+)
 
 
 def create_app() -> FastAPI:
@@ -21,6 +23,12 @@ def create_app() -> FastAPI:
     app.include_router(agents.router)
     app.include_router(invoke.router)
     app.include_router(evals.router)
+    app.include_router(tools.router)
+    app.include_router(skills.router)
+    app.include_router(knowledge.router)
+    app.include_router(workspaces.router)
+    app.include_router(members.router)
+    app.include_router(runs.router)
 
     @app.get("/healthz", tags=["meta"])
     async def healthz() -> dict:

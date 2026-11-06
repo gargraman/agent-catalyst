@@ -16,6 +16,7 @@ from sqlalchemy.orm import selectinload
 
 from api import sse
 from api.deps import PROVIDER_API_KEY, rate_limit, resolve_workspace, tenant_db
+from api.run_sink import persist_run_record
 from api.errors import NotFound
 from api.models import Agent, AgentVersion, RetrievalBinding
 from api.schemas.invoke import InvokeIn
@@ -82,6 +83,8 @@ async def invoke_agent(
             if encoded is not None:
                 yield encoded
         run = runs[-1] if runs else None
+        if run is not None:
+            await persist_run_record(session, ws, run)   # durable run record on the request session (FR-013, P8)
         # Surface a pre-call rejection (invalid_input/context_overflow/config_error) that produced no ERROR event.
         if run is not None and run.error and not error_emitted:
             yield sse.error_frame(run.error.get("type", "error"), run.error.get("message", ""))

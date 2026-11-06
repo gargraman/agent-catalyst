@@ -13,6 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.deps import PROVIDER_API_KEY, rate_limit, resolve_workspace, tenant_db
+from api.run_sink import persist_run_record
 from api.errors import NotFound
 from api.models import Agent
 from api.routers.agents import _version_belongs
@@ -62,6 +63,15 @@ async def create_eval_run(
                      record_run=runs.append, deadline_s=30.0)
 
     result = await run_eval(cases, candidate_snapshot, baseline, policy, ctx, workspace_id=ws)
+
+    # Persist only the CANDIDATE invocations as durable eval runs (source='eval'). The shared record_run sink
+    # also collects the JUDGE invocations (judge.py reuses the same ctx; its snapshot has version_id="judge"),
+    # but a judge call is a scoring detail, not an eval run of the agent — recording it would double-count eval
+    # history/metrics and add judge cost to spend. Filter to the candidate version (F1).
+    candidate_vid = str(candidate_snapshot.version_id)
+    for rec in runs:
+        if str(rec.version_id) == candidate_vid:
+            await persist_run_record(session, ws, rec)
 
     return EvalRunOut(
         verdict=result.verdict, reason=result.reason, quality=result.quality,

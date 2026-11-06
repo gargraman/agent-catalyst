@@ -10,7 +10,7 @@ from __future__ import annotations
 import datetime
 import uuid
 
-from sqlalchemy import Boolean, Enum, ForeignKey, Integer, MetaData, String, Text, Uuid, func
+from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, MetaData, Numeric, String, Text, Uuid, func
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, declared_attr, mapped_column, relationship
 
@@ -69,6 +69,7 @@ class Agent(Base, WorkspaceScoped):
     name: Mapped[str] = mapped_column(String(80))
     status: Mapped[str] = mapped_column(_AGENT_STATUS, default="draft")
     active_version_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
+    needs_reeval: Mapped[bool] = mapped_column(Boolean, default=False)  # drift flag (feature 006, FR-002)
     created_at: Mapped[datetime.datetime] = mapped_column(server_default=func.now())
     versions: Mapped[list["AgentVersion"]] = relationship(
         back_populates="agent", foreign_keys="AgentVersion.agent_id"
@@ -169,6 +170,7 @@ class KnowledgeBase(Base, WorkspaceScoped):
     chunk_config: Mapped[dict] = mapped_column(JSONB, default=dict)
     index_version: Mapped[int] = mapped_column(Integer, default=1)
     access_policy: Mapped[dict] = mapped_column(JSONB, default=lambda: {"visibility": "workspace"})
+    archived_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True))  # soft-archive (feature 006, FR-003)
     created_at: Mapped[datetime.datetime] = mapped_column(server_default=func.now())
 
 
@@ -205,3 +207,97 @@ class ToolBinding(Base, WorkspaceScoped):
     requires_approval: Mapped[bool] = mapped_column(Boolean, default=False)
     auth_mode: Mapped[str | None] = mapped_column(Text)
     mcp_scopes: Mapped[list[str] | None] = mapped_column(ARRAY(Text))
+
+
+# --------------------------------------------------------------------------------------------------
+# M4-remainder registries + admin + runs (migration 0005, feature 006)
+# --------------------------------------------------------------------------------------------------
+class Tool(Base, WorkspaceScoped):
+    """Reusable HTTP tool registry (data.ts RepoTool). http_config is NON-SECRET only (FR-021)."""
+    __tablename__ = "tools"
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, server_default=func.gen_random_uuid())
+    name: Mapped[str] = mapped_column(Text)
+    description: Mapped[str] = mapped_column(Text, default="")
+    kind: Mapped[str] = mapped_column(_TOOL_KIND, default="http")
+    http_config: Mapped[dict] = mapped_column(JSONB, default=dict)
+    risk_tier: Mapped[str] = mapped_column(_TOOL_RISK_TIER, default="read")
+    archived_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime.datetime] = mapped_column(server_default=func.now())
+
+
+class McpServer(Base, WorkspaceScoped):
+    __tablename__ = "mcp_servers"
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, server_default=func.gen_random_uuid())
+    name: Mapped[str] = mapped_column(Text)
+    url: Mapped[str] = mapped_column(Text, default="")
+    transport: Mapped[str] = mapped_column(Text, default="http")
+    status: Mapped[str] = mapped_column(Text, default="disabled")
+    archived_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime.datetime] = mapped_column(server_default=func.now())
+    tools: Mapped[list["McpTool"]] = relationship(order_by="McpTool.name")
+
+
+class McpTool(Base, WorkspaceScoped):
+    __tablename__ = "mcp_tools"
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, server_default=func.gen_random_uuid())
+    server_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("mcp_servers.id"), index=True)
+    name: Mapped[str] = mapped_column(Text)
+    description: Mapped[str] = mapped_column(Text, default="")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    risk_tier: Mapped[str] = mapped_column(_TOOL_RISK_TIER, default="read")
+
+
+class Skill(Base, WorkspaceScoped):
+    """Reusable skill package (data.ts Skill). provenance = unsigned stub (FR-004); no signature."""
+    __tablename__ = "skills"
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, server_default=func.gen_random_uuid())
+    slug: Mapped[str] = mapped_column(Text)
+    name: Mapped[str] = mapped_column(Text)
+    description: Mapped[str] = mapped_column(Text, default="")
+    instructions: Mapped[str] = mapped_column(Text, default="")
+    resources: Mapped[list] = mapped_column(JSONB, default=list)
+    content_hash: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(Text, default="draft")
+    provenance: Mapped[dict | None] = mapped_column(JSONB)
+    archived_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime.datetime] = mapped_column(server_default=func.now())
+
+
+class WorkspaceSettings(Base, WorkspaceScoped):
+    """1:1 with a workspace: operating defaults + limits + eval policy (data.ts WorkspaceSettings/Limits/EvalPolicy)."""
+    __tablename__ = "workspace_settings"
+    # workspace_id is the PK here (1:1); re-declare to mark primary (the mixin provides the FK+index).
+    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workspaces.id"), primary_key=True)
+    default_provider: Mapped[str] = mapped_column(Text, default="")
+    default_model: Mapped[str] = mapped_column(Text, default="")
+    limits: Mapped[dict] = mapped_column(JSONB, default=dict)
+    eval_policy: Mapped[dict] = mapped_column(JSONB, default=dict)
+
+
+class Member(Base, WorkspaceScoped):
+    """Workspace roster entry. console_role is STORED, not enforced in this feature (FR-012)."""
+    __tablename__ = "members"
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, server_default=func.gen_random_uuid())
+    subject: Mapped[str] = mapped_column(Text)
+    display_name: Mapped[str] = mapped_column(Text, default="")
+    email: Mapped[str] = mapped_column(Text, default="")
+    console_role: Mapped[str] = mapped_column(Text, default="viewer")
+    created_at: Mapped[datetime.datetime] = mapped_column(server_default=func.now())
+
+
+class Run(Base, WorkspaceScoped):
+    """Durable run record — identity + metrics ONLY, no raw content (data.ts Run; FR-013/SC-009)."""
+    __tablename__ = "runs"
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, server_default=func.gen_random_uuid())
+    agent_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
+    version_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
+    model: Mapped[str] = mapped_column(Text, default="")
+    profile_hash: Mapped[str] = mapped_column(Text, default="")
+    prompt_hash: Mapped[str] = mapped_column(Text, default="")
+    usage: Mapped[dict] = mapped_column(JSONB, default=dict)
+    latency_ms: Mapped[int] = mapped_column(Integer, default=0)
+    cost_usd: Mapped[float] = mapped_column(Numeric(12, 6), default=0)
+    outcome: Mapped[str] = mapped_column(Text, default="ok")
+    source: Mapped[str] = mapped_column(Text, default="playground")
+    correlation_id: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime.datetime] = mapped_column(server_default=func.now())

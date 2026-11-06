@@ -43,6 +43,26 @@ async def test_eval_run_executes_engine_and_returns_verdict(monkeypatch):
     assert "quality" in body and "dimensions" in body and "pairwise_rate" in body
 
 
+async def test_eval_persists_only_candidate_runs_not_judge(monkeypatch):
+    """F1 — an N-case eval run persists exactly N source='eval' runs (the candidate), NOT the judge calls."""
+    from sqlalchemy import select
+    from api.db import tenant_session
+    from api.models import Run
+    monkeypatch.setattr(gateway, "stream", make_routed_gateway(
+        candidate_cost=0.001,
+        judge_body={"rubric": {"accuracy": 5.0}, "pairwise": "candidate", "rationale": "ok"}))
+    ws, aid, vid = await _seed()
+    async with client() as c:
+        r = await c.post(f"/api/v1/agents/{aid}/eval-runs",
+                         headers=dev_headers(workspace=ws), json=_eval_body(vid, n=3))
+    assert r.status_code == 200
+    async with tenant_session(ws) as s:
+        rows = list((await s.execute(select(Run))).scalars().all())
+    assert len(rows) == 3                                   # 3 candidate runs, judge runs NOT recorded
+    assert all(str(row.version_id) == vid for row in rows)
+    assert all(row.source == "eval" for row in rows)
+
+
 async def test_publish_is_advisory_not_gated():
     ws, aid, vid = await _seed()
     async with client() as c:

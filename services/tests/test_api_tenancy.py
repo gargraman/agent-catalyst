@@ -9,7 +9,10 @@ from __future__ import annotations
 
 import pytest
 
-from tests._api_helpers import client, dev_headers, seed_agent, seed_workspace
+from tests._api_helpers import (
+    client, dev_headers, seed_agent, seed_kb, seed_mcp_server, seed_member, seed_run, seed_skill,
+    seed_tool, seed_workspace,
+)
 
 
 # ---- unit (no DB) --------------------------------------------------------------------------------
@@ -46,3 +49,60 @@ async def test_same_tenant_get_succeeds():
         r = await c.get(f"/api/v1/agents/{agent}", headers=dev_headers(workspace=ws))
     assert r.status_code == 200
     assert r.json()["id"] == agent and r.json()["workspace_id"] == ws
+
+
+# ---- feature 006: negative cross-tenant for each new registry table (FR-016/SC-002) --------------
+@pytest.mark.integration
+async def test_cross_tenant_tool_is_404_and_absent_from_list():
+    ws_a, ws_b = await seed_workspace(), await seed_workspace()
+    tool_b = await seed_tool(ws_b)
+    async with client() as c:
+        got = await c.get(f"/api/v1/tools/{tool_b}", headers=dev_headers(workspace=ws_a))
+        lst = (await c.get("/api/v1/tools", headers=dev_headers(workspace=ws_a))).json()
+    assert got.status_code == 404
+    assert all(t["id"] != tool_b for t in lst["items"])
+
+
+@pytest.mark.integration
+async def test_cross_tenant_skill_is_404():
+    ws_a, ws_b = await seed_workspace(), await seed_workspace()
+    skill_b = await seed_skill(ws_b)
+    async with client() as c:
+        r = await c.get(f"/api/v1/skills/{skill_b}", headers=dev_headers(workspace=ws_a))
+    assert r.status_code == 404
+
+
+@pytest.mark.integration
+async def test_cross_tenant_mcp_server_is_404():
+    ws_a, ws_b = await seed_workspace(), await seed_workspace()
+    server_b = await seed_mcp_server(ws_b)
+    async with client() as c:
+        r = await c.get(f"/api/v1/mcp-servers/{server_b}", headers=dev_headers(workspace=ws_a))
+    assert r.status_code == 404
+
+
+@pytest.mark.integration
+async def test_cross_tenant_kb_is_404():
+    ws_a, ws_b = await seed_workspace(), await seed_workspace()
+    kb_b = await seed_kb(ws_b)
+    async with client() as c:
+        r = await c.get(f"/api/v1/knowledge-bases/{kb_b}", headers=dev_headers(workspace=ws_a))
+    assert r.status_code == 404
+
+
+@pytest.mark.integration
+async def test_cross_tenant_members_absent_from_roster():
+    ws_a, ws_b = await seed_workspace(), await seed_workspace()
+    await seed_member(ws_b, subject="only-b")
+    async with client() as c:
+        lst = (await c.get("/api/v1/members", headers=dev_headers(workspace=ws_a))).json()
+    assert all(m["subject"] != "only-b" for m in lst["items"])
+
+
+@pytest.mark.integration
+async def test_cross_tenant_runs_absent_from_history():
+    ws_a, ws_b = await seed_workspace(), await seed_workspace()
+    await seed_run(ws_b, source="published")
+    async with client() as c:
+        lst = (await c.get("/api/v1/runs", headers=dev_headers(workspace=ws_a))).json()
+    assert lst["items"] == []

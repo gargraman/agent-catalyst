@@ -38,6 +38,25 @@ async def test_openapi_is_3_1_and_lists_routes():
     assert "/api/v1/agents/{agent_id}/eval-runs" in paths
 
 
+async def test_openapi_includes_feature_006_routes():
+    """T019 — the generated contract includes every 006 resource route (source of truth for the FE client)."""
+    async with client() as c:
+        doc = (await c.get("/openapi.json")).json()
+    paths = doc["paths"]
+    for p in ("/api/v1/tools", "/api/v1/tools/{tool_id}", "/api/v1/mcp-servers", "/api/v1/skills",
+              "/api/v1/knowledge-bases", "/api/v1/ingestion-jobs", "/api/v1/workspace/settings",
+              "/api/v1/members", "/api/v1/runs", "/api/v1/metrics/dashboard"):
+        assert p in paths, f"missing OpenAPI path: {p}"
+
+
+def test_run_model_stores_no_raw_content():
+    """T041/SC-009 — the runs table/model carries identity+metrics only, never raw prompt/response content."""
+    from api.models import Run
+    cols = set(Run.__table__.columns.keys())
+    forbidden = {"prompt", "input", "output", "response", "content", "messages", "text", "completion"}
+    assert cols & forbidden == set(), f"runs must not store raw content: {cols & forbidden}"
+
+
 async def test_healthz_ok():
     async with client() as c:
         r = await c.get("/healthz")
