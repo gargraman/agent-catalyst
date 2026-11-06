@@ -12,7 +12,7 @@ from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from api.deps import rate_limit, resolve_workspace, tenant_db
+from api.deps import require_permission, rate_limit, resolve_workspace, tenant_db
 from api.errors import ConflictStale, InputInvalid, NotFound
 from api.models import Workspace, WorkspaceSettings
 from api.schemas.workspaces import WorkspaceOut, WorkspacePatch, WorkspaceSettingsOut, WorkspaceSettingsPatch
@@ -42,7 +42,7 @@ async def _load_settings(session: AsyncSession, ws: str, *, for_update: bool = F
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
-@router.get("/settings")
+@router.get("/settings", dependencies=[Depends(require_permission("view"))])
 async def get_settings(response: Response, ws: str = Depends(resolve_workspace),
                        session: AsyncSession = Depends(tenant_db)) -> WorkspaceSettingsOut:
     # READ-ONLY (F4): if no settings row exists yet, return in-memory defaults with a sentinel ETag — never write
@@ -55,7 +55,7 @@ async def get_settings(response: Response, ws: str = Depends(resolve_workspace),
     return _settings_out(s)
 
 
-@router.patch("/settings")
+@router.patch("/settings", dependencies=[Depends(require_permission("settings.manage"))])
 async def patch_settings(body: WorkspaceSettingsPatch, response: Response,
                          ws: str = Depends(resolve_workspace), session: AsyncSession = Depends(tenant_db),
                          if_match: str | None = Header(default=None, alias="If-Match"),
@@ -99,7 +99,7 @@ def _apply(s: WorkspaceSettings, body: WorkspaceSettingsPatch) -> None:
         s.eval_policy = body.eval_policy
 
 
-@router.patch("")
+@router.patch("", dependencies=[Depends(require_permission("settings.manage"))])
 async def rename_workspace(body: WorkspacePatch, ws: str = Depends(resolve_workspace),
                            session: AsyncSession = Depends(tenant_db), _rl: None = Depends(rate_limit)) -> WorkspaceOut:
     # Scoped to the active (authorized) workspace only; the workspaces root has no RLS so we match by id explicitly.

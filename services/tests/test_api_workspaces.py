@@ -17,7 +17,7 @@ async def test_get_settings_does_not_create_a_row():
     """F4 — a GET is read-only: it returns in-memory defaults without persisting a settings row."""
     ws = await seed_workspace()
     async with client() as c:
-        r = await c.get("/api/v1/workspace/settings", headers=dev_headers(workspace=ws))
+        r = await c.get("/api/v1/workspace/settings", headers=dev_headers(workspace=ws, claims={ws: "admin"}))
     assert r.status_code == 200 and r.headers.get("ETag") == "0"
     async with tenant_session(ws) as s:
         row = (await s.execute(
@@ -28,10 +28,10 @@ async def test_get_settings_does_not_create_a_row():
 async def test_settings_get_defaults_then_patch_with_if_match():
     ws = await seed_workspace()
     async with client() as c:
-        got = await c.get("/api/v1/workspace/settings", headers=dev_headers(workspace=ws))
+        got = await c.get("/api/v1/workspace/settings", headers=dev_headers(workspace=ws, claims={ws: "admin"}))
         assert got.status_code == 200 and got.headers.get("ETag")
         etag = got.headers["ETag"]
-        patched = await c.patch("/api/v1/workspace/settings", headers=dev_headers(workspace=ws, if_match=etag),
+        patched = await c.patch("/api/v1/workspace/settings", headers=dev_headers(workspace=ws, claims={ws: "admin"}, if_match=etag),
                                 json={"default_provider": "openai", "default_model": "gpt-5-mini",
                                       "limits": {"monthlySpendUsd": 500, "maxConcurrent": 4, "requestTimeoutS": 30},
                                       "eval_policy": {"minCases": 5, "qualityThreshold": 70.0,
@@ -39,7 +39,7 @@ async def test_settings_get_defaults_then_patch_with_if_match():
         assert patched.status_code == 200 and patched.json()["default_model"] == "gpt-5-mini"
         assert patched.json()["limits"]["monthlySpendUsd"] == 500
         # reuse of the stale etag → 409
-        stale = await c.patch("/api/v1/workspace/settings", headers=dev_headers(workspace=ws, if_match=etag),
+        stale = await c.patch("/api/v1/workspace/settings", headers=dev_headers(workspace=ws, claims={ws: "admin"}, if_match=etag),
                               json={"default_model": "x"})
     assert stale.status_code == 409 and stale.json()["error"]["code"] == "conflict.stale"
 
@@ -47,8 +47,8 @@ async def test_settings_get_defaults_then_patch_with_if_match():
 async def test_settings_patch_requires_if_match():
     ws = await seed_workspace()
     async with client() as c:
-        await c.get("/api/v1/workspace/settings", headers=dev_headers(workspace=ws))
-        r = await c.patch("/api/v1/workspace/settings", headers=dev_headers(workspace=ws),
+        await c.get("/api/v1/workspace/settings", headers=dev_headers(workspace=ws, claims={ws: "admin"}))
+        r = await c.patch("/api/v1/workspace/settings", headers=dev_headers(workspace=ws, claims={ws: "admin"}),
                           json={"default_model": "x"})
     assert r.status_code == 400 and r.json()["error"]["code"] == "input.invalid"
 
@@ -56,5 +56,5 @@ async def test_settings_patch_requires_if_match():
 async def test_rename_workspace():
     ws = await seed_workspace(name="Original")
     async with client() as c:
-        r = await c.patch("/api/v1/workspace", headers=dev_headers(workspace=ws), json={"name": "Renamed WS"})
+        r = await c.patch("/api/v1/workspace", headers=dev_headers(workspace=ws, claims={ws: "admin"}), json={"name": "Renamed WS"})
     assert r.status_code == 200 and r.json()["name"] == "Renamed WS" and r.json()["id"] == ws

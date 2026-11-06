@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from api.deps import PROVIDER_API_KEY, rate_limit, resolve_workspace, tenant_db
+from api.deps import require_permission, PROVIDER_API_KEY, rate_limit, resolve_workspace, tenant_db
 from api.run_sink import persist_run_record
 from api.errors import NotFound
 from api.models import Agent
@@ -27,7 +27,7 @@ from runtime.context import RunContext
 router = APIRouter(prefix="/api/v1/agents", tags=["evals"])
 
 
-@router.post("/{agent_id}/eval-runs")
+@router.post("/{agent_id}/eval-runs", dependencies=[Depends(require_permission("eval.run"))])
 async def create_eval_run(
     agent_id: str,
     body: EvalRunIn,
@@ -85,7 +85,7 @@ async def create_eval_run(
     )
 
 
-@router.post("/{agent_id}/publish")
+@router.post("/{agent_id}/publish", dependencies=[Depends(require_permission("agent.publish"))])
 async def publish_version(
     agent_id: str,
     body: PublishIn,

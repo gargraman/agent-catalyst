@@ -17,7 +17,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api import drift
-from api.deps import idempotency_guard, rate_limit, resolve_workspace, session_principal, tenant_db
+from api.deps import require_permission, idempotency_guard, rate_limit, resolve_workspace, session_principal, tenant_db
 from api.deps import Principal
 from api.errors import ConflictError, ConflictStale, InputInvalid, NotFound
 from api.models import Skill
@@ -56,7 +56,7 @@ async def _load(session: AsyncSession, skill_id: str, *, for_update: bool = Fals
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
-@router.post("", status_code=201)
+@router.post("", status_code=201, dependencies=[Depends(require_permission("skill.manage"))])
 async def create_skill(
     body: SkillCreate, response: Response, ws: str = Depends(resolve_workspace),
     session: AsyncSession = Depends(tenant_db),
@@ -77,7 +77,7 @@ async def create_skill(
         return _skill_out(s)
 
 
-@router.get("")
+@router.get("", dependencies=[Depends(require_permission("view"))])
 async def list_skills(ws: str = Depends(resolve_workspace), session: AsyncSession = Depends(tenant_db),
                       limit: int | None = None, cursor: str | None = None,
                       include_archived: bool = False) -> Page[SkillOut]:
@@ -99,7 +99,7 @@ async def list_skills(ws: str = Depends(resolve_workspace), session: AsyncSessio
     return Page[SkillOut](items=[_skill_out(s) for s in rows], next_cursor=next_cursor)
 
 
-@router.get("/{skill_id}")
+@router.get("/{skill_id}", dependencies=[Depends(require_permission("view"))])
 async def get_skill(skill_id: str, response: Response, ws: str = Depends(resolve_workspace),
                     session: AsyncSession = Depends(tenant_db)) -> SkillOut:
     s = await _load(session, skill_id)
@@ -109,7 +109,7 @@ async def get_skill(skill_id: str, response: Response, ws: str = Depends(resolve
     return _skill_out(s)
 
 
-@router.patch("/{skill_id}")
+@router.patch("/{skill_id}", dependencies=[Depends(require_permission("skill.manage"))])
 async def patch_skill(
     skill_id: str, body: SkillPatch, response: Response, ws: str = Depends(resolve_workspace),
     session: AsyncSession = Depends(tenant_db),
@@ -152,7 +152,7 @@ async def patch_skill(
     return _skill_out(s)
 
 
-@router.post("/{skill_id}/publish")
+@router.post("/{skill_id}/publish", dependencies=[Depends(require_permission("skill.manage"))])
 async def publish_skill(skill_id: str, ws: str = Depends(resolve_workspace),
                         session: AsyncSession = Depends(tenant_db),
                         principal: Principal = Depends(session_principal),
@@ -171,7 +171,7 @@ async def publish_skill(skill_id: str, ws: str = Depends(resolve_workspace),
     return _skill_out(s)
 
 
-@router.post("/{skill_id}/archive")
+@router.post("/{skill_id}/archive", dependencies=[Depends(require_permission("skill.manage"))])
 async def archive_skill(skill_id: str, ws: str = Depends(resolve_workspace),
                         session: AsyncSession = Depends(tenant_db), _rl: None = Depends(rate_limit)) -> SkillOut:
     s = await _load(session, skill_id)
@@ -182,7 +182,7 @@ async def archive_skill(skill_id: str, ws: str = Depends(resolve_workspace),
     return _skill_out(s)
 
 
-@router.post("/{skill_id}/restore")
+@router.post("/{skill_id}/restore", dependencies=[Depends(require_permission("skill.manage"))])
 async def restore_skill(skill_id: str, ws: str = Depends(resolve_workspace),
                         session: AsyncSession = Depends(tenant_db), _rl: None = Depends(rate_limit)) -> SkillOut:
     s = await _load(session, skill_id)

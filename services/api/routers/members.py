@@ -14,7 +14,7 @@ from sqlalchemy import select, tuple_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from api.deps import rate_limit, resolve_workspace, tenant_db
+from api.deps import require_permission, rate_limit, resolve_workspace, tenant_db
 from api.errors import ConflictError, NotFound
 from api.models import Member
 from api.pagination import Page, clamp_limit, decode_cursor, encode_cursor
@@ -36,7 +36,7 @@ async def _load(session: AsyncSession, member_id: str) -> Member | None:
     return (await session.execute(select(Member).where(Member.id == mid))).scalar_one_or_none()
 
 
-@router.get("")
+@router.get("", dependencies=[Depends(require_permission("view"))])
 async def list_members(ws: str = Depends(resolve_workspace), session: AsyncSession = Depends(tenant_db),
                        limit: int | None = None, cursor: str | None = None) -> Page[MemberOut]:
     n = clamp_limit(limit)
@@ -55,7 +55,7 @@ async def list_members(ws: str = Depends(resolve_workspace), session: AsyncSessi
     return Page[MemberOut](items=[_member_out(m) for m in rows], next_cursor=next_cursor)
 
 
-@router.post("", status_code=201)
+@router.post("", status_code=201, dependencies=[Depends(require_permission("member.manage"))])
 async def add_member(body: MemberCreate, ws: str = Depends(resolve_workspace),
                      session: AsyncSession = Depends(tenant_db), _rl: None = Depends(rate_limit)) -> MemberOut:
     m = Member(workspace_id=uuid.UUID(ws), subject=body.subject, display_name=body.display_name,
@@ -69,7 +69,7 @@ async def add_member(body: MemberCreate, ws: str = Depends(resolve_workspace),
     return _member_out(m)
 
 
-@router.patch("/{member_id}")
+@router.patch("/{member_id}", dependencies=[Depends(require_permission("member.manage"))])
 async def patch_member(member_id: str, body: MemberPatch, ws: str = Depends(resolve_workspace),
                        session: AsyncSession = Depends(tenant_db), _rl: None = Depends(rate_limit)) -> MemberOut:
     m = await _load(session, member_id)
@@ -83,7 +83,7 @@ async def patch_member(member_id: str, body: MemberPatch, ws: str = Depends(reso
     return _member_out(m)
 
 
-@router.delete("/{member_id}", status_code=204)
+@router.delete("/{member_id}", status_code=204, dependencies=[Depends(require_permission("member.manage"))])
 async def remove_member(member_id: str, response: Response, ws: str = Depends(resolve_workspace),
                         session: AsyncSession = Depends(tenant_db), _rl: None = Depends(rate_limit)) -> Response:
     m = await _load(session, member_id)

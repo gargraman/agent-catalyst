@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from api import drift
-from api.deps import idempotency_guard, rate_limit, resolve_workspace, tenant_db
+from api.deps import require_permission, idempotency_guard, rate_limit, resolve_workspace, tenant_db
 from api.errors import ConflictError, ConflictStale, InputInvalid, NotFound
 from api.models import McpServer, McpTool, Tool
 from api.pagination import Page, clamp_limit, decode_cursor, encode_cursor
@@ -68,7 +68,7 @@ def _tool_out(t: Tool) -> ToolOut:
                    archived=t.archived_at is not None, created_at=t.created_at)
 
 
-@router.post("/tools", status_code=201)
+@router.post("/tools", status_code=201, dependencies=[Depends(require_permission("tool.manage"))])
 async def create_tool(
     body: ToolCreate, response: Response,
     ws: str = Depends(resolve_workspace), session: AsyncSession = Depends(tenant_db),
@@ -84,7 +84,7 @@ async def create_tool(
         return _tool_out(t)
 
 
-@router.get("/tools")
+@router.get("/tools", dependencies=[Depends(require_permission("view"))])
 async def list_tools(
     ws: str = Depends(resolve_workspace), session: AsyncSession = Depends(tenant_db),
     limit: int | None = None, cursor: str | None = None, include_archived: bool = False,
@@ -117,7 +117,7 @@ async def _load_tool(session: AsyncSession, tool_id: str, *, for_update: bool = 
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
-@router.get("/tools/{tool_id}")
+@router.get("/tools/{tool_id}", dependencies=[Depends(require_permission("view"))])
 async def get_tool(tool_id: str, response: Response, ws: str = Depends(resolve_workspace),
                    session: AsyncSession = Depends(tenant_db)) -> ToolOut:
     t = await _load_tool(session, tool_id)
@@ -132,7 +132,7 @@ def _auth_surface(cfg: dict) -> tuple:
     return (cfg.get("authMode"), cfg.get("oauthScopes"))
 
 
-@router.patch("/tools/{tool_id}")
+@router.patch("/tools/{tool_id}", dependencies=[Depends(require_permission("tool.manage"))])
 async def patch_tool(
     tool_id: str, body: ToolPatch, response: Response,
     ws: str = Depends(resolve_workspace), session: AsyncSession = Depends(tenant_db),
@@ -162,7 +162,7 @@ async def patch_tool(
     return _tool_out(t)
 
 
-@router.post("/tools/{tool_id}/archive")
+@router.post("/tools/{tool_id}/archive", dependencies=[Depends(require_permission("tool.manage"))])
 async def archive_tool(tool_id: str, ws: str = Depends(resolve_workspace),
                        session: AsyncSession = Depends(tenant_db), _rl: None = Depends(rate_limit)) -> ToolOut:
     t = await _load_tool(session, tool_id)
@@ -173,7 +173,7 @@ async def archive_tool(tool_id: str, ws: str = Depends(resolve_workspace),
     return _tool_out(t)
 
 
-@router.post("/tools/{tool_id}/restore")
+@router.post("/tools/{tool_id}/restore", dependencies=[Depends(require_permission("tool.manage"))])
 async def restore_tool(tool_id: str, ws: str = Depends(resolve_workspace),
                        session: AsyncSession = Depends(tenant_db), _rl: None = Depends(rate_limit)) -> ToolOut:
     t = await _load_tool(session, tool_id)
@@ -206,7 +206,7 @@ async def _load_mcp(session: AsyncSession, server_id: str, *, for_update: bool =
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
-@router.post("/mcp-servers", status_code=201)
+@router.post("/mcp-servers", status_code=201, dependencies=[Depends(require_permission("mcp.manage"))])
 async def create_mcp_server(
     body: McpServerCreate, response: Response, ws: str = Depends(resolve_workspace),
     session: AsyncSession = Depends(tenant_db),
@@ -222,7 +222,7 @@ async def create_mcp_server(
         return _mcp_out(m)
 
 
-@router.get("/mcp-servers")
+@router.get("/mcp-servers", dependencies=[Depends(require_permission("view"))])
 async def list_mcp_servers(ws: str = Depends(resolve_workspace), session: AsyncSession = Depends(tenant_db),
                            limit: int | None = None, cursor: str | None = None,
                            include_archived: bool = False) -> Page[McpServerOut]:
@@ -245,7 +245,7 @@ async def list_mcp_servers(ws: str = Depends(resolve_workspace), session: AsyncS
     return Page[McpServerOut](items=[_mcp_out(m) for m in rows], next_cursor=next_cursor)
 
 
-@router.get("/mcp-servers/{server_id}")
+@router.get("/mcp-servers/{server_id}", dependencies=[Depends(require_permission("view"))])
 async def get_mcp_server(server_id: str, response: Response, ws: str = Depends(resolve_workspace),
                          session: AsyncSession = Depends(tenant_db)) -> McpServerOut:
     m = await _load_mcp(session, server_id)
@@ -255,7 +255,7 @@ async def get_mcp_server(server_id: str, response: Response, ws: str = Depends(r
     return _mcp_out(m)
 
 
-@router.patch("/mcp-servers/{server_id}")
+@router.patch("/mcp-servers/{server_id}", dependencies=[Depends(require_permission("mcp.manage"))])
 async def patch_mcp_server(server_id: str, body: McpServerPatch, response: Response,
                            ws: str = Depends(resolve_workspace), session: AsyncSession = Depends(tenant_db),
                            if_match: str | None = Header(default=None, alias="If-Match"),
@@ -276,7 +276,7 @@ async def patch_mcp_server(server_id: str, body: McpServerPatch, response: Respo
     return _mcp_out(m)
 
 
-@router.post("/mcp-servers/{server_id}/archive")
+@router.post("/mcp-servers/{server_id}/archive", dependencies=[Depends(require_permission("mcp.manage"))])
 async def archive_mcp_server(server_id: str, ws: str = Depends(resolve_workspace),
                              session: AsyncSession = Depends(tenant_db), _rl: None = Depends(rate_limit)) -> McpServerOut:
     m = await _load_mcp(session, server_id)
@@ -287,7 +287,7 @@ async def archive_mcp_server(server_id: str, ws: str = Depends(resolve_workspace
     return _mcp_out(m)
 
 
-@router.post("/mcp-servers/{server_id}/tools", status_code=201)
+@router.post("/mcp-servers/{server_id}/tools", status_code=201, dependencies=[Depends(require_permission("mcp.manage"))])
 async def add_mcp_tool(server_id: str, body: McpToolCreate, response: Response,
                        ws: str = Depends(resolve_workspace), session: AsyncSession = Depends(tenant_db),
                        _rl: None = Depends(rate_limit)) -> McpToolOut:
@@ -308,7 +308,7 @@ def _mcp_tool_surface(mt: McpTool) -> tuple:
     return (mt.enabled, mt.risk_tier)
 
 
-@router.patch("/mcp-tools/{tool_id}")
+@router.patch("/mcp-tools/{tool_id}", dependencies=[Depends(require_permission("mcp.manage"))])
 async def patch_mcp_tool(tool_id: str, body: McpToolPatch, response: Response,
                          ws: str = Depends(resolve_workspace), session: AsyncSession = Depends(tenant_db),
                          if_match: str | None = Header(default=None, alias="If-Match"),

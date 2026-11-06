@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from api import sse
-from api.deps import PROVIDER_API_KEY, rate_limit, resolve_workspace, tenant_db
+from api.deps import require_permission, PROVIDER_API_KEY, rate_limit, resolve_workspace, tenant_db
 from api.run_sink import persist_run_record
 from api.errors import NotFound
 from api.models import Agent, AgentVersion, RetrievalBinding
@@ -54,7 +54,7 @@ async def _load_version(session: AsyncSession, agent_id: str, version_id: str | 
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
-@router.post("/{agent_id}/invoke")
+@router.post("/{agent_id}/invoke", dependencies=[Depends(require_permission("playground.use"))])
 async def invoke_agent(
     agent_id: str,
     body: InvokeIn,

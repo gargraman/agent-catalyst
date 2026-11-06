@@ -1,5 +1,15 @@
 # 09 — Security, Auth & Multi-Tenancy
 
+> **Built-state (2026-11-06, feature `specs/008-rbac-enforcement`): workspace RBAC enforcement is LIVE.**
+> The 4-role→permission model is mirrored server-side (`services/api/permissions.py`, **generated from
+> `frontend/src/lib/permissions.ts`** via `scripts/gen_rbac.py` + a drift test) and enforced by a
+> `require_permission(...)` dependency on all 47 workspace-scoped routes — **deny-by-default** (coverage
+> test), **fail-closed** (unknown role → 403), **403 before resource load** (no existence leak), composed
+> with workspace membership + RLS. Role is read from the resolved principal claim. **Still deferred:**
+> per-resource access policy (role+team visibility), OIDC/member-sourced role origin, Vault key custody,
+> `rate_limit()` thresholds (F5), and SSRF egress controls (F19) — the sections below remain the design
+> target for those.
+
 > Implements `spec.md §B12` and `backend-integration-plan.md Part 4`, and makes the frontend's existing
 > auth/access model (`docs/frontend-auth-access-plan.md`) real on the server. Trellix context: these
 > agents execute tools/MCP that reach internal systems, so this doc is not optional hardening — it is

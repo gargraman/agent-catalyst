@@ -36,7 +36,7 @@ async def test_eval_run_executes_engine_and_returns_verdict(monkeypatch):
     ws, aid, vid = await _seed()
     async with client() as c:
         r = await c.post(f"/api/v1/agents/{aid}/eval-runs",
-                         headers=dev_headers(workspace=ws), json=_eval_body(vid))
+                         headers=dev_headers(workspace=ws, claims={ws: "publisher"}), json=_eval_body(vid))
     assert r.status_code == 200
     body = r.json()
     assert body["verdict"] in ("pass", "fail", "low_confidence")
@@ -54,7 +54,7 @@ async def test_eval_persists_only_candidate_runs_not_judge(monkeypatch):
     ws, aid, vid = await _seed()
     async with client() as c:
         r = await c.post(f"/api/v1/agents/{aid}/eval-runs",
-                         headers=dev_headers(workspace=ws), json=_eval_body(vid, n=3))
+                         headers=dev_headers(workspace=ws, claims={ws: "publisher"}), json=_eval_body(vid, n=3))
     assert r.status_code == 200
     async with tenant_session(ws) as s:
         rows = list((await s.execute(select(Run))).scalars().all())
@@ -67,7 +67,7 @@ async def test_publish_is_advisory_not_gated():
     ws, aid, vid = await _seed()
     async with client() as c:
         r = await c.post(f"/api/v1/agents/{aid}/publish",
-                         headers=dev_headers(workspace=ws), json={"version_id": vid})
+                         headers=dev_headers(workspace=ws, claims={ws: "publisher"}), json={"version_id": vid})
     assert r.status_code == 200                       # NOT 409 publish.eval_gate, despite no passing eval
     body = r.json()
     assert body["status"] == "published"
@@ -82,7 +82,7 @@ async def test_publish_malformed_version_is_400():
     ws, aid, vid = await _seed()
     async with client() as c:
         r = await c.post(f"/api/v1/agents/{aid}/publish",
-                         headers=dev_headers(workspace=ws), json={"version_id": "not-a-uuid"})
+                         headers=dev_headers(workspace=ws, claims={ws: "publisher"}), json={"version_id": "not-a-uuid"})
     assert r.status_code == 400 and r.json()["error"]["code"] == "input.invalid"
 
 
@@ -95,5 +95,5 @@ async def test_publish_foreign_version_is_404_no_cross_agent_mispublish():
     v2 = await seed_version(ws, aid2)                    # v2 belongs to aid2
     async with client() as c:
         r = await c.post(f"/api/v1/agents/{aid1}/publish",
-                         headers=dev_headers(workspace=ws), json={"version_id": v2})
+                         headers=dev_headers(workspace=ws, claims={ws: "publisher"}), json={"version_id": v2})
     assert r.status_code == 404                          # v2 is not aid1's version

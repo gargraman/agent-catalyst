@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.db import tenant_session
 from api.errors import AccessDenied, AuthRequired, IdempotencyInProgress, InputInvalid
+from api.permissions import has_permission
 
 # Provider credential for the runtime RunContext. Env-sourced, dev default; invoke is mocked in this slice so
 # no real key is used. Vault custody is deferred (P1/M5). Never logged or surfaced (P5).
@@ -65,6 +66,26 @@ async def tenant_db(ws: str = Depends(resolve_workspace)) -> AsyncIterator[Async
     """Yield an RLS-scoped session (ac_app + app.workspace_id GUC) for exactly this workspace (P5)."""
     async with tenant_session(ws) as session:
         yield session
+
+
+def require_permission(permission: str):
+    """RBAC gate (feature 008, M5/P3). Returns a dependency that authorizes the caller's workspace ROLE
+    against `permission` — deny fail-closed with 403 access.denied. Resolves principal + workspace (header-only,
+    no DB), so denial raises BEFORE the handler loads any resource (403 before 404, no existence leak — FR-015).
+    Composes with, never replaces, membership (resolve_workspace) + RLS (tenant_db). The returned callable
+    carries `required_permission` for the deny-by-default coverage test (FR-014)."""
+    async def _check(
+        principal: Principal = Depends(session_principal),
+        ws: str = Depends(resolve_workspace),
+    ) -> None:
+        role = principal.workspace_claims.get(ws, "")
+        if not has_permission(role, permission):
+            raise AccessDenied("insufficient role for this operation",
+                               detail={"required_permission": permission, "role": role})
+        return None
+
+    _check.required_permission = permission  # type: ignore[attr-defined]  # introspected by the coverage test
+    return _check
 
 
 async def rate_limit() -> None:

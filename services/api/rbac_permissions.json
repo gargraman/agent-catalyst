@@ -1,0 +1,55 @@
+{
+  "viewer": [
+    "view",
+    "playground.use"
+  ],
+  "builder": [
+    "view",
+    "playground.use",
+    "agent.create",
+    "agent.edit",
+    "eval.run",
+    "eval.author",
+    "knowledge.manage",
+    "tool.manage",
+    "mcp.manage",
+    "skill.manage",
+    "channel.manage"
+  ],
+  "publisher": [
+    "view",
+    "playground.use",
+    "agent.create",
+    "agent.edit",
+    "eval.run",
+    "eval.author",
+    "knowledge.manage",
+    "tool.manage",
+    "mcp.manage",
+    "skill.manage",
+    "channel.manage",
+    "agent.publish",
+    "tool.approve"
+  ],
+  "admin": [
+    "view",
+    "playground.use",
+    "agent.create",
+    "agent.edit",
+    "eval.run",
+    "eval.author",
+    "knowledge.manage",
+    "tool.manage",
+    "mcp.manage",
+    "skill.manage",
+    "channel.manage",
+    "agent.publish",
+    "tool.approve",
+    "agent.delete",
+    "key.manage",
+    "member.manage",
+    "access.manage",
+    "settings.manage",
+    "eval.govern"
+  ]
+}

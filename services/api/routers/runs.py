@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from api.deps import resolve_workspace, tenant_db
+from api.deps import require_permission, resolve_workspace, tenant_db
 from api.errors import NotFound
 from api.models import Run
 from api.pagination import Page, clamp_limit, decode_cursor, encode_cursor
@@ -32,7 +32,7 @@ def _run_out(r: Run) -> RunOut:
                   source=r.source, correlation_id=r.correlation_id, created_at=r.created_at)
 
 
-@router.get("/runs")
+@router.get("/runs", dependencies=[Depends(require_permission("view"))])
 async def list_runs(ws: str = Depends(resolve_workspace), session: AsyncSession = Depends(tenant_db),
                     limit: int | None = None, cursor: str | None = None) -> Page[RunOut]:
     n = clamp_limit(limit)
@@ -51,7 +51,7 @@ async def list_runs(ws: str = Depends(resolve_workspace), session: AsyncSession 
     return Page[RunOut](items=[_run_out(r) for r in rows], next_cursor=next_cursor)
 
 
-@router.get("/runs/{run_id}")
+@router.get("/runs/{run_id}", dependencies=[Depends(require_permission("view"))])
 async def get_run(run_id: str, ws: str = Depends(resolve_workspace),
                   session: AsyncSession = Depends(tenant_db)) -> RunOut:
     try:
@@ -78,7 +78,7 @@ async def _window_runs(session: AsyncSession) -> list[Run]:
     return list((await session.execute(select(Run).where(Run.created_at >= since))).scalars().all())
 
 
-@router.get("/metrics/dashboard")
+@router.get("/metrics/dashboard", dependencies=[Depends(require_permission("view"))])
 async def dashboard(ws: str = Depends(resolve_workspace),
                     session: AsyncSession = Depends(tenant_db)) -> DashboardOut:
     today = _utcnow_naive().date()
@@ -99,7 +99,7 @@ async def dashboard(ws: str = Depends(resolve_workspace),
                         spend=spend, calls=calls, total_cost_usd=round(total_cost, 6), total_calls=total_calls)
 
 
-@router.get("/metrics/runs")
+@router.get("/metrics/runs", dependencies=[Depends(require_permission("view"))])
 async def runs_stats(ws: str = Depends(resolve_workspace),
                      session: AsyncSession = Depends(tenant_db)) -> RunsStatsOut:
     rows = await _window_runs(session)
@@ -111,7 +111,7 @@ async def runs_stats(ws: str = Depends(resolve_workspace),
     return RunsStatsOut(total=len(rows), by_outcome=by_outcome, by_source=by_source)
 
 
-@router.get("/metrics/evals")
+@router.get("/metrics/evals", dependencies=[Depends(require_permission("view"))])
 async def eval_stats(ws: str = Depends(resolve_workspace),
                      session: AsyncSession = Depends(tenant_db)) -> EvalStatsOut:
     rows = [r for r in await _window_runs(session) if r.source == "eval"]

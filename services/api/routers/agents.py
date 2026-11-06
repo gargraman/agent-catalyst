@@ -17,7 +17,7 @@ from sqlalchemy import select, text, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from api.deps import idempotency_guard, rate_limit, resolve_workspace, tenant_db
+from api.deps import require_permission, idempotency_guard, rate_limit, resolve_workspace, tenant_db
 from api.errors import ConflictStale, InputInvalid, NotFound
 from api.models import Agent, AgentVersion
 from runtime.hashing import compute_snapshot_hash
@@ -87,7 +87,7 @@ def _load_profile_snapshot(provider: str, model: str) -> dict:
                        detail={"provider": provider, "model": model})
 
 
-@router.post("", status_code=201)
+@router.post("", status_code=201, dependencies=[Depends(require_permission("agent.create"))])
 async def create_agent(
     body: AgentCreate,
     response: Response,
@@ -127,7 +127,7 @@ async def create_agent(
         return _agent_out(agent)
 
 
-@router.get("")
+@router.get("", dependencies=[Depends(require_permission("view"))])
 async def list_agents(
     ws: str = Depends(resolve_workspace),
     session: AsyncSession = Depends(tenant_db),
@@ -152,7 +152,7 @@ async def list_agents(
     return Page[AgentOut](items=[_agent_out(a) for a in rows], next_cursor=next_cursor)
 
 
-@router.get("/{agent_id}")
+@router.get("/{agent_id}", dependencies=[Depends(require_permission("view"))])
 async def get_agent(
     agent_id: str,
     response: Response,
@@ -166,7 +166,7 @@ async def get_agent(
     return _agent_out(agent)
 
 
-@router.patch("/{agent_id}")
+@router.patch("/{agent_id}", dependencies=[Depends(require_permission("agent.edit"))])
 async def patch_agent(
     agent_id: str,
     body: AgentPatch,
@@ -206,7 +206,7 @@ async def patch_agent(
     return _agent_out(agent)
 
 
-@router.post("/{agent_id}/versions", status_code=201)
+@router.post("/{agent_id}/versions", status_code=201, dependencies=[Depends(require_permission("agent.edit"))])
 async def create_version(
     agent_id: str,
     ws: str = Depends(resolve_workspace),

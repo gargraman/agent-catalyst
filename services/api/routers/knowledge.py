@@ -15,7 +15,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api import drift
-from api.deps import idempotency_guard, rate_limit, resolve_workspace, tenant_db
+from api.deps import require_permission, idempotency_guard, rate_limit, resolve_workspace, tenant_db
 from api.errors import ConflictError, ConflictStale, InputInvalid, NotFound
 from api.models import KnowledgeBase
 from api.pagination import Page, clamp_limit, decode_cursor, encode_cursor
@@ -48,7 +48,7 @@ async def _load(session: AsyncSession, kb_id: str, *, for_update: bool = False) 
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
-@router.post("/knowledge-bases", status_code=201)
+@router.post("/knowledge-bases", status_code=201, dependencies=[Depends(require_permission("knowledge.manage"))])
 async def create_kb(body: KnowledgeBaseCreate, response: Response, ws: str = Depends(resolve_workspace),
                     session: AsyncSession = Depends(tenant_db),
                     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
@@ -67,7 +67,7 @@ async def create_kb(body: KnowledgeBaseCreate, response: Response, ws: str = Dep
         return _kb_out(k)
 
 
-@router.get("/knowledge-bases")
+@router.get("/knowledge-bases", dependencies=[Depends(require_permission("view"))])
 async def list_kb(ws: str = Depends(resolve_workspace), session: AsyncSession = Depends(tenant_db),
                   limit: int | None = None, cursor: str | None = None,
                   include_archived: bool = False) -> Page[KnowledgeBaseOut]:
@@ -89,7 +89,7 @@ async def list_kb(ws: str = Depends(resolve_workspace), session: AsyncSession = 
     return Page[KnowledgeBaseOut](items=[_kb_out(k) for k in rows], next_cursor=next_cursor)
 
 
-@router.get("/knowledge-bases/{kb_id}")
+@router.get("/knowledge-bases/{kb_id}", dependencies=[Depends(require_permission("view"))])
 async def get_kb(kb_id: str, response: Response, ws: str = Depends(resolve_workspace),
                  session: AsyncSession = Depends(tenant_db)) -> KnowledgeBaseOut:
     k = await _load(session, kb_id)
@@ -99,7 +99,7 @@ async def get_kb(kb_id: str, response: Response, ws: str = Depends(resolve_works
     return _kb_out(k)
 
 
-@router.patch("/knowledge-bases/{kb_id}")
+@router.patch("/knowledge-bases/{kb_id}", dependencies=[Depends(require_permission("knowledge.manage"))])
 async def patch_kb(kb_id: str, body: KnowledgeBasePatch, response: Response,
                    ws: str = Depends(resolve_workspace), session: AsyncSession = Depends(tenant_db),
                    if_match: str | None = Header(default=None, alias="If-Match"),
@@ -131,7 +131,7 @@ async def patch_kb(kb_id: str, body: KnowledgeBasePatch, response: Response,
     return _kb_out(k)
 
 
-@router.post("/knowledge-bases/{kb_id}/archive")
+@router.post("/knowledge-bases/{kb_id}/archive", dependencies=[Depends(require_permission("knowledge.manage"))])
 async def archive_kb(kb_id: str, ws: str = Depends(resolve_workspace),
                      session: AsyncSession = Depends(tenant_db), _rl: None = Depends(rate_limit)) -> KnowledgeBaseOut:
     k = await _load(session, kb_id)
@@ -142,7 +142,7 @@ async def archive_kb(kb_id: str, ws: str = Depends(resolve_workspace),
     return _kb_out(k)
 
 
-@router.post("/knowledge-bases/{kb_id}/restore")
+@router.post("/knowledge-bases/{kb_id}/restore", dependencies=[Depends(require_permission("knowledge.manage"))])
 async def restore_kb(kb_id: str, ws: str = Depends(resolve_workspace),
                      session: AsyncSession = Depends(tenant_db), _rl: None = Depends(rate_limit)) -> KnowledgeBaseOut:
     k = await _load(session, kb_id)
@@ -153,7 +153,7 @@ async def restore_kb(kb_id: str, ws: str = Depends(resolve_workspace),
     return _kb_out(k)
 
 
-@router.get("/ingestion-jobs")
+@router.get("/ingestion-jobs", dependencies=[Depends(require_permission("view"))])
 async def list_ingestion_jobs(ws: str = Depends(resolve_workspace),
                               session: AsyncSession = Depends(tenant_db)) -> Page[IngestionJobOut]:
     """Honest deferred (FR-009): real ingestion (documents/embeddings) is M7. No fabricated jobs are returned."""
