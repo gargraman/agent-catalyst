@@ -85,7 +85,7 @@ def _build_run(snapshot, ctx, correlation_id, outcome, state, latency_ms) -> Run
     cost = Decimal(str(usage.cost_usd)) if usage is not None else None  # carried, not recomputed (FR-014)
     mc = snapshot.model_config or {}
     return RunRecord(
-        run_id=uuid.uuid4().hex,
+        run_id=ctx.run_id or uuid.uuid4().hex,   # honor a caller-supplied run id (frame consistency); else mint
         correlation_id=correlation_id,
         workspace_id=ctx.workspace_id or snapshot.workspace_id,
         agent_id=snapshot.agent_id,

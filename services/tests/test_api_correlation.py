@@ -14,7 +14,7 @@ from sqlalchemy import select
 from api.db import tenant_session
 from api.models import Run
 from runtime.providers import gateway
-from tests._api_helpers import client, dev_headers, seed_agent, seed_version, seed_workspace
+from tests._api_helpers import client, dev_headers, parse_sse, seed_agent, seed_version, seed_workspace
 from tests._evals_helpers import VALID_OUTPUT, make_routed_gateway
 from tests._invoke_helpers import make_gateway, stop_ev, text_ev, usage_ev
 
@@ -54,6 +54,21 @@ async def test_invoke_honors_x_correlation_id_and_echoes_it(monkeypatch):
     assert r.headers.get("x-correlation-id") == "my-corr-123"
     rows = await _runs(ws)
     assert len(rows) == 1 and rows[0].correlation_id == "my-corr-123"
+
+
+async def test_run_start_and_done_report_the_same_run_id(monkeypatch):
+    """Code-review fix: the SSE run_start and done frames must name the SAME run id (previously run_start
+    reported the correlation id and done the run id — a mismatch). Correlation stays a separate concept."""
+    monkeypatch.setattr(gateway, "stream", make_gateway([text_ev("ok"), usage_ev(), stop_ev()]))
+    ws, aid, _ = await _seed()
+    r = await _invoke(aid, ws, {"X-Correlation-Id": "corr-xyz"})
+    assert r.status_code == 200
+    frames = parse_sse(r.text)
+    run_start = next(d for e, d in frames if e == "run_start")
+    done = next(d for e, d in frames if e == "done")
+    assert run_start["run_id"] == done["run_id"]          # one run id, consistent across frames
+    assert run_start["run_id"] != "corr-xyz"              # run id is NOT the correlation id (separate concepts)
+    assert r.headers.get("x-correlation-id") == "corr-xyz"
 
 
 async def test_invoke_honors_traceparent_trace_id(monkeypatch):

@@ -71,11 +71,14 @@ async def invoke_agent(
     snapshot = version.to_snapshot()          # pure frozen dataclass — safe to use after the session closes
 
     runs: list = []
+    # Mint the run id here so the run_start frame and the final run (done frame) name the SAME id; correlation
+    # is a separate concept carried via ctx.correlation_id + the X-Correlation-Id header (code-review fix).
+    run_id = uuid.uuid4().hex
     ctx = RunContext(workspace_id=ws, source="playground", api_key=PROVIDER_API_KEY,
-                     record_run=runs.append, correlation_id=corr, deadline_s=30.0)
+                     record_run=runs.append, correlation_id=corr, run_id=run_id, deadline_s=30.0)
 
     async def _event_stream():
-        yield sse.frame("run_start", {"run_id": corr, "version": snapshot.version_id,
+        yield sse.frame("run_start", {"run_id": run_id, "version": snapshot.version_id,
                                       "model": (snapshot.model_config or {}).get("model", "")})
         error_emitted = False
         async for ev in runtime_invoke(snapshot, body.inputs, ctx):

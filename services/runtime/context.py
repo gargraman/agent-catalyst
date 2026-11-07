@@ -29,6 +29,7 @@ class RunContext:
     record_run: RunSink               # invoked exactly once at completion with the finished RunRecord
     caller: str | None = None
     correlation_id: str | None = None # minted by the runtime when absent (no un-traceable run, SC-007)
+    run_id: str | None = None         # caller may supply the run's id (so a pre-run frame can name it); else the runtime mints one
     deadline_s: float = 30.0          # wall-clock budget, actively enforced (D5)
     max_tool_calls: int = 8           # carried, NOT enforced in M2a (D6)
     max_corrections: int = 2          # dedicated self-correction budget (M2b, FR-010); independent of max_tool_calls

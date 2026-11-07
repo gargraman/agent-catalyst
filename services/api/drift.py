@@ -35,8 +35,10 @@ async def flag_bound_agents(session: AsyncSession, kind: str, resource_id: str |
     version_col, resource_col = _BINDING[kind]
     try:
         rid = resource_id if isinstance(resource_id, uuid.UUID) else uuid.UUID(str(resource_id))
-    except (ValueError, TypeError):
-        return 0
+    except (ValueError, TypeError) as e:
+        # A malformed resource_id is a programming error (callers pass a validated path param), so fail-closed
+        # with a raise — symmetry with the unknown-kind ValueError above (code-review hardening).
+        raise ValueError(f"invalid resource_id for drift flagging: {resource_id!r}") from e
     bound_versions = select(version_col).where(resource_col == rid)
     bound_agents = select(AgentVersion.agent_id).where(AgentVersion.id.in_(bound_versions))
     res = await session.execute(

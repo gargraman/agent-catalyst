@@ -63,3 +63,12 @@ async def test_unbound_resource_flags_nothing():
         n = await flag_bound_agents(s, "tool", tool)
     assert n == 0
     assert await _needs_reeval(ws, a) is False
+
+
+async def test_flag_bound_agents_raises_on_malformed_resource_id():
+    """Code-review hardening: a malformed/unknown resource_id or kind is a programming error → fail-closed
+    ValueError (not a silent 0). The raise precedes any session use, so a dummy session is fine."""
+    with pytest.raises(ValueError):
+        await flag_bound_agents(None, "tool", "not-a-uuid")      # bad id → raises at the uuid parse
+    with pytest.raises(ValueError):
+        await flag_bound_agents(None, "nonsense-kind", "x")      # unknown kind → raises (already)
