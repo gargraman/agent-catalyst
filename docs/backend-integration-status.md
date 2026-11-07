@@ -1,6 +1,7 @@
 # Backend Integration Status (mock ↔ real)
 
-**Generated against:** feature 006 (M4-remainder) backend, branch `feat/backend-m0-foundation` · **Date:** 2026-11-05
+**Last reconciled against:** feature 010 (M6 run observability) backend, branch `feat/backend-m0-foundation` · **Date:** 2026-11-07
+(history: 006 M4-remainder → 007 trust boundary → 008 RBAC enforcement → 009 spend cap → 010 observability)
 **Total `@backend` seams** (`grep -rn "@backend" frontend/src | wc -l`): **253**
 
 This tracker records the honest state of the mock→real migration on **two independent axes**:
@@ -10,10 +11,24 @@ This tracker records the honest state of the mock→real migration on **two inde
 
 > ⚠️ **Current frontend-wired state: 0 / 253 seams are REAL.** The backend endpoints below are built and tested,
 > but the frontend console still calls the in-memory mock store. Wiring requires generating the typed client
-> (`npm run gen:api`) and swapping hooks, which needs a **Node/npm toolchain that is not available in the current
-> build environment** (`node`/`npm` not found). The OpenAPI 3.1 contract is emitted to `frontend/openapi.json` and
-> the `gen:api` script + `openapi-typescript` devDep are wired, so the wiring is a mechanical step in a Node env.
-> Until then, no seam may be described as implemented in the console (P1/P9).
+> (`npm run gen:api`) and swapping hooks. The OpenAPI 3.1 contract is emitted to `frontend/openapi.json` and the
+> `gen:api` script + `openapi-typescript` devDep are wired, so the wiring is a mechanical step.
+> Until a seam is swapped + build-verified, it may not be described as implemented in the console (P1/P9).
+>
+> **Toolchain (updated 2026-11-07):** Node/npm **is** available via `nvm use 24` (Node v24.19.0 / npm 11.17.0);
+> `node_modules` is installed (`next@16.3.8`). `npm run lint` and `npm run build` pass clean today (the earlier
+> "Node unavailable" note was wrong — nvm just wasn't loaded in the non-interactive shell). So FE wiring is
+> **no longer blocked** — it is simply **not yet done** (0/253). The 009 FE contract-sync edits (`WorkspaceSpend`
+> type + `useWorkspaceSpend()` seam) are now **build-verified**.
+>
+> **Phase 5 contract proof — agents family (feature 011, 2026-11-07):** the typed client (`gen:api` →
+> `src/lib/api/schema.ts`), the mock→dev-auth bridge + fetch client (`client.ts`), and the AgentOut↔Agent
+> adapters (`adapters.ts`) are **built + proven end-to-end** against the real backend (list→create→list round
+> trip via the actual client code, tenant-scoped). **FE-wired count stays 0/253** — the in-browser agents view
+> is **not** swapped yet: it is gated on **finding F-D** (the console workspace registry uses slug ids while the
+> backend scopes by UUID — the switcher must be backed by the real API first). See
+> `specs/011-fe-contract-proof/findings.md` (F-A thin AgentOut projection, F-B io_contract, F-C provider casing,
+> F-D workspace id). No seam is claimed wired.
 
 ## By resource family
 
@@ -29,7 +44,7 @@ This tracker records the honest state of the mock→real migration on **two inde
 | **knowledge-bases** (metadata) | ✅ BUILT (006/US3) | ⬜ MOCK | `/api/v1/knowledge-bases` CRUD + archive/restore |
 | **ingestion-jobs** | 🟡 DEFERRED (M7) | ⬜ MOCK | `GET /api/v1/ingestion-jobs` returns honest empty; real ingestion is M7 |
 | **workspace settings/limits/eval-policy** | ✅ BUILT (006/US4) | ⬜ MOCK | `GET/PATCH /api/v1/workspace/settings`, `PATCH /api/v1/workspace` |
-| **members** (roster) | ✅ BUILT (006/US4) | ⬜ MOCK | `/api/v1/members` CRUD — role stored, NOT enforced (RBAC → M5) |
+| **members** (roster) | ✅ BUILT (006/US4) | ⬜ MOCK | `/api/v1/members` CRUD — role stored **and now enforced** (RBAC, 008/M5) |
 | **runs** (history) | ✅ BUILT (006/US5) | ⬜ MOCK | `GET /api/v1/runs[/:id]` |
 | **metrics** (dashboard) | ✅ BUILT (006/US5) | ⬜ MOCK | `GET /api/v1/metrics/{dashboard,runs,evals}` |
 | **spend cap** (durable monthly) | ✅ BUILT (009/M6) | ⬜ MOCK | `GET /api/v1/workspace/spend` (MTD vs cap); enforced on invoke + eval-runs — `402 budget.exceeded` over cap, durable (Postgres ledger, F7) |
@@ -37,15 +52,16 @@ This tracker records the honest state of the mock→real migration on **two inde
 | **provider keys** | 🟡 DEFERRED (M5) | ⬜ MOCK | secret custody (Vault) deferred — no endpoint built |
 | **runtime tokens** (mint) | 🟡 DEFERRED (M5) | ⬜ MOCK | token plane deferred |
 | **tool approvals** | 🟡 DEFERRED (M5/P2) | ⬜ MOCK | approval workflow deferred |
-| **access policy / RBAC** | 🟡 DEFERRED (M5) | ⬜ MOCK | per-resource policy + 4-role enforcement deferred |
-| **OIDC / IdP sync** | 🟡 DEFERRED (M5) | ⬜ MOCK | real identity provisioning deferred |
+| **RBAC enforcement** (4-role) | ✅ BUILT (008/M5) | ⬜ MOCK | `require_permission` on all 47 workspace routes; deny-by-default (coverage test); fail-closed unknown role; 403-before-404; composes with membership + RLS |
+| **access policy** (per-resource) | 🟡 DEFERRED (M5) | ⬜ MOCK | per-resource role+team visibility policy still deferred (RBAC role-gate is built; this is the finer-grained layer) |
+| **OIDC / IdP sync** | 🟡 DEFERRED (M5) | ⬜ MOCK | real identity provisioning deferred (roles currently from the resolved principal claim) |
 | **channels** | 🟡 DEFERRED (P2) | ⬜ MOCK | messaging channels post-v1.0 |
 | **workspace create/delete (root)** | 🟡 DEFERRED | ⬜ MOCK | platform-admin plane out of scope |
 
 ## Totals
 
-- **Backend endpoints BUILT:** 13 families (agents, invoke, eval, publish, tools, mcp, skills, KB, workspace settings, members, runs, metrics; + honest-deferred ingestion-jobs stub).
-- **Backend DEFERRED:** provider keys, tokens, tool approvals, access-policy/RBAC, OIDC, channels, workspace-root — all M5/M7/P2.
+- **Backend endpoints/controls BUILT:** agents, invoke (SSE), eval, publish (advisory), tools, mcp, skills, KB, workspace settings, members, runs, metrics (+ honest-deferred ingestion stub); **RBAC enforcement (008)**; **durable monthly spend cap + `GET /workspace/spend` (009)**; **correlation ingestion + `GET /metrics` (010)**. Cross-cutting on every paid path: tenancy/RLS, RBAC role-gate, spend cap, correlation.
+- **Backend DEFERRED:** per-resource access-policy, OIDC/IdP, provider-key Vault custody, runtime tokens, tool approvals, Redis spend-reservation, heavy observability (Langfuse/ClickHouse) — M5/M6-remainder; channels + workspace-root — P2.
 - **Frontend seams wired to real API:** **0 / 253** (pending Node toolchain for client-gen + hook swap).
 
 ## How to complete the frontend wiring (in a Node environment)
