@@ -1071,12 +1071,28 @@ export const WORKSPACE_SETTINGS: Record<string, WorkspaceSettings> = {
   "trellix-people": { defaultProvider: "Anthropic", defaultModel: "claude-sonnet-5-5" },
 };
 
-// Spend and concurrency are per-workspace ceilings (not per-endpoint). Enforced at runtime in P2.
+// Spend and concurrency are per-workspace ceilings (not per-endpoint). The monthly SPEND cap
+// (monthlySpendUsd) is now enforced server-side as of M6 (feature 009) — an invoke/eval beyond it is
+// rejected with 402 budget.exceeded before any model call; maxConcurrent + requestTimeoutS remain P2.
 export const LIMITS: Record<string, Limits> = {
   "trellix-xdr": { monthlySpendUsd: 2000, maxConcurrent: 25, requestTimeoutS: 30 },
   "trellix-grc": { monthlySpendUsd: 1000, maxConcurrent: 10, requestTimeoutS: 30 },
   "trellix-labs": { monthlySpendUsd: 500, maxConcurrent: 10, requestTimeoutS: 30 },
   "trellix-people": { monthlySpendUsd: 750, maxConcurrent: 10, requestTimeoutS: 30 },
+};
+
+// @backend GET /v1/workspace/spend - month-to-date spend vs the active monthly cap (feature 009, M6).
+//   The server SUMs runs.cost_usd for the current calendar month (UTC) from the durable ledger — this is
+//   the SAME figure the spend-cap gate enforces. These are seed stand-ins for the mock; the real value
+//   comes from the endpoint. [ref: specs/009-spend-cap/contracts/spend-cap.md, backend/09]
+export type WorkspaceSpend = { monthToDateUsd: number; capUsd: number; remainingUsd: number };
+export const defaultWorkspaceSpend = (): WorkspaceSpend => ({ monthToDateUsd: 0, capUsd: 2000, remainingUsd: 2000 });
+const mkSpend = (mtd: number, cap: number): WorkspaceSpend => ({ monthToDateUsd: mtd, capUsd: cap, remainingUsd: cap - mtd });
+export const WORKSPACE_SPEND: Record<string, WorkspaceSpend> = {
+  "trellix-xdr": mkSpend(1284.5, 2000),
+  "trellix-grc": mkSpend(642.0, 1000),
+  "trellix-labs": mkSpend(0, 500),
+  "trellix-people": mkSpend(311.25, 750),
 };
 
 /* ---------------------------------------------------------------- Channels */

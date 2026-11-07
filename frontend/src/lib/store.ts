@@ -4,10 +4,10 @@ import { useRef, useSyncExternalStore } from "react";
 import {
   AGENTS, KNOWLEDGE_BASES, INGESTION_JOBS, MCP_SERVERS, TOOLS_REPO, SKILLS, EVAL_RUNS, EVAL_SUITES, RUNS, TOOL_APPROVALS,
   API_TOKENS, PROVIDER_KEYS, MEMBERS, CHANNELS_SEED, resolveConfig, getVersions,
-  WORKSPACE_SETTINGS, LIMITS, defaultWorkspaceSettings, defaultLimits, defaultEvalPolicy,
+  WORKSPACE_SETTINGS, LIMITS, WORKSPACE_SPEND, defaultWorkspaceSettings, defaultLimits, defaultWorkspaceSpend, defaultEvalPolicy,
   type Agent, type AgentConfig, type KnowledgeBase, type DataSource, type IngestionJob, type McpServer,
   type RepoTool, type Skill, type EvalRun, type EvalSuite, type EvalCaseDef, type Run, type ToolApproval, type ApiToken, type ProviderKey, type Member, type Channel,
-  type WorkspaceSettings, type Limits, type EvalPolicy, type Verdict,
+  type WorkspaceSettings, type Limits, type WorkspaceSpend, type EvalPolicy, type Verdict,
 } from "./data";
 import { type AccessPolicy, defaultPolicy } from "./access-policy";
 import type { Role } from "./permissions";
@@ -951,6 +951,10 @@ export function deleteChannel(id: string) {
 // @backend none (server-recorded) - runs are emitted by runtime.invoke() server-side at every call
 //   (playground/API/eval/channel). This client action exists so the mock's "send test" affordances
 //   surface a run on the Runs page; it goes away once runs come from the API. [ref: backend/10 §1]
+//   NOTE (feature 009, M6): the real POST /v1/agents/:id/invoke (and /eval-runs) can reject with
+//   402 budget.exceeded when the workspace is over its monthly spend cap — the call is refused before any
+//   model run and NO run is recorded. When wiring the real invoke, surface that 402 (e.g. "monthly spend
+//   cap reached") instead of adding a run. [ref: specs/009-spend-cap/contracts/spend-cap.md]
 export function addRun(r: Run) {
   const stamped = { ...r, workspaceId: r.workspaceId ?? tenantOfAgent(r.agentId, state.agents) };
   set({ runs: [stamped, ...state.runs] });
@@ -1053,11 +1057,16 @@ export const useWorkspaceActiveFor = (wsId: string) => useSelector((s) => !s.wor
 // would loop. All workspaces are seeded, so these only guard an unseeded tenant.
 const FALLBACK_WS_SETTINGS = defaultWorkspaceSettings();
 const FALLBACK_LIMITS = defaultLimits();
+const FALLBACK_SPEND = defaultWorkspaceSpend();
 const FALLBACK_EVAL_POLICY = defaultEvalPolicy();
 // @backend GET /v1/workspaces/:id - active workspace config (name, default provider/model, archived).
 export const useWorkspaceSettings = () => useSelector((s) => s.workspaceSettings[s.activeWorkspaceId] ?? FALLBACK_WS_SETTINGS);
 // @backend GET /v1/workspaces/:id/limits - active workspace spend/concurrency/timeout ceilings.
 export const useLimits = () => useSelector((s) => s.limits[s.activeWorkspaceId] ?? FALLBACK_LIMITS);
+// @backend GET /v1/workspace/spend - active workspace month-to-date spend vs the monthly cap (feature 009,
+//   M6). Server-derived from the durable run-cost ledger; mock reads a static seed. Not store-mutated.
+export const useWorkspaceSpend = (): WorkspaceSpend =>
+  useSelector((s) => WORKSPACE_SPEND[s.activeWorkspaceId] ?? FALLBACK_SPEND);
 // @backend GET /v1/workspaces/:id/eval-policy - admin-governed verdict/publish thresholds (eval.govern).
 export const useEvalPolicy = () => useSelector((s) => s.evalPolicy[s.activeWorkspaceId] ?? FALLBACK_EVAL_POLICY);
 // Agent-scoped eval policy: resolve from the AGENT's workspace, not the active one, so the UI matches

@@ -16,7 +16,7 @@ from api.db import tenant_session
 from api.main import app
 from api.models import (
     Agent, AgentVersion, KnowledgeBase, Member, McpServer, McpTool, RetrievalBinding, Run, Skill,
-    SkillBinding, Tool, ToolBinding, Workspace,
+    SkillBinding, Tool, ToolBinding, Workspace, WorkspaceSettings,
 )
 from tests._invoke_helpers import PROFILE_SNAPSHOT
 
@@ -132,13 +132,28 @@ async def seed_member(workspace_id: str, subject: str = "m1", role: str = "build
 
 
 async def seed_run(workspace_id: str, source: str = "playground", outcome: str = "ok",
-                   cost_usd: float = 0.001) -> str:
+                   cost_usd: float = 0.001, created_at=None) -> str:
     async with tenant_session(workspace_id) as s:
         r = Run(workspace_id=uuid.UUID(workspace_id), model="gpt-5-mini", outcome=outcome,
                 source=source, cost_usd=cost_usd, usage={"input": 10, "output": 5, "total": 15}, latency_ms=42)
+        if created_at is not None:
+            r.created_at = created_at                      # feature 009: seed a prior-month run for MTD-window tests
         s.add(r)
         await s.flush()
         return str(r.id)
+
+
+async def seed_limits(workspace_id: str, monthly_spend_usd) -> None:
+    """Feature 009: set the workspace's monthly spend cap (WorkspaceSettings.limits.monthlySpendUsd)."""
+    async with tenant_session(workspace_id) as s:
+        ws = await s.get(WorkspaceSettings, uuid.UUID(workspace_id))
+        if ws is None:
+            s.add(WorkspaceSettings(workspace_id=uuid.UUID(workspace_id), default_provider="",
+                                    default_model="", limits={"monthlySpendUsd": monthly_spend_usd},
+                                    eval_policy={}))
+        else:
+            ws.limits = {**(ws.limits or {}), "monthlySpendUsd": monthly_spend_usd}
+        await s.flush()
 
 
 async def seed_tool_binding(workspace_id: str, version_id: str, tool_id: str) -> None:

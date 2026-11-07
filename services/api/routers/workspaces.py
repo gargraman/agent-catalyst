@@ -12,10 +12,13 @@ from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from api import spend
 from api.deps import require_permission, rate_limit, resolve_workspace, tenant_db
 from api.errors import ConflictStale, InputInvalid, NotFound
 from api.models import Workspace, WorkspaceSettings
-from api.schemas.workspaces import WorkspaceOut, WorkspacePatch, WorkspaceSettingsOut, WorkspaceSettingsPatch
+from api.schemas.workspaces import (
+    WorkspaceOut, WorkspacePatch, WorkspaceSettingsOut, WorkspaceSettingsPatch, WorkspaceSpendOut,
+)
 
 router = APIRouter(prefix="/api/v1/workspace", tags=["workspace"])
 
@@ -40,6 +43,16 @@ async def _load_settings(session: AsyncSession, ws: str, *, for_update: bool = F
     if for_update:
         stmt = stmt.with_for_update()
     return (await session.execute(stmt)).scalar_one_or_none()
+
+
+@router.get("/spend", dependencies=[Depends(require_permission("view"))])
+async def get_spend(ws: str = Depends(resolve_workspace),
+                    session: AsyncSession = Depends(tenant_db)) -> WorkspaceSpendOut:
+    """Feature 009 (M6/US3): month-to-date spend vs the active monthly cap, from the same durable helpers the
+    spend-cap gate enforces (one source of truth — SC-004). Workspace-scoped; `view` permission."""
+    spent = await spend.month_to_date_spend(session, ws)
+    cap = await spend.active_cap_usd(session, ws)
+    return WorkspaceSpendOut(monthToDateUsd=float(spent), capUsd=float(cap), remainingUsd=float(cap - spent))
 
 
 @router.get("/settings", dependencies=[Depends(require_permission("view"))])

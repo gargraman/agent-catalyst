@@ -32,6 +32,7 @@ This tracker records the honest state of the mock→real migration on **two inde
 | **members** (roster) | ✅ BUILT (006/US4) | ⬜ MOCK | `/api/v1/members` CRUD — role stored, NOT enforced (RBAC → M5) |
 | **runs** (history) | ✅ BUILT (006/US5) | ⬜ MOCK | `GET /api/v1/runs[/:id]` |
 | **metrics** (dashboard) | ✅ BUILT (006/US5) | ⬜ MOCK | `GET /api/v1/metrics/{dashboard,runs,evals}` |
+| **spend cap** (durable monthly) | ✅ BUILT (009/M6) | ⬜ MOCK | `GET /api/v1/workspace/spend` (MTD vs cap); enforced on invoke + eval-runs — `402 budget.exceeded` over cap, durable (Postgres ledger, F7) |
 | **provider keys** | 🟡 DEFERRED (M5) | ⬜ MOCK | secret custody (Vault) deferred — no endpoint built |
 | **runtime tokens** (mint) | 🟡 DEFERRED (M5) | ⬜ MOCK | token plane deferred |
 | **tool approvals** | 🟡 DEFERRED (M5/P2) | ⬜ MOCK | approval workflow deferred |

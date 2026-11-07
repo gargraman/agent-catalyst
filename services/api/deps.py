@@ -8,6 +8,7 @@ Tests override `session_principal` to inject a caller (no real auth in tests).
 from __future__ import annotations
 
 import json
+import logging
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -16,9 +17,12 @@ from dataclasses import dataclass, field
 from fastapi import Depends, Header, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from api import spend
 from api.db import tenant_session
-from api.errors import AccessDenied, AuthRequired, IdempotencyInProgress, InputInvalid
+from api.errors import AccessDenied, AppError, AuthRequired, BudgetExceeded, IdempotencyInProgress, InputInvalid
 from api.permissions import has_permission
+
+_log = logging.getLogger("api.spend")
 
 # Provider credential for the runtime RunContext. Env-sourced, dev default; invoke is mocked in this slice so
 # no real key is used. Vault custody is deferred (P1/M5). Never logged or surfaced (P5).
@@ -86,6 +90,35 @@ def require_permission(permission: str):
 
     _check.required_permission = permission  # type: ignore[attr-defined]  # introspected by the coverage test
     return _check
+
+
+async def enforce_spend_cap(
+    ws: str = Depends(resolve_workspace),
+    session: AsyncSession = Depends(tenant_db),
+) -> None:
+    """Durable monthly spend cap (feature 009, M6 / F7, P3). Refuse a paid invocation when the workspace's
+    month-to-date spend (summed from the durable `runs.cost_usd` ledger — eviction-proof) is at/over its
+    monthly cap, BEFORE the provider is called / the stream opens. Attached AFTER `require_permission(...)`
+    so authz (403) resolves first (FR-006); shares the request's RLS session with the handler (no second
+    connection). A refusal writes no Run row — it is surfaced via the 402 + this log line (FR-011). A
+    spend-computation error is NOT swallowed: it propagates, failing the request closed before any paid
+    call (FR-009)."""
+    try:
+        spent = await spend.month_to_date_spend(session, ws)
+        cap = await spend.active_cap_usd(session, ws)
+    except AppError:
+        raise                                               # a real downstream AppError surfaces as-is
+    except Exception as e:                                   # noqa: BLE001 — cannot verify spend → fail closed
+        _log.warning("spend cap indeterminate: workspace=%s err=%s", ws, e)
+        # FR-009: refuse (fail-closed) with a controlled 500. We deliberately do NOT claim budget.exceeded —
+        # the budget may be nowhere near spent; this is an internal verification failure.
+        raise AppError("could not verify spend budget; request refused (fail-closed)",
+                       detail={"reason": "spend_indeterminate"})
+    if spent >= cap:
+        _log.warning("spend cap reached: workspace=%s month_to_date_usd=%s cap_usd=%s", ws, spent, cap)
+        raise BudgetExceeded("monthly spend cap reached",
+                             detail={"cap_usd": float(cap), "month_to_date_usd": float(spent)})
+    return None
 
 
 async def rate_limit() -> None:

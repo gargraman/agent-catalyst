@@ -36,6 +36,13 @@ class WorkspaceSettingsPatch(BaseModel):
     eval_policy: dict | None = None
 
 
+class WorkspaceSpendOut(BaseModel):
+    """Feature 009 (M6): month-to-date spend vs the active monthly cap (same figures the gate enforces)."""
+    monthToDateUsd: float
+    capUsd: float
+    remainingUsd: float
+
+
 class WorkspaceOut(BaseModel):
     id: str
     name: str
