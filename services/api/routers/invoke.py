@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from api import sse
+from api.correlation import correlation_id
 from api.deps import enforce_spend_cap, require_permission, PROVIDER_API_KEY, rate_limit, resolve_workspace, tenant_db
 from api.run_sink import persist_run_record
 from api.errors import NotFound
@@ -61,6 +62,7 @@ async def invoke_agent(
     body: InvokeIn,
     ws: str = Depends(resolve_workspace),
     session: AsyncSession = Depends(tenant_db),
+    corr: str = Depends(correlation_id),      # F13: inbound traceparent / X-Correlation-Id, else generated
     _rl: None = Depends(rate_limit),
 ):
     version = await _load_version(session, agent_id, body.version_id)
@@ -69,7 +71,6 @@ async def invoke_agent(
     snapshot = version.to_snapshot()          # pure frozen dataclass — safe to use after the session closes
 
     runs: list = []
-    corr = uuid.uuid4().hex
     ctx = RunContext(workspace_id=ws, source="playground", api_key=PROVIDER_API_KEY,
                      record_run=runs.append, correlation_id=corr, deadline_s=30.0)
 
@@ -92,4 +93,5 @@ async def invoke_agent(
         status = run.outcome.value if run is not None else "unknown"
         yield sse.frame("done", {"run_id": run.run_id if run is not None else "", "status": status})
 
-    return StreamingResponse(_event_stream(), media_type="text/event-stream")
+    return StreamingResponse(_event_stream(), media_type="text/event-stream",
+                             headers={"X-Correlation-Id": corr})   # echo resolved id (F13)

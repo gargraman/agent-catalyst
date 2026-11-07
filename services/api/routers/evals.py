@@ -8,10 +8,11 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from api.correlation import correlation_id
 from api.deps import enforce_spend_cap, require_permission, PROVIDER_API_KEY, rate_limit, resolve_workspace, tenant_db
 from api.run_sink import persist_run_record
 from api.errors import NotFound
@@ -32,10 +33,13 @@ router = APIRouter(prefix="/api/v1/agents", tags=["evals"])
 async def create_eval_run(
     agent_id: str,
     body: EvalRunIn,
+    response: Response,
     ws: str = Depends(resolve_workspace),
     session: AsyncSession = Depends(tenant_db),
+    corr: str = Depends(correlation_id),      # F13: inbound correlation id (else generated)
     _rl: None = Depends(rate_limit),
 ) -> EvalRunOut:
+    response.headers["X-Correlation-Id"] = corr   # echo resolved id
     version = await _load_version(session, agent_id, body.version_id)
     if version is None:
         raise NotFound("agent version not found", detail={"agent_id": agent_id, "version_id": body.version_id})
@@ -61,7 +65,7 @@ async def create_eval_run(
     )
     runs: list = []
     ctx = RunContext(workspace_id=ws, source="eval", api_key=PROVIDER_API_KEY,
-                     record_run=runs.append, deadline_s=30.0)
+                     record_run=runs.append, correlation_id=corr, deadline_s=30.0)
 
     result = await run_eval(cases, candidate_snapshot, baseline, policy, ctx, workspace_id=ws)
 

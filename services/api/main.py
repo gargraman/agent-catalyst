@@ -6,8 +6,9 @@ the Pydantic schemas and is the source of truth for the generated frontend clien
 """
 from __future__ import annotations
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 
+from api import metrics
 from api.errors import AppError, app_error_handler
 from api.routers import (
     agents, evals, invoke, knowledge, members, runs, skills, tools, workspaces,
@@ -33,6 +34,13 @@ def create_app() -> FastAPI:
     @app.get("/healthz", tags=["meta"])
     async def healthz() -> dict:
         return {"status": "ok"}
+
+    # Feature 010 (F12): unauthenticated, non-/api/v1 Prometheus scrape surface (aggregate counts only —
+    # no tenant/content). Network restriction is a deploy concern (FR-011).
+    @app.get("/metrics", tags=["meta"])
+    async def metrics_endpoint() -> Response:
+        body, content_type = metrics.render()
+        return Response(content=body, media_type=content_type)
 
     return app
 

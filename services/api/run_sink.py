@@ -51,3 +51,9 @@ async def persist_run_record(session: AsyncSession, workspace_id: str, rec) -> N
         correlation_id=rec.correlation_id or "",
     ))
     await session.flush()
+    # F12 (feature 010): count one completed run by outcome + source. Best-effort & approximate — a metrics
+    # failure can't break persistence (P8/FR-009). NOTE: this fires at flush, not the caller's later commit,
+    # so a rollback at commit would over-count by that run (rare; acceptable for an approximate counter — an
+    # exact count would need an after_commit hook, deferred).
+    from api import metrics
+    metrics.record_run(outcome, rec.source or "playground")

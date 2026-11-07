@@ -93,11 +93,23 @@ class ProviderUnavailable(AppError):
     http_status, code = 502, "provider.unavailable"
 
 
+# Refusal codes counted for observability (feature 010, F12) — requests refused by a deterministic control
+# that never become a run. NOTE: budget.exceeded is run-admission-specific (paid paths), while access.denied
+# spans ALL gated routes (incl. reads) — the `code` label distinguishes them; the counter is named
+# ac_requests_refused_total (requests, not runs) to be honest about that scope.
+_REFUSAL_CODES = frozenset({"budget.exceeded", "access.denied"})
+
+
 def app_error_handler(request, exc: AppError):  # pragma: no cover — wired in api.main (M4)
     """FastAPI exception handler → JSONResponse(exc.http_status, exc.envelope()).
 
-    FastAPI is imported lazily so M0's infra-free unit tests don't require it.
+    FastAPI is imported lazily so M0's infra-free unit tests don't require it. Also counts admission refusals
+    (budget.exceeded / access.denied) for the /metrics surface — best-effort, never affects the response.
     """
     from fastapi.responses import JSONResponse
+
+    if exc.code in _REFUSAL_CODES:
+        from api import metrics
+        metrics.record_refusal(exc.code)   # F12 refusal counter (best-effort — record_refusal swallows)
 
     return JSONResponse(status_code=exc.http_status, content=exc.envelope())
