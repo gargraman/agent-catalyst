@@ -189,3 +189,56 @@ def parse_sse(body: str) -> list[tuple[str, dict]]:
             frames.append((event, json.loads(line[len("data:"):].strip())))
             event = None
     return frames
+
+
+# ---- JWT test helpers (feature 012) — LOCAL keys only: no live IdP, no real secret in the suite (FR-015) ----
+import datetime as _dt
+
+import jwt as _jwt
+from cryptography.hazmat.primitives import serialization as _ser
+from cryptography.hazmat.primitives.asymmetric import rsa as _rsa
+
+TEST_ISSUER = "https://test.idp.local/iam"
+TEST_AUDIENCE = "mcafee"
+TEST_KID = "test-key-1"
+
+
+def make_rsa_keypair() -> tuple[bytes, bytes]:
+    """Return (private_pem, public_pem) for signing/verifying test JWTs. Ephemeral per call."""
+    key = _rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    priv = key.private_bytes(_ser.Encoding.PEM, _ser.PrivateFormat.PKCS8, _ser.NoEncryption())
+    pub = key.public_key().public_bytes(_ser.Encoding.PEM, _ser.PublicFormat.SubjectPublicKeyInfo)
+    return priv, pub
+
+
+def mint_test_jwt(private_pem, *, kid: str = TEST_KID, sub: str = "svc-1", aud: str = TEST_AUDIENCE,
+                  iss: str = TEST_ISSUER, scope: str = "xdr.alr.rw xdr.srh.rw", exp_delta: int = 600,
+                  nbf_delta: int = 0, alg: str = "RS256", include=("exp", "iss", "aud", "nbf", "iat"),
+                  extra=None) -> str:
+    now = _dt.datetime.now(_dt.timezone.utc)
+    claims: dict = {"sub": sub, "scope": scope}
+    if "iat" in include: claims["iat"] = int(now.timestamp())
+    if "nbf" in include: claims["nbf"] = int((now + _dt.timedelta(seconds=nbf_delta)).timestamp())
+    if "exp" in include: claims["exp"] = int((now + _dt.timedelta(seconds=exp_delta)).timestamp())
+    if "iss" in include: claims["iss"] = iss
+    if "aud" in include: claims["aud"] = aud
+    if extra: claims.update(extra)
+    return _jwt.encode(claims, private_pem, algorithm=alg, headers={"kid": kid})
+
+
+def local_key_resolver(public_pem, *, known_kids=(TEST_KID,)):
+    """A key resolver over a fixed local key set; raises on an unknown kid (→ provider 401)."""
+    def resolve(token: str):
+        kid = _jwt.get_unverified_header(token).get("kid")
+        if kid not in known_kids:
+            raise KeyError(f"unknown kid: {kid}")
+        return public_pem
+    return resolve
+
+
+def build_jwt_provider(public_pem, *, issuer: str = TEST_ISSUER, audience: str = TEST_AUDIENCE,
+                      algs=("RS256",), leeway: int = 60, known_kids=(TEST_KID,)):
+    """A JwtBearerProvider wired to a LOCAL key set (offline). id='trellix-iam' so it stands in for the real one."""
+    from api.auth.jwt_provider import JwtBearerProvider
+    return JwtBearerProvider(id="trellix-iam", issuer=issuer, audience=audience, algorithms=list(algs),
+                             leeway=leeway, key_resolver=local_key_resolver(public_pem, known_kids=known_kids))

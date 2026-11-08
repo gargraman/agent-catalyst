@@ -85,6 +85,12 @@ def clone_av(av):
 # --------------------------------------------------------------------------------------------------
 import os  # noqa: E402
 
+# The auth default is fail-closed (AC_ENV=prod disables the dev provider, feature 012 code-review hardening).
+# The test suite authenticates via the `dev` provider (X-Dev-Principal), so opt in explicitly here — set before
+# any app/settings import. `setdefault` lets an individual test still override (e.g. assert the prod gate).
+os.environ.setdefault("AC_ENV", "dev")
+os.environ.setdefault("AC_AUTH_PROVIDER", "dev")
+
 import pytest  # noqa: E402
 import pytest_asyncio  # noqa: E402
 from sqlalchemy import text  # noqa: E402

@@ -7,7 +7,6 @@ Tests override `session_principal` to inject a caller (no real auth in tests).
 """
 from __future__ import annotations
 
-import json
 import logging
 import os
 from collections.abc import AsyncIterator
@@ -16,10 +15,11 @@ from dataclasses import dataclass, field
 
 from fastapi import Depends, Header, Query
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.requests import Request
 
-from api import spend
+from api import membership, spend
 from api.db import tenant_session
-from api.errors import AccessDenied, AppError, AuthRequired, BudgetExceeded, IdempotencyInProgress, InputInvalid
+from api.errors import AccessDenied, AppError, BudgetExceeded, IdempotencyInProgress, InputInvalid
 from api.permissions import has_permission
 
 _log = logging.getLogger("api.spend")
@@ -31,24 +31,31 @@ PROVIDER_API_KEY = os.environ.get("AC_PROVIDER_API_KEY", "sk-dev-unused")
 
 @dataclass
 class Principal:
-    """Resolved caller. `workspace_claims` maps workspace_id → role (e.g. 'builder'/'publisher')."""
+    """Resolved caller. `workspace_claims` maps workspace_id → role (e.g. 'builder'/'publisher'). For a real
+    (JWT) provider the role is NOT in the token — it is filled per-request by `resolve_workspace` from the
+    membership store (feature 012). `scopes`/`issuer` carry the verified token's claims (audit/future use)."""
     subject: str
     workspace_claims: dict[str, str] = field(default_factory=dict)
+    scopes: tuple[str, ...] = ()
+    issuer: str | None = None
 
 
-async def session_principal(
-    x_dev_principal: str | None = Header(default=None, alias="X-Dev-Principal"),
-) -> Principal:
-    """Dev-stub principal resolver (real OIDC cookie/CSRF adapter deferred — doc 18). The dev header is a JSON
-    object `{"subject": "...", "workspace_claims": {"<ws>": "builder"}}`. Tests override this dependency.
-    No principal → 401 auth.required."""
-    if not x_dev_principal:
-        raise AuthRequired("authentication required")
-    try:
-        d = json.loads(x_dev_principal)
-        return Principal(subject=str(d["subject"]), workspace_claims=dict(d.get("workspace_claims", {})))
-    except (ValueError, KeyError, TypeError) as exc:
-        raise AuthRequired("invalid session principal") from exc
+async def session_principal(request: Request) -> Principal:
+    """Authenticate the caller via the ACTIVE IdP provider (feature 012). The provider is selected by config
+    (`AC_AUTH_PROVIDER`): `trellix-iam` verifies a real bearer JWT; `dev` trusts the `X-Dev-Principal` header
+    (test/dev only, disabled under `AC_ENV=prod`). Any auth failure → 401 (fail-closed, FR-010). The provider
+    import is lazy to avoid an import cycle (deps ← auth providers)."""
+    from api.auth.registry import get_active_provider
+    from api.settings import get_settings
+
+    provider = get_active_provider(get_settings())
+    return await provider.verify(request)
+
+
+async def _membership_role(ws: str, subject: str) -> str | None:
+    """Resolve the caller's AC role for `ws` from the membership store, RLS-scoped to `ws` (feature 012)."""
+    async with tenant_session(ws) as s:
+        return await membership.role_for(s, subject)
 
 
 async def resolve_workspace(
@@ -56,13 +63,19 @@ async def resolve_workspace(
     x_workspace_id: str | None = Header(default=None, alias="X-Workspace-Id"),
     workspace: str | None = Query(default=None),
 ) -> str:
-    """Select the workspace (header or `?workspace=`) and AUTHORIZE it against the caller's claim (FR-007).
-    Selecting an unheld workspace → 403 access.denied (never a leak); no selection → 400 input.invalid."""
+    """Select the target workspace (`X-Workspace-Id` or `?workspace=`) and AUTHORIZE the caller for it (P5).
+    If the principal already carries a role claim for the workspace (dev provider), use it; otherwise (real
+    provider — the token has no AC claim) resolve the role from the membership store for that workspace
+    (feature 012, FR-013/FR-014). No membership → 403 access.denied (fail-closed, no existence leak); no
+    selection → 400 input.invalid."""
     ws = x_workspace_id or workspace
     if not ws:
         raise InputInvalid("workspace selection required", detail={"header": "X-Workspace-Id"})
     if ws not in principal.workspace_claims:
-        raise AccessDenied("no role claim for the selected workspace", detail={"workspace_id": ws})
+        role = await _membership_role(ws, principal.subject)
+        if role is None:
+            raise AccessDenied("no membership for the selected workspace", detail={"workspace_id": ws})
+        principal.workspace_claims[ws] = role
     return ws
 
 

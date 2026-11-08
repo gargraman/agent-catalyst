@@ -35,6 +35,27 @@ class Settings(BaseSettings):
     redis_url: str | None = Field(default=None, alias="AC_REDIS_URL")
     vault_addr: str | None = Field(default=None, alias="AC_VAULT_ADDR")
 
+    # --- Auth / IdP (feature 012) ---------------------------------------------------------------
+    # Deployment profile. Defaults to `prod` so an UNCONFIGURED process is fail-closed: the unverified
+    # dev auth provider is only usable when `AC_ENV` is explicitly a non-prod value (FR-008). Local dev and
+    # the test harness set `AC_ENV=dev` deliberately (tests via conftest). (code-review hardening, 2026-11-09)
+    env: str = Field(default="prod", alias="AC_ENV")
+    # Active IdP provider id resolved by api.auth.registry: "dev" | "trellix-iam".
+    auth_provider: str = Field(default="dev", alias="AC_AUTH_PROVIDER")
+    # Trellix-IAM provider config (public metadata — NOT secrets; verified live 2026-11-08).
+    iam_issuer: str = Field(default="https://preprod.iam.cloud.trellix.com/iam/v1.0", alias="AC_IAM_ISSUER")
+    iam_audience: str = Field(default="mcafee", alias="AC_IAM_AUDIENCE")
+    iam_jwks_uri: str = Field(default="https://preprod.iam.cloud.trellix.com/iam/v1.0/jwks", alias="AC_IAM_JWKS_URI")
+    iam_allowed_algs: str = Field(default="RS256", alias="AC_IAM_ALGS")   # csv; token-header alg never trusted
+    iam_clock_skew_s: int = Field(default=60, alias="AC_IAM_CLOCK_SKEW_S")
+
+    @field_validator("iam_clock_skew_s")
+    @classmethod
+    def _skew_bounded(cls, v: int) -> int:
+        if not 0 <= v <= 120:                                 # bounded tolerance (FR-003); no unbounded skew
+            raise ValueError("AC_IAM_CLOCK_SKEW_S must be between 0 and 120 seconds")
+        return v
+
     @field_validator("database_url", "app_database_url")
     @classmethod
     def _must_be_async(cls, v: str) -> str:
