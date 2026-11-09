@@ -11,6 +11,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from api.schemas.access_policy import AccessPolicy
+
 AgentStatus = Literal["draft", "published", "archived", "eval_failing"]
 
 
@@ -21,6 +23,7 @@ class AgentCreate(BaseModel):
     model: str = Field(min_length=1)
     system_prompt: str = ""
     io_contract: dict = Field(default_factory=dict)         # MUST contain an "input_schema" object (validated in the router)
+    access_policy: dict | None = None                       # feature 013; validated in the router → input.invalid
 
 
 class AgentPatch(BaseModel):
@@ -28,6 +31,7 @@ class AgentPatch(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=80)
     status: AgentStatus | None = None
     active_version_id: str | None = None
+    access_policy: dict | None = None                       # feature 013
 
 
 class VersionOut(BaseModel):
@@ -49,4 +53,5 @@ class AgentOut(BaseModel):
     active_version_id: str | None = None
     workspace_id: str
     created_at: datetime.datetime
+    access_policy: AccessPolicy
     versions: list[VersionOut] = Field(default_factory=list)

@@ -17,10 +17,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from api import drift
-from api.deps import require_permission, idempotency_guard, rate_limit, resolve_workspace, tenant_db
+from api.access_policy import PolicyPrincipal, can_use
+from api.deps import (access_principal, ensure_manage, ensure_use, require_permission, idempotency_guard,
+                      Principal, rate_limit, resolve_workspace, session_principal, tenant_db)
 from api.errors import ConflictError, ConflictStale, InputInvalid, NotFound
 from api.models import McpServer, McpTool, Tool
 from api.pagination import Page, clamp_limit, decode_cursor, encode_cursor
+from api.schemas.access_policy import policy_for_store, policy_out, stamp_private_owner, validate_access_policy
 from api.schemas.tools import (
     McpServerCreate, McpServerOut, McpServerPatch, McpToolCreate, McpToolOut, McpToolPatch,
     ToolCreate, ToolOut, ToolPatch,
@@ -65,19 +68,23 @@ async def _flush_unique(session: AsyncSession, what: str, field: str) -> None:
 def _tool_out(t: Tool) -> ToolOut:
     return ToolOut(id=str(t.id), name=t.name, description=t.description, kind=t.kind,
                    http_config=t.http_config, risk_tier=t.risk_tier,
-                   archived=t.archived_at is not None, created_at=t.created_at)
+                   archived=t.archived_at is not None, created_at=t.created_at,
+                   access_policy=policy_out(t.access_policy))
 
 
 @router.post("/tools", status_code=201, dependencies=[Depends(require_permission("tool.manage"))])
 async def create_tool(
     body: ToolCreate, response: Response,
     ws: str = Depends(resolve_workspace), session: AsyncSession = Depends(tenant_db),
+    principal: Principal = Depends(session_principal),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     _rl: None = Depends(rate_limit),
 ) -> ToolOut:
+    access_policy = stamp_private_owner(policy_for_store(body.access_policy), principal.subject)   # feature 013 (+FR-012)
     async with idempotency_guard(ws, idempotency_key):
         t = Tool(workspace_id=uuid.UUID(ws), name=body.name, description=body.description,
-                 kind=body.kind, http_config=body.http_config, risk_tier=body.risk_tier)
+                 kind=body.kind, http_config=body.http_config, risk_tier=body.risk_tier,
+                 access_policy=access_policy)
         session.add(t)
         await _flush_unique(session, "tool", "name")
         response.headers["ETag"] = await _etag(session, "tools", str(t.id))
@@ -87,6 +94,7 @@ async def create_tool(
 @router.get("/tools", dependencies=[Depends(require_permission("view"))])
 async def list_tools(
     ws: str = Depends(resolve_workspace), session: AsyncSession = Depends(tenant_db),
+    ap: PolicyPrincipal = Depends(access_principal),   # feature 013
     limit: int | None = None, cursor: str | None = None, include_archived: bool = False,
 ) -> Page[ToolOut]:
     n = clamp_limit(limit)
@@ -104,6 +112,7 @@ async def list_tools(
         last = rows[n - 1]
         next_cursor = encode_cursor(last.created_at.isoformat(), str(last.id))
         rows = rows[:n]
+    rows = [t for t in rows if can_use(t.access_policy, ap)]   # feature 013: omit non-usable (P5 no-leak)
     return Page[ToolOut](items=[_tool_out(t) for t in rows], next_cursor=next_cursor)
 
 
@@ -119,10 +128,13 @@ async def _load_tool(session: AsyncSession, tool_id: str, *, for_update: bool = 
 
 @router.get("/tools/{tool_id}", dependencies=[Depends(require_permission("view"))])
 async def get_tool(tool_id: str, response: Response, ws: str = Depends(resolve_workspace),
-                   session: AsyncSession = Depends(tenant_db)) -> ToolOut:
+                   session: AsyncSession = Depends(tenant_db),
+                   ap: PolicyPrincipal = Depends(access_principal)) -> ToolOut:   # feature 013
     t = await _load_tool(session, tool_id)
     if t is None:
         raise NotFound("tool not found", detail={"tool_id": tool_id})
+    # feature 013: deny USE as a 404 byte-identical to the absent-row 404 (P5 no-leak).
+    ensure_use(t.access_policy, ap, not_found=NotFound("tool not found", detail={"tool_id": tool_id}))
     response.headers["ETag"] = await _etag(session, "tools", tool_id)
     return _tool_out(t)
 
@@ -136,12 +148,15 @@ def _auth_surface(cfg: dict) -> tuple:
 async def patch_tool(
     tool_id: str, body: ToolPatch, response: Response,
     ws: str = Depends(resolve_workspace), session: AsyncSession = Depends(tenant_db),
+    principal: Principal = Depends(session_principal),
+    ap: PolicyPrincipal = Depends(access_principal),
     if_match: str | None = Header(default=None, alias="If-Match"), _rl: None = Depends(rate_limit),
 ) -> ToolOut:
     etag_val = _require_etag(if_match, "tool")
     t = await _load_tool(session, tool_id, for_update=True)
     if t is None:
         raise NotFound("tool not found", detail={"tool_id": tool_id})
+    ensure_manage(t.access_policy, ap, not_found=NotFound("tool not found", detail={"tool_id": tool_id}))  # 013
     if await _etag(session, "tools", tool_id) != str(etag_val):
         raise ConflictStale("stale If-Match ETag; the tool was modified concurrently",
                             detail={"tool_id": tool_id})
@@ -154,6 +169,8 @@ async def patch_tool(
         t.risk_tier = body.risk_tier
     if body.http_config is not None:
         t.http_config = body.http_config
+    if body.access_policy is not None:                        # feature 013
+        t.access_policy = stamp_private_owner(validate_access_policy(body.access_policy), principal.subject)
     await session.flush()
     # Drift: only an auth-mode/scope change flags bound agents (FR-002); a cosmetic edit does not.
     if body.http_config is not None and _auth_surface(t.http_config) != auth_before:
@@ -164,10 +181,13 @@ async def patch_tool(
 
 @router.post("/tools/{tool_id}/archive", dependencies=[Depends(require_permission("tool.manage"))])
 async def archive_tool(tool_id: str, ws: str = Depends(resolve_workspace),
-                       session: AsyncSession = Depends(tenant_db), _rl: None = Depends(rate_limit)) -> ToolOut:
+                       session: AsyncSession = Depends(tenant_db),
+                       ap: PolicyPrincipal = Depends(access_principal),
+                       _rl: None = Depends(rate_limit)) -> ToolOut:
     t = await _load_tool(session, tool_id)
     if t is None:
         raise NotFound("tool not found", detail={"tool_id": tool_id})
+    ensure_manage(t.access_policy, ap, not_found=NotFound("tool not found", detail={"tool_id": tool_id}))
     t.archived_at = datetime.datetime.now(datetime.timezone.utc)
     await session.flush()
     return _tool_out(t)
@@ -175,10 +195,13 @@ async def archive_tool(tool_id: str, ws: str = Depends(resolve_workspace),
 
 @router.post("/tools/{tool_id}/restore", dependencies=[Depends(require_permission("tool.manage"))])
 async def restore_tool(tool_id: str, ws: str = Depends(resolve_workspace),
-                       session: AsyncSession = Depends(tenant_db), _rl: None = Depends(rate_limit)) -> ToolOut:
+                       session: AsyncSession = Depends(tenant_db),
+                       ap: PolicyPrincipal = Depends(access_principal),
+                       _rl: None = Depends(rate_limit)) -> ToolOut:
     t = await _load_tool(session, tool_id)
     if t is None:
         raise NotFound("tool not found", detail={"tool_id": tool_id})
+    ensure_manage(t.access_policy, ap, not_found=NotFound("tool not found", detail={"tool_id": tool_id}))
     t.archived_at = None
     await session.flush()
     return _tool_out(t)
@@ -187,13 +210,18 @@ async def restore_tool(tool_id: str, ws: str = Depends(resolve_workspace),
 # ---- MCP servers + tools -------------------------------------------------------------------------
 def _mcp_tool_out(mt: McpTool) -> McpToolOut:
     return McpToolOut(id=str(mt.id), server_id=str(mt.server_id), name=mt.name,
-                      description=mt.description, enabled=mt.enabled, risk_tier=mt.risk_tier)
+                      description=mt.description, enabled=mt.enabled, risk_tier=mt.risk_tier,
+                      access_policy=policy_out(mt.access_policy))
 
 
-def _mcp_out(m: McpServer) -> McpServerOut:
+def _mcp_out(m: McpServer, ap: PolicyPrincipal | None = None) -> McpServerOut:
+    # feature 013: when a caller view is supplied, omit nested MCP tools the caller can't USE (P5 no-leak);
+    # a manage-path projection (ap=None) shows all tools to the manager/admin.
+    tools = m.tools if ap is None else [t for t in m.tools if can_use(t.access_policy, ap)]
     return McpServerOut(id=str(m.id), name=m.name, url=m.url, transport=m.transport, status=m.status,
                         archived=m.archived_at is not None, created_at=m.created_at,
-                        tools=[_mcp_tool_out(t) for t in m.tools])
+                        access_policy=policy_out(m.access_policy),
+                        tools=[_mcp_tool_out(t) for t in tools])
 
 
 async def _load_mcp(session: AsyncSession, server_id: str, *, for_update: bool = False) -> McpServer | None:
@@ -210,11 +238,14 @@ async def _load_mcp(session: AsyncSession, server_id: str, *, for_update: bool =
 async def create_mcp_server(
     body: McpServerCreate, response: Response, ws: str = Depends(resolve_workspace),
     session: AsyncSession = Depends(tenant_db),
+    principal: Principal = Depends(session_principal),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     _rl: None = Depends(rate_limit),
 ) -> McpServerOut:
+    access_policy = stamp_private_owner(policy_for_store(body.access_policy), principal.subject)   # feature 013 (+FR-012)
     async with idempotency_guard(ws, idempotency_key):
-        m = McpServer(workspace_id=uuid.UUID(ws), name=body.name, url=body.url, transport=body.transport)
+        m = McpServer(workspace_id=uuid.UUID(ws), name=body.name, url=body.url, transport=body.transport,
+                      access_policy=access_policy)
         session.add(m)
         await _flush_unique(session, "mcp server", "name")
         await session.refresh(m, ["tools"])
@@ -224,6 +255,7 @@ async def create_mcp_server(
 
 @router.get("/mcp-servers", dependencies=[Depends(require_permission("view"))])
 async def list_mcp_servers(ws: str = Depends(resolve_workspace), session: AsyncSession = Depends(tenant_db),
+                           ap: PolicyPrincipal = Depends(access_principal),   # feature 013
                            limit: int | None = None, cursor: str | None = None,
                            include_archived: bool = False) -> Page[McpServerOut]:
     n = clamp_limit(limit)
@@ -242,28 +274,36 @@ async def list_mcp_servers(ws: str = Depends(resolve_workspace), session: AsyncS
         last = rows[n - 1]
         next_cursor = encode_cursor(last.created_at.isoformat(), str(last.id))
         rows = rows[:n]
-    return Page[McpServerOut](items=[_mcp_out(m) for m in rows], next_cursor=next_cursor)
+    rows = [m for m in rows if can_use(m.access_policy, ap)]   # feature 013: omit non-usable servers (P5)
+    return Page[McpServerOut](items=[_mcp_out(m, ap) for m in rows], next_cursor=next_cursor)
 
 
 @router.get("/mcp-servers/{server_id}", dependencies=[Depends(require_permission("view"))])
 async def get_mcp_server(server_id: str, response: Response, ws: str = Depends(resolve_workspace),
-                         session: AsyncSession = Depends(tenant_db)) -> McpServerOut:
+                         session: AsyncSession = Depends(tenant_db),
+                         ap: PolicyPrincipal = Depends(access_principal)) -> McpServerOut:   # feature 013
     m = await _load_mcp(session, server_id)
     if m is None:
         raise NotFound("mcp server not found", detail={"server_id": server_id})
+    # feature 013: deny USE as a 404 byte-identical to the absent-row 404 (P5 no-leak).
+    ensure_use(m.access_policy, ap, not_found=NotFound("mcp server not found", detail={"server_id": server_id}))
     response.headers["ETag"] = await _etag(session, "mcp_servers", server_id)
-    return _mcp_out(m)
+    return _mcp_out(m, ap)
 
 
 @router.patch("/mcp-servers/{server_id}", dependencies=[Depends(require_permission("mcp.manage"))])
 async def patch_mcp_server(server_id: str, body: McpServerPatch, response: Response,
                            ws: str = Depends(resolve_workspace), session: AsyncSession = Depends(tenant_db),
+                           principal: Principal = Depends(session_principal),
+                           ap: PolicyPrincipal = Depends(access_principal),
                            if_match: str | None = Header(default=None, alias="If-Match"),
                            _rl: None = Depends(rate_limit)) -> McpServerOut:
     etag_val = _require_etag(if_match, "mcp server")       # optimistic concurrency, like tools/skills
     m = await _load_mcp(session, server_id, for_update=True)
     if m is None:
         raise NotFound("mcp server not found", detail={"server_id": server_id})
+    ensure_manage(m.access_policy, ap,
+                  not_found=NotFound("mcp server not found", detail={"server_id": server_id}))   # 013
     if await _etag(session, "mcp_servers", server_id) != str(etag_val):
         raise ConflictStale("stale If-Match ETag; the mcp server was modified concurrently",
                             detail={"server_id": server_id})
@@ -271,6 +311,8 @@ async def patch_mcp_server(server_id: str, body: McpServerPatch, response: Respo
         v = getattr(body, f)
         if v is not None:
             setattr(m, f, v)
+    if body.access_policy is not None:                        # feature 013
+        m.access_policy = stamp_private_owner(validate_access_policy(body.access_policy), principal.subject)
     await session.flush()
     response.headers["ETag"] = await _etag(session, "mcp_servers", server_id)
     return _mcp_out(m)
@@ -278,10 +320,14 @@ async def patch_mcp_server(server_id: str, body: McpServerPatch, response: Respo
 
 @router.post("/mcp-servers/{server_id}/archive", dependencies=[Depends(require_permission("mcp.manage"))])
 async def archive_mcp_server(server_id: str, ws: str = Depends(resolve_workspace),
-                             session: AsyncSession = Depends(tenant_db), _rl: None = Depends(rate_limit)) -> McpServerOut:
+                             session: AsyncSession = Depends(tenant_db),
+                             ap: PolicyPrincipal = Depends(access_principal),
+                             _rl: None = Depends(rate_limit)) -> McpServerOut:
     m = await _load_mcp(session, server_id)
     if m is None:
         raise NotFound("mcp server not found", detail={"server_id": server_id})
+    ensure_manage(m.access_policy, ap,
+                  not_found=NotFound("mcp server not found", detail={"server_id": server_id}))
     m.archived_at = datetime.datetime.now(datetime.timezone.utc)
     await session.flush()
     return _mcp_out(m)
@@ -290,12 +336,19 @@ async def archive_mcp_server(server_id: str, ws: str = Depends(resolve_workspace
 @router.post("/mcp-servers/{server_id}/tools", status_code=201, dependencies=[Depends(require_permission("mcp.manage"))])
 async def add_mcp_tool(server_id: str, body: McpToolCreate, response: Response,
                        ws: str = Depends(resolve_workspace), session: AsyncSession = Depends(tenant_db),
+                       principal: Principal = Depends(session_principal),
+                       ap: PolicyPrincipal = Depends(access_principal),
                        _rl: None = Depends(rate_limit)) -> McpToolOut:
     m = await _load_mcp(session, server_id)
     if m is None:
         raise NotFound("mcp server not found", detail={"server_id": server_id})
+    # feature 013: adding a tool mutates the server → gate on the SERVER's manage policy (404-then-403).
+    ensure_manage(m.access_policy, ap,
+                  not_found=NotFound("mcp server not found", detail={"server_id": server_id}))
     mt = McpTool(workspace_id=uuid.UUID(ws), server_id=m.id, name=body.name, description=body.description,
-                 enabled=body.enabled, risk_tier=body.risk_tier)
+                 enabled=body.enabled, risk_tier=body.risk_tier,
+                 access_policy=stamp_private_owner(policy_for_store(body.access_policy),
+                                                   principal.subject))   # feature 013 (+FR-012)
     session.add(mt)
     await _flush_unique(session, "mcp tool", "name")        # UNIQUE(server_id, name)
     response.headers["ETag"] = await _etag(session, "mcp_tools", str(mt.id))
@@ -311,6 +364,8 @@ def _mcp_tool_surface(mt: McpTool) -> tuple:
 @router.patch("/mcp-tools/{tool_id}", dependencies=[Depends(require_permission("mcp.manage"))])
 async def patch_mcp_tool(tool_id: str, body: McpToolPatch, response: Response,
                          ws: str = Depends(resolve_workspace), session: AsyncSession = Depends(tenant_db),
+                         principal: Principal = Depends(session_principal),
+                         ap: PolicyPrincipal = Depends(access_principal),
                          if_match: str | None = Header(default=None, alias="If-Match"),
                          _rl: None = Depends(rate_limit)) -> McpToolOut:
     etag_val = _require_etag(if_match, "mcp tool")          # optimistic concurrency
@@ -319,6 +374,7 @@ async def patch_mcp_tool(tool_id: str, body: McpToolPatch, response: Response,
         select(McpTool).where(McpTool.id == tid).with_for_update())).scalar_one_or_none()   # lock (F2)
     if mt is None:
         raise NotFound("mcp tool not found", detail={"tool_id": tool_id})
+    ensure_manage(mt.access_policy, ap, not_found=NotFound("mcp tool not found", detail={"tool_id": tool_id}))  # 013
     if await _etag(session, "mcp_tools", tool_id) != str(etag_val):
         raise ConflictStale("stale If-Match ETag; the mcp tool was modified concurrently",
                             detail={"tool_id": tool_id})
@@ -327,6 +383,8 @@ async def patch_mcp_tool(tool_id: str, body: McpToolPatch, response: Response,
         v = getattr(body, f)
         if v is not None:
             setattr(mt, f, v)
+    if body.access_policy is not None:                        # feature 013
+        mt.access_policy = stamp_private_owner(validate_access_policy(body.access_policy), principal.subject)
     await session.flush()
     # F2: only a grant-surface change (enabled/risk_tier) flags bound agents; a cosmetic edit must not.
     if _mcp_tool_surface(mt) != surface_before:

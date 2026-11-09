@@ -17,11 +17,14 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api import drift
-from api.deps import require_permission, idempotency_guard, rate_limit, resolve_workspace, session_principal, tenant_db
+from api.access_policy import PolicyPrincipal, can_use
+from api.deps import (access_principal, ensure_manage, ensure_use, require_permission, idempotency_guard,
+                      rate_limit, resolve_workspace, session_principal, tenant_db)
 from api.deps import Principal
 from api.errors import ConflictError, ConflictStale, InputInvalid, NotFound
 from api.models import Skill
 from api.pagination import Page, clamp_limit, decode_cursor, encode_cursor
+from api.schemas.access_policy import policy_for_store, policy_out, stamp_private_owner, validate_access_policy
 from api.schemas.skills import SkillCreate, SkillOut, SkillPatch
 
 router = APIRouter(prefix="/api/v1/skills", tags=["skills"])
@@ -36,7 +39,7 @@ def _skill_out(s: Skill) -> SkillOut:
     return SkillOut(id=str(s.id), slug=s.slug, name=s.name, description=s.description,
                     instructions=s.instructions, resources=s.resources, content_hash=s.content_hash,
                     status=s.status, provenance=s.provenance, archived=s.archived_at is not None,
-                    created_at=s.created_at)
+                    created_at=s.created_at, access_policy=policy_out(s.access_policy))
 
 
 async def _etag(session: AsyncSession, row_id: str) -> str:
@@ -60,13 +63,17 @@ async def _load(session: AsyncSession, skill_id: str, *, for_update: bool = Fals
 async def create_skill(
     body: SkillCreate, response: Response, ws: str = Depends(resolve_workspace),
     session: AsyncSession = Depends(tenant_db),
+    principal: Principal = Depends(session_principal),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     _rl: None = Depends(rate_limit),
 ) -> SkillOut:
+    access_policy = policy_for_store(body.access_policy)      # feature 013: validate → input.invalid; default workspace
+    access_policy = stamp_private_owner(access_policy, principal.subject)   # FR-012: private → stamp creator as owner
     async with idempotency_guard(ws, idempotency_key):
         s = Skill(workspace_id=uuid.UUID(ws), slug=body.slug, name=body.name, description=body.description,
                   instructions=body.instructions, resources=body.resources,
-                  content_hash=_content_hash(body.instructions, body.resources), status="draft")
+                  content_hash=_content_hash(body.instructions, body.resources), status="draft",
+                  access_policy=access_policy)
         session.add(s)
         try:
             await session.flush()
@@ -79,6 +86,7 @@ async def create_skill(
 
 @router.get("", dependencies=[Depends(require_permission("view"))])
 async def list_skills(ws: str = Depends(resolve_workspace), session: AsyncSession = Depends(tenant_db),
+                      ap: PolicyPrincipal = Depends(access_principal),   # feature 013
                       limit: int | None = None, cursor: str | None = None,
                       include_archived: bool = False) -> Page[SkillOut]:
     n = clamp_limit(limit)
@@ -96,15 +104,19 @@ async def list_skills(ws: str = Depends(resolve_workspace), session: AsyncSessio
         last = rows[n - 1]
         next_cursor = encode_cursor(last.created_at.isoformat(), str(last.id))
         rows = rows[:n]
+    rows = [s for s in rows if can_use(s.access_policy, ap)]   # feature 013: omit non-usable (P5 no-leak)
     return Page[SkillOut](items=[_skill_out(s) for s in rows], next_cursor=next_cursor)
 
 
 @router.get("/{skill_id}", dependencies=[Depends(require_permission("view"))])
 async def get_skill(skill_id: str, response: Response, ws: str = Depends(resolve_workspace),
-                    session: AsyncSession = Depends(tenant_db)) -> SkillOut:
+                    session: AsyncSession = Depends(tenant_db),
+                    ap: PolicyPrincipal = Depends(access_principal)) -> SkillOut:   # feature 013
     s = await _load(session, skill_id)
     if s is None:
         raise NotFound("skill not found", detail={"skill_id": skill_id})
+    # feature 013: deny USE as a 404 byte-identical to the absent-row 404 (P5 no-leak).
+    ensure_use(s.access_policy, ap, not_found=NotFound("skill not found", detail={"skill_id": skill_id}))
     response.headers["ETag"] = await _etag(session, skill_id)
     return _skill_out(s)
 
@@ -113,6 +125,8 @@ async def get_skill(skill_id: str, response: Response, ws: str = Depends(resolve
 async def patch_skill(
     skill_id: str, body: SkillPatch, response: Response, ws: str = Depends(resolve_workspace),
     session: AsyncSession = Depends(tenant_db),
+    principal: Principal = Depends(session_principal),
+    ap: PolicyPrincipal = Depends(access_principal),
     if_match: str | None = Header(default=None, alias="If-Match"), _rl: None = Depends(rate_limit),
 ) -> SkillOut:
     if not if_match:
@@ -124,6 +138,8 @@ async def patch_skill(
     s = await _load(session, skill_id, for_update=True)
     if s is None:
         raise NotFound("skill not found", detail={"skill_id": skill_id})
+    # feature 013: MANAGE gate (404-then-403) before the ETag compare (no-leak on non-usable).
+    ensure_manage(s.access_policy, ap, not_found=NotFound("skill not found", detail={"skill_id": skill_id}))
     if await _etag(session, skill_id) != str(etag_val):
         raise ConflictStale("stale If-Match ETag; the skill was modified concurrently",
                             detail={"skill_id": skill_id})
@@ -138,6 +154,8 @@ async def patch_skill(
     if body.resources is not None and body.resources != s.resources:
         s.resources = body.resources
         content_changed = True
+    if body.access_policy is not None:                        # feature 013 (not a content/drift change)
+        s.access_policy = stamp_private_owner(validate_access_policy(body.access_policy), principal.subject)
     if content_changed:
         s.content_hash = _content_hash(s.instructions, s.resources)
         # A content edit to a PUBLISHED skill reverts it to draft (must re-publish) + flags bound agents (FR-004/FR-002).
@@ -156,10 +174,12 @@ async def patch_skill(
 async def publish_skill(skill_id: str, ws: str = Depends(resolve_workspace),
                         session: AsyncSession = Depends(tenant_db),
                         principal: Principal = Depends(session_principal),
+                        ap: PolicyPrincipal = Depends(access_principal),
                         _rl: None = Depends(rate_limit)) -> SkillOut:
     s = await _load(session, skill_id)
     if s is None:
         raise NotFound("skill not found", detail={"skill_id": skill_id})
+    ensure_manage(s.access_policy, ap, not_found=NotFound("skill not found", detail={"skill_id": skill_id}))
     if s.archived_at is not None:                           # F5: cannot publish an archived skill (restore first)
         raise InputInvalid("cannot publish an archived skill; restore it first",
                            detail={"skill_id": skill_id})
@@ -173,10 +193,13 @@ async def publish_skill(skill_id: str, ws: str = Depends(resolve_workspace),
 
 @router.post("/{skill_id}/archive", dependencies=[Depends(require_permission("skill.manage"))])
 async def archive_skill(skill_id: str, ws: str = Depends(resolve_workspace),
-                        session: AsyncSession = Depends(tenant_db), _rl: None = Depends(rate_limit)) -> SkillOut:
+                        session: AsyncSession = Depends(tenant_db),
+                        ap: PolicyPrincipal = Depends(access_principal),
+                        _rl: None = Depends(rate_limit)) -> SkillOut:
     s = await _load(session, skill_id)
     if s is None:
         raise NotFound("skill not found", detail={"skill_id": skill_id})
+    ensure_manage(s.access_policy, ap, not_found=NotFound("skill not found", detail={"skill_id": skill_id}))
     s.archived_at = datetime.datetime.now(datetime.timezone.utc)
     await session.flush()
     return _skill_out(s)
@@ -184,10 +207,13 @@ async def archive_skill(skill_id: str, ws: str = Depends(resolve_workspace),
 
 @router.post("/{skill_id}/restore", dependencies=[Depends(require_permission("skill.manage"))])
 async def restore_skill(skill_id: str, ws: str = Depends(resolve_workspace),
-                        session: AsyncSession = Depends(tenant_db), _rl: None = Depends(rate_limit)) -> SkillOut:
+                        session: AsyncSession = Depends(tenant_db),
+                        ap: PolicyPrincipal = Depends(access_principal),
+                        _rl: None = Depends(rate_limit)) -> SkillOut:
     s = await _load(session, skill_id)
     if s is None:
         raise NotFound("skill not found", detail={"skill_id": skill_id})
+    ensure_manage(s.access_policy, ap, not_found=NotFound("skill not found", detail={"skill_id": skill_id}))
     s.archived_at = None
     await session.flush()
     return _skill_out(s)

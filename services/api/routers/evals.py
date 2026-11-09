@@ -12,8 +12,10 @@ from fastapi import APIRouter, Depends, Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from api.access_policy import PolicyPrincipal
 from api.correlation import correlation_id
-from api.deps import enforce_spend_cap, require_permission, PROVIDER_API_KEY, rate_limit, resolve_workspace, tenant_db
+from api.deps import (access_principal, enforce_spend_cap, ensure_manage, ensure_use, require_permission,
+                      PROVIDER_API_KEY, rate_limit, resolve_workspace, tenant_db)
 from api.run_sink import persist_run_record
 from api.errors import NotFound
 from api.models import Agent
@@ -36,10 +38,26 @@ async def create_eval_run(
     response: Response,
     ws: str = Depends(resolve_workspace),
     session: AsyncSession = Depends(tenant_db),
+    ap: PolicyPrincipal = Depends(access_principal),   # feature 013: access-policy caller view
     corr: str = Depends(correlation_id),      # F13: inbound correlation id (else generated)
     _rl: None = Depends(rate_limit),
 ) -> EvalRunOut:
     response.headers["X-Correlation-Id"] = corr   # echo resolved id
+    # feature 013: eval-run is a USE of the agent (it invokes it) — deny fail-closed BEFORE loading the version
+    # or calling runtime (no Run row, no provider call). 404 indistinguishable from an absent agent (P5).
+    try:
+        aid = uuid.UUID(agent_id)
+    except ValueError:
+        raise NotFound("agent not found", detail={"agent_id": agent_id})
+    # Read ONLY the access_policy column for the gate (not the whole row); _load_version loads the version next.
+    # NOT NULL column → None ⇒ absent row (same light-select pattern as patch_agent).
+    agent_policy = (await session.execute(
+        select(Agent.access_policy).where(Agent.id == aid))).scalar_one_or_none()
+    if agent_policy is None:
+        raise NotFound("agent not found", detail={"agent_id": agent_id})
+    ensure_use(agent_policy, ap,
+               not_found=NotFound("agent not found", detail={"agent_id": agent_id}))
+
     version = await _load_version(session, agent_id, body.version_id)
     if version is None:
         raise NotFound("agent version not found", detail={"agent_id": agent_id, "version_id": body.version_id})
@@ -96,6 +114,7 @@ async def publish_version(
     body: PublishIn,
     ws: str = Depends(resolve_workspace),
     session: AsyncSession = Depends(tenant_db),
+    ap: PolicyPrincipal = Depends(access_principal),
     _rl: None = Depends(rate_limit),
 ) -> PublishOut:
     try:
@@ -105,6 +124,8 @@ async def publish_version(
     agent = (await session.execute(select(Agent).where(Agent.id == aid))).scalar_one_or_none()
     if agent is None:
         raise NotFound("agent not found", detail={"agent_id": agent_id})
+    # feature 013: publish is a MANAGE op (404-then-403) — after the agent.publish RBAC gate.
+    ensure_manage(agent.access_policy, ap, not_found=NotFound("agent not found", detail={"agent_id": agent_id}))
     # The published version MUST belong to THIS agent (validated/scoped) — never a foreign version, never a
     # malformed id landing as a 500 / FK error (F2).
     vid = await _version_belongs(session, agent_id, body.version_id)

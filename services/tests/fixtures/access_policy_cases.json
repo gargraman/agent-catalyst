@@ -1,0 +1,32 @@
+[
+  {"name": "workspace-default-allows-everyone", "policy": {"visibility": "workspace"}, "principal": {"role": "viewer", "teams": [], "subject": "u1"}, "use": true, "manage": true},
+  {"name": "workspace-allows-executer", "policy": {"visibility": "workspace"}, "principal": {"role": "executer", "teams": [], "subject": null}, "use": true, "manage": true},
+  {"name": "absent-policy-treated-as-workspace", "policy": null, "principal": {"role": "viewer", "teams": [], "subject": "u1"}, "use": true, "manage": true},
+  {"name": "empty-policy-object-treated-as-workspace", "policy": {}, "principal": {"role": "viewer", "teams": [], "subject": "u1"}, "use": true, "manage": true},
+
+  {"name": "restricted-role-match", "policy": {"visibility": "restricted", "useRoles": ["publisher"], "manageRoles": ["publisher"]}, "principal": {"role": "publisher", "teams": [], "subject": "u1"}, "use": true, "manage": true},
+  {"name": "restricted-role-mismatch", "policy": {"visibility": "restricted", "useRoles": ["publisher"], "manageRoles": ["publisher"]}, "principal": {"role": "builder", "teams": [], "subject": "u2"}, "use": false, "manage": false},
+  {"name": "restricted-team-match", "policy": {"visibility": "restricted", "useTeams": ["SOC"], "manageTeams": ["SOC"]}, "principal": {"role": "viewer", "teams": ["SOC"], "subject": "u3"}, "use": true, "manage": true},
+  {"name": "restricted-team-mismatch", "policy": {"visibility": "restricted", "useTeams": ["SOC"], "manageTeams": ["SOC"]}, "principal": {"role": "viewer", "teams": ["GRC"], "subject": "u4"}, "use": false, "manage": false},
+  {"name": "restricted-role-ok-team-no", "policy": {"visibility": "restricted", "useRoles": ["builder"], "useTeams": ["SOC"], "manageRoles": ["builder"], "manageTeams": ["SOC"]}, "principal": {"role": "builder", "teams": ["GRC"], "subject": "u5"}, "use": false, "manage": false},
+  {"name": "restricted-role-and-team-ok", "policy": {"visibility": "restricted", "useRoles": ["builder"], "useTeams": ["SOC"], "manageRoles": ["builder"], "manageTeams": ["SOC"]}, "principal": {"role": "builder", "teams": ["SOC"], "subject": "u6"}, "use": true, "manage": true},
+  {"name": "restricted-empty-denies-all", "policy": {"visibility": "restricted"}, "principal": {"role": "publisher", "teams": ["SOC"], "subject": "u7"}, "use": false, "manage": false},
+  {"name": "restricted-empty-admin-bypass", "policy": {"visibility": "restricted"}, "principal": {"role": "admin", "teams": [], "subject": "a1"}, "use": true, "manage": true},
+
+  {"name": "restricted-executer-team-match", "policy": {"visibility": "restricted", "useTeams": ["SOC"], "manageTeams": ["SOC"]}, "principal": {"role": "executer", "teams": ["SOC"], "subject": null}, "use": true, "manage": true},
+  {"name": "restricted-executer-role-only-denies", "policy": {"visibility": "restricted", "useRoles": ["builder"], "manageRoles": ["builder"]}, "principal": {"role": "executer", "teams": ["SOC"], "subject": null}, "use": false, "manage": false},
+  {"name": "restricted-executer-team-mismatch", "policy": {"visibility": "restricted", "useTeams": ["SOC"], "manageTeams": ["SOC"]}, "principal": {"role": "executer", "teams": ["GRC"], "subject": null}, "use": false, "manage": false},
+
+  {"name": "restricted-use-ok-manage-no", "policy": {"visibility": "restricted", "useTeams": ["SOC"], "manageRoles": ["publisher"]}, "principal": {"role": "builder", "teams": ["SOC"], "subject": "u8"}, "use": true, "manage": false},
+  {"name": "restricted-use-and-manage-ok-mixed", "policy": {"visibility": "restricted", "useTeams": ["SOC"], "manageTeams": ["SOC"]}, "principal": {"role": "publisher", "teams": ["SOC"], "subject": "u9"}, "use": true, "manage": true},
+
+  {"name": "private-owner-allowed", "policy": {"visibility": "private", "owner": "u1"}, "principal": {"role": "builder", "teams": [], "subject": "u1"}, "use": true, "manage": true},
+  {"name": "private-non-owner-denied", "policy": {"visibility": "private", "owner": "u1"}, "principal": {"role": "publisher", "teams": [], "subject": "u2"}, "use": false, "manage": false},
+  {"name": "private-admin-allowed", "policy": {"visibility": "private", "owner": "u1"}, "principal": {"role": "admin", "teams": [], "subject": "a1"}, "use": true, "manage": true},
+  {"name": "private-executer-denied", "policy": {"visibility": "private", "owner": "u1"}, "principal": {"role": "executer", "teams": ["SOC"], "subject": null}, "use": false, "manage": false},
+  {"name": "private-blank-owner-denies-nonadmin", "policy": {"visibility": "private", "owner": ""}, "principal": {"role": "builder", "teams": [], "subject": "u1"}, "use": false, "manage": false},
+  {"name": "private-blank-owner-admin-allowed", "policy": {"visibility": "private", "owner": ""}, "principal": {"role": "admin", "teams": [], "subject": "a1"}, "use": true, "manage": true},
+
+  {"name": "garbage-visibility-denies-nonadmin", "policy": {"visibility": "weird"}, "principal": {"role": "publisher", "teams": ["SOC"], "subject": "u1"}, "use": false, "manage": false},
+  {"name": "garbage-visibility-admin-bypass", "policy": {"visibility": "weird"}, "principal": {"role": "admin", "teams": [], "subject": "a1"}, "use": true, "manage": true}
+]

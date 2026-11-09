@@ -17,12 +17,15 @@ from sqlalchemy import select, text, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from api.deps import require_permission, idempotency_guard, rate_limit, resolve_workspace, tenant_db
+from api.access_policy import PolicyPrincipal, can_use
+from api.deps import (access_principal, ensure_manage, ensure_use, require_permission, idempotency_guard,
+                      Principal, rate_limit, resolve_workspace, session_principal, tenant_db)
 from api.errors import ConflictStale, InputInvalid, NotFound
 from api.models import Agent, AgentVersion
 from runtime.hashing import compute_snapshot_hash
 from runtime.providers.profiles import _PROFILE_DIR
 from api.pagination import Page, clamp_limit, decode_cursor, encode_cursor
+from api.schemas.access_policy import policy_for_store, policy_out, stamp_private_owner, validate_access_policy
 from api.schemas.agents import AgentCreate, AgentOut, AgentPatch, VersionOut
 
 router = APIRouter(prefix="/api/v1/agents", tags=["agents"])
@@ -37,6 +40,7 @@ def _agent_out(a: Agent) -> AgentOut:
     return AgentOut(id=str(a.id), name=a.name, status=a.status,
                     active_version_id=str(a.active_version_id) if a.active_version_id else None,
                     workspace_id=str(a.workspace_id), created_at=a.created_at,
+                    access_policy=policy_out(a.access_policy),
                     versions=[_version_out(v) for v in sorted(a.versions, key=lambda v: v.created_at)])
 
 
@@ -93,6 +97,7 @@ async def create_agent(
     response: Response,
     ws: str = Depends(resolve_workspace),
     session: AsyncSession = Depends(tenant_db),
+    principal: Principal = Depends(session_principal),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     _rl: None = Depends(rate_limit),
 ) -> AgentOut:
@@ -100,8 +105,10 @@ async def create_agent(
         raise InputInvalid("io_contract must contain an input_schema object",
                            detail={"field": "io_contract.input_schema"})
     profile = _load_profile_snapshot(body.provider, body.model)   # fail closed on unknown model; makes it invocable
+    access_policy = policy_for_store(body.access_policy)           # feature 013: validate → input.invalid; default workspace
+    access_policy = stamp_private_owner(access_policy, principal.subject)   # FR-012: private → stamp creator as owner
     async with idempotency_guard(ws, idempotency_key):
-        agent = Agent(workspace_id=uuid.UUID(ws), name=body.name, status="draft")
+        agent = Agent(workspace_id=uuid.UUID(ws), name=body.name, status="draft", access_policy=access_policy)
         session.add(agent)
         await session.flush()
         v = AgentVersion(
@@ -131,6 +138,7 @@ async def create_agent(
 async def list_agents(
     ws: str = Depends(resolve_workspace),
     session: AsyncSession = Depends(tenant_db),
+    ap: PolicyPrincipal = Depends(access_principal),   # feature 013
     limit: int | None = None,
     cursor: str | None = None,
 ) -> Page[AgentOut]:
@@ -149,6 +157,9 @@ async def list_agents(
         last = rows[n - 1]
         next_cursor = encode_cursor(last.created_at.isoformat(), str(last.id))
         rows = rows[:n]
+    # feature 013: omit resources the caller can't USE (P5 no-leak — a hidden row is never listed). Post-filter
+    # of the page (G4): a short page is acceptable; keyset pagination still advances by created_at,id.
+    rows = [a for a in rows if can_use(a.access_policy, ap)]
     return Page[AgentOut](items=[_agent_out(a) for a in rows], next_cursor=next_cursor)
 
 
@@ -158,10 +169,13 @@ async def get_agent(
     response: Response,
     ws: str = Depends(resolve_workspace),
     session: AsyncSession = Depends(tenant_db),
+    ap: PolicyPrincipal = Depends(access_principal),   # feature 013
 ) -> AgentOut:
     agent = await _load_agent(session, agent_id)
     if agent is None:
         raise NotFound("agent not found", detail={"agent_id": agent_id})
+    # feature 013: deny USE as a 404 byte-identical to the absent-row 404 (P5 no-leak).
+    ensure_use(agent.access_policy, ap, not_found=NotFound("agent not found", detail={"agent_id": agent_id}))
     response.headers["ETag"] = await _etag(session, agent_id)
     return _agent_out(agent)
 
@@ -173,6 +187,8 @@ async def patch_agent(
     response: Response,
     ws: str = Depends(resolve_workspace),
     session: AsyncSession = Depends(tenant_db),
+    principal: Principal = Depends(session_principal),
+    ap: PolicyPrincipal = Depends(access_principal),
     if_match: str | None = Header(default=None, alias="If-Match"),
     _rl: None = Depends(rate_limit),
 ) -> AgentOut:
@@ -182,16 +198,33 @@ async def patch_agent(
         etag_val = int(if_match)                       # xmin is a 32-bit xid; asyncpg binds it as an int
     except (TypeError, ValueError):
         raise ConflictStale("malformed If-Match ETag", detail={"agent_id": agent_id})
+    # feature 013: MANAGE gate (404-then-403) BEFORE probing version/ETag — a non-usable caller gets the
+    # absent-row 404; usable-but-not-manageable gets 403. Fires after RBAC (require_permission) so a role 403
+    # still wins. Load the policy first (light select; NOT NULL column → None ⇒ absent row).
+    try:
+        _aid = uuid.UUID(agent_id)
+    except ValueError:
+        raise NotFound("agent not found", detail={"agent_id": agent_id})
+    _pol = (await session.execute(select(Agent.access_policy).where(Agent.id == _aid))).scalar_one_or_none()
+    if _pol is None:
+        raise NotFound("agent not found", detail={"agent_id": agent_id})
+    ensure_manage(_pol, ap, not_found=NotFound("agent not found", detail={"agent_id": agent_id}))
     # A re-point MUST target a version of THIS agent (validated/scoped) — never a foreign version or a
     # malformed id landing as a 500 (F3).
     if body.active_version_id is not None:
         await _version_belongs(session, agent_id, body.active_version_id)
+    # feature 013: validate + owner-stamp the NEW policy. Named distinctly from the `ap` PolicyPrincipal dep
+    # above so the caller view is never shadowed (a later ensure_*/can_use must still see the principal).
+    new_policy = validate_access_policy(body.access_policy)   # None when omitted → coalesce keeps existing
+    new_policy = stamp_private_owner(new_policy, principal.subject)   # FR-012: edit-to-private → stamp the editor
     res = await session.execute(
         text("update agents set name = coalesce(:name, name), status = coalesce(:status, status), "
-             "active_version_id = coalesce(:av, active_version_id) "
+             "active_version_id = coalesce(:av, active_version_id), "
+             "access_policy = coalesce(cast(:policy as jsonb), access_policy) "
              "where id = :id and xmin = cast(:etag as xid) returning id"),
         {"name": body.name, "status": body.status,
          "av": str(body.active_version_id) if body.active_version_id else None,
+         "policy": _json.dumps(new_policy) if new_policy is not None else None,
          "id": agent_id, "etag": etag_val},
     )
     if res.first() is None:
@@ -211,12 +244,16 @@ async def create_version(
     agent_id: str,
     ws: str = Depends(resolve_workspace),
     session: AsyncSession = Depends(tenant_db),
+    ap: PolicyPrincipal = Depends(access_principal),
     label: str | None = None,
     _rl: None = Depends(rate_limit),
 ) -> VersionOut:
     agent = await _load_agent(session, agent_id)
     if agent is None or not agent.versions:
         raise NotFound("agent (or its base version) not found", detail={"agent_id": agent_id})
+    # feature 013: creating a version is an edit → MANAGE gate (404-then-403) after RBAC.
+    ensure_manage(agent.access_policy, ap,
+                  not_found=NotFound("agent (or its base version) not found", detail={"agent_id": agent_id}))
     latest = sorted(agent.versions, key=lambda v: v.created_at)[-1]
     # Label uniqueness (F5): reject an explicit duplicate; auto-derive the lowest free vN (count+1 breaks once
     # a custom label exists). A durable unique(agent_id,label) constraint is deferred to M4-remainder.

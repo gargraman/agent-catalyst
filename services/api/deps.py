@@ -18,11 +18,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
 from api import membership, spend
+from api.access_policy import PolicyPrincipal, can_manage, can_use, parse_policy
 from api.db import tenant_session
-from api.errors import AccessDenied, AppError, BudgetExceeded, IdempotencyInProgress, InputInvalid
+from api.errors import AccessDenied, AppError, BudgetExceeded, IdempotencyInProgress, InputInvalid, NotFound
 from api.permissions import has_permission
 
 _log = logging.getLogger("api.spend")
+_deny_log = logging.getLogger("api.access_policy")
 
 # Provider credential for the runtime RunContext. Env-sourced, dev default; invoke is mocked in this slice so
 # no real key is used. Vault custody is deferred (P1/M5). Never logged or surfaced (P5).
@@ -137,6 +139,52 @@ async def enforce_spend_cap(
 async def rate_limit() -> None:
     """Rate-limit seam (F5). No-op allow in this slice; thresholds (429 rate.limited) are deferred (M6)."""
     return None
+
+
+# ---- access-policy enforcement spine (feature 013, P3 deterministic + P5 no-leak) ----------------
+async def access_principal(
+    principal: Principal = Depends(session_principal),
+    ws: str = Depends(resolve_workspace),
+    session: AsyncSession = Depends(tenant_db),
+) -> PolicyPrincipal:
+    """Build the access-policy view of the caller for the active workspace: console `role` (already resolved onto
+    `workspace_claims[ws]` by `resolve_workspace`), authZ `teams` (one RLS-scoped read on the request's shared
+    session), and `subject` (owner match). An execute-only/token caller has no console role — that plane is the
+    NEXT feature; here a console caller always has a role."""
+    role = principal.workspace_claims.get(ws, "")
+    teams = await membership.teams_for(session, principal.subject)
+    return PolicyPrincipal(role=role, teams=tuple(teams), subject=principal.subject)
+
+
+def _log_deny(capability: str, policy, principal: PolicyPrincipal, not_found: NotFound | None) -> None:
+    """FR-014: one structured, NON-SECRET deny line — capability, tier, subject, resource (from the caller's
+    `not_found.detail`, which carries only the resource family+id, never a token/secret). Teams/role are low-card
+    authZ attributes, safe to log; no policy body, no credential."""
+    detail = getattr(not_found, "detail", None) or {}
+    _deny_log.info("access_policy deny capability=%s tier=%s subject=%s teams=%s resource=%s",
+                   capability, parse_policy(policy).get("visibility"), principal.subject,
+                   ",".join(principal.teams), detail)
+
+
+def ensure_use(policy, principal: PolicyPrincipal, *, not_found: NotFound | None = None) -> None:
+    """Fail-closed USE gate (read/list/invoke/bind). On deny raise `NotFound` so visibility is NEVER leaked
+    (P5): a denied resource is indistinguishable from an absent one. Routers pass `not_found=` so the denied
+    body is byte-identical to the genuine absent-row 404."""
+    if not can_use(policy, principal):
+        _log_deny("use", policy, principal, not_found)
+        raise not_found or NotFound("resource not found")
+
+
+def ensure_manage(policy, principal: PolicyPrincipal, *, not_found: NotFound | None = None) -> None:
+    """Fail-closed MANAGE gate (edit/publish/archive/restore). 404-then-403: if the caller can't even USE the
+    resource, raise `NotFound` (no leak); if usable but not manageable, raise `AccessDenied` (403). Wire AFTER
+    the RBAC `require_permission` gate so a role-level 403 still fires first."""
+    if not can_use(policy, principal):
+        _log_deny("manage", policy, principal, not_found)
+        raise not_found or NotFound("resource not found")
+    if not can_manage(policy, principal):
+        _log_deny("manage", policy, principal, not_found)
+        raise AccessDenied("insufficient access policy to manage this resource")
 
 
 # ---- idempotency in-flight guard (D8) ------------------------------------------------------------

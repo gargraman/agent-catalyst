@@ -57,9 +57,10 @@ async def seed_workspace(name: str | None = None) -> str:
         return str(w.id)
 
 
-async def seed_agent(workspace_id: str, name: str = "Seed Agent") -> str:
+async def seed_agent(workspace_id: str, name: str = "Seed Agent", access_policy: dict | None = None) -> str:
     async with tenant_session(workspace_id) as s:
-        a = Agent(workspace_id=uuid.UUID(workspace_id), name=name, status="draft")
+        a = Agent(workspace_id=uuid.UUID(workspace_id), name=name, status="draft",
+                  access_policy=access_policy or {"visibility": "workspace"})
         s.add(a)
         await s.flush()
         return str(a.id)
@@ -113,19 +114,21 @@ async def seed_mcp_server(workspace_id: str, name: str = "mcp-a", with_tool: boo
         return str(m.id)
 
 
-async def seed_kb(workspace_id: str, slug: str = "kb-a") -> str:
+async def seed_kb(workspace_id: str, slug: str = "kb-a", access_policy: dict | None = None) -> str:
     async with tenant_session(workspace_id) as s:
         kb = KnowledgeBase(workspace_id=uuid.UUID(workspace_id), slug=slug, name=slug.title(),
-                           embedding_model="text-embedding-3-small", embedding_dim=1536)
+                           embedding_model="text-embedding-3-small", embedding_dim=1536,
+                           access_policy=access_policy or {"visibility": "workspace"})
         s.add(kb)
         await s.flush()
         return str(kb.id)
 
 
-async def seed_member(workspace_id: str, subject: str = "m1", role: str = "builder") -> str:
+async def seed_member(workspace_id: str, subject: str = "m1", role: str = "builder",
+                      teams: list[str] | None = None) -> str:
     async with tenant_session(workspace_id) as s:
         m = Member(workspace_id=uuid.UUID(workspace_id), subject=subject, display_name=subject,
-                   email=f"{subject}@example.com", console_role=role)
+                   email=f"{subject}@example.com", console_role=role, teams=teams or [])
         s.add(m)
         await s.flush()
         return str(m.id)

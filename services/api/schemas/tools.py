@@ -13,6 +13,7 @@ import re
 from pydantic import BaseModel, field_validator
 
 from api.errors import InputInvalid
+from api.schemas.access_policy import AccessPolicy
 
 # Secret-looking KEY names (any nesting level).
 _SECRET_KEY_RE = re.compile(
@@ -52,6 +53,7 @@ class ToolCreate(BaseModel):
     kind: str = "http"
     http_config: dict = {}
     risk_tier: str = "read"
+    access_policy: dict | None = None       # feature 013
 
     @field_validator("http_config")
     @classmethod
@@ -64,6 +66,7 @@ class ToolPatch(BaseModel):
     description: str | None = None
     http_config: dict | None = None
     risk_tier: str | None = None
+    access_policy: dict | None = None       # feature 013
 
     @field_validator("http_config")
     @classmethod
@@ -80,6 +83,7 @@ class ToolOut(BaseModel):
     risk_tier: str
     archived: bool
     created_at: datetime.datetime
+    access_policy: AccessPolicy
 
 
 class McpToolCreate(BaseModel):
@@ -87,6 +91,7 @@ class McpToolCreate(BaseModel):
     description: str = ""
     enabled: bool = True
     risk_tier: str = "read"
+    access_policy: dict | None = None       # feature 013
 
 
 class McpToolPatch(BaseModel):
@@ -94,6 +99,7 @@ class McpToolPatch(BaseModel):
     description: str | None = None
     enabled: bool | None = None
     risk_tier: str | None = None
+    access_policy: dict | None = None       # feature 013
 
 
 class McpToolOut(BaseModel):
@@ -103,12 +109,14 @@ class McpToolOut(BaseModel):
     description: str
     enabled: bool
     risk_tier: str
+    access_policy: AccessPolicy
 
 
 class McpServerCreate(BaseModel):
     name: str
     url: str = ""
     transport: str = "http"
+    access_policy: dict | None = None       # feature 013
 
 
 class McpServerPatch(BaseModel):
@@ -116,6 +124,7 @@ class McpServerPatch(BaseModel):
     url: str | None = None
     transport: str | None = None
     status: str | None = None
+    access_policy: dict | None = None       # feature 013
 
 
 class McpServerOut(BaseModel):
@@ -126,4 +135,5 @@ class McpServerOut(BaseModel):
     status: str
     archived: bool
     created_at: datetime.datetime
+    access_policy: AccessPolicy
     tools: list[McpToolOut] = []

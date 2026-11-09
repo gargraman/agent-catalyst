@@ -44,7 +44,7 @@ This tracker records the honest state of the mock→real migration on **two inde
 | **knowledge-bases** (metadata) | ✅ BUILT (006/US3) | ⬜ MOCK | `/api/v1/knowledge-bases` CRUD + archive/restore |
 | **ingestion-jobs** | 🟡 DEFERRED (M7) | ⬜ MOCK | `GET /api/v1/ingestion-jobs` returns honest empty; real ingestion is M7 |
 | **workspace settings/limits/eval-policy** | ✅ BUILT (006/US4) | ⬜ MOCK | `GET/PATCH /api/v1/workspace/settings`, `PATCH /api/v1/workspace` |
-| **members** (roster) | ✅ BUILT (006/US4) | ⬜ MOCK | `/api/v1/members` CRUD — role stored **and now enforced** (RBAC, 008/M5) |
+| **members** (roster) | ✅ BUILT (006/US4) | ⬜ MOCK | `/api/v1/members` CRUD — role stored **and now enforced** (RBAC, 008/M5); member **teams** persisted + surfaced (migration 0006) and consumed by the access policy (013) + roster display |
 | **runs** (history) | ✅ BUILT (006/US5) | ⬜ MOCK | `GET /api/v1/runs[/:id]` |
 | **metrics** (dashboard) | ✅ BUILT (006/US5) | ⬜ MOCK | `GET /api/v1/metrics/{dashboard,runs,evals}` |
 | **spend cap** (durable monthly) | ✅ BUILT (009/M6) | ⬜ MOCK | `GET /api/v1/workspace/spend` (MTD vs cap); enforced on invoke + eval-runs — `402 budget.exceeded` over cap, durable (Postgres ledger, F7) |
@@ -53,16 +53,16 @@ This tracker records the honest state of the mock→real migration on **two inde
 | **runtime tokens** (mint) | 🟡 DEFERRED (M5) | ⬜ MOCK | token plane deferred |
 | **tool approvals** | 🟡 DEFERRED (M5/P2) | ⬜ MOCK | approval workflow deferred |
 | **RBAC enforcement** (4-role) | ✅ BUILT (008/M5) | ⬜ MOCK | `require_permission` on all 47 workspace routes; deny-by-default (coverage test); fail-closed unknown role; 403-before-404; composes with membership + RLS |
-| **access policy** (per-resource) | 🟡 DEFERRED (M5) | ⬜ MOCK | per-resource role+team visibility policy still deferred (RBAC role-gate is built; this is the finer-grained layer) |
+| **access policy** (per-resource) | ✅ BUILT (013/M5) | ⬜ MOCK | per-resource visibility enforced fail-closed on top of RBAC+membership+RLS (constitution P3): tiers `workspace`/`restricted`(role AND team, separate USE/MANAGE lists)/`private`(owner+admin); USE gate filters lists + guards get/invoke/eval-run with **404 no-leak** (P5), MANAGE gate guards edit/publish/archive with **404-then-403**; executer caller gated on TEAMS alone; admin bypass; empty-restricted denies all. Mirrors `frontend/src/lib/access-policy.ts` (backend is now source of truth). Teams sourced from the members store under RLS (`membership.teams_for`) |
 | **IdP bearer authN** (pluggable) | ✅ BUILT (012/M5) | ⬜ n/a (caller plane) | real bearer-JWT verification behind a vendor-pluggable seam (`api/auth/`: `dev` + `trellix-iam` providers, config-selected); sig+iss+aud+exp+alg, JWKS fetch/cache, fail-closed 401, no token in logs. **AuthN only** — AC role now sourced from the `members` store under RLS (not the token). Dev-header path gated off in prod. Live Trellix-IAM token verified end-to-end (opt-in). **Deferred:** console user-login (auth-code/OIDC) flow, token mint + deny-set |
-| **access policy / IdP user provisioning** | 🟡 DEFERRED (M5) | ⬜ MOCK | per-resource role+team visibility + console-login/IdP group→member sync still deferred |
+| **IdP user provisioning** | 🟡 DEFERRED (M5) | ⬜ MOCK | console-login (auth-code/OIDC) flow + IdP group→member/team sync still deferred (per-resource access policy itself is now BUILT — see row above) |
 | **channels** | 🟡 DEFERRED (P2) | ⬜ MOCK | messaging channels post-v1.0 |
 | **workspace create/delete (root)** | 🟡 DEFERRED | ⬜ MOCK | platform-admin plane out of scope |
 
 ## Totals
 
-- **Backend endpoints/controls BUILT:** agents, invoke (SSE), eval, publish (advisory), tools, mcp, skills, KB, workspace settings, members, runs, metrics (+ honest-deferred ingestion stub); **RBAC enforcement (008)**; **durable monthly spend cap + `GET /workspace/spend` (009)**; **correlation ingestion + `GET /metrics` (010)**; **pluggable IdP bearer authN + membership-sourced authZ (012)**. Cross-cutting on every paid path: tenancy/RLS, RBAC role-gate, spend cap, correlation.
-- **Backend DEFERRED:** per-resource access-policy, console user-login (auth-code/OIDC) + IdP group→member sync, token mint + deny-set, provider-key Vault custody, tool approvals, Redis spend-reservation, heavy observability (Langfuse/ClickHouse) — M5/M6-remainder; channels + workspace-root — P2.
+- **Backend endpoints/controls BUILT:** agents, invoke (SSE), eval, publish (advisory), tools, mcp, skills, KB, workspace settings, members (+ teams), runs, metrics (+ honest-deferred ingestion stub); **RBAC enforcement (008)**; **durable monthly spend cap + `GET /workspace/spend` (009)**; **correlation ingestion + `GET /metrics` (010)**; **pluggable IdP bearer authN + membership-sourced authZ (012)**; **per-resource access-policy enforcement (013)**. Cross-cutting on every paid/resource path: tenancy/RLS, RBAC role-gate, per-resource access policy, spend cap, correlation.
+- **Backend DEFERRED:** console user-login (auth-code/OIDC) + IdP group→member/team sync, token mint + deny-set, provider-key Vault custody, tool approvals, Redis spend-reservation, heavy observability (Langfuse/ClickHouse) — M5/M6-remainder; channels + workspace-root — P2.
 - **Frontend seams wired to real API:** **0 / 253** (pending Node toolchain for client-gen + hook swap).
 
 ## How to complete the frontend wiring (in a Node environment)

@@ -15,8 +15,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from api import sse
+from api.access_policy import PolicyPrincipal
 from api.correlation import correlation_id
-from api.deps import enforce_spend_cap, require_permission, PROVIDER_API_KEY, rate_limit, resolve_workspace, tenant_db
+from api.deps import (access_principal, enforce_spend_cap, ensure_use, require_permission, PROVIDER_API_KEY,
+                      rate_limit, resolve_workspace, tenant_db)
 from api.run_sink import persist_run_record
 from api.errors import NotFound
 from api.models import Agent, AgentVersion, RetrievalBinding
@@ -62,9 +64,25 @@ async def invoke_agent(
     body: InvokeIn,
     ws: str = Depends(resolve_workspace),
     session: AsyncSession = Depends(tenant_db),
+    ap: PolicyPrincipal = Depends(access_principal),   # feature 013: access-policy caller view
     corr: str = Depends(correlation_id),      # F13: inbound traceparent / X-Correlation-Id, else generated
     _rl: None = Depends(rate_limit),
 ):
+    # feature 013: deny USE fail-closed BEFORE loading the version / opening the stream — no Run row, no
+    # provider call. A denied invoke is a 404 indistinguishable from an absent agent (P5 no-leak).
+    try:
+        aid = uuid.UUID(agent_id)
+    except ValueError:
+        raise NotFound("agent not found", detail={"agent_id": agent_id})
+    # Read ONLY the access_policy column for the gate (not the whole row) — _load_version loads the agent's
+    # version next. NOT NULL column → None ⇒ absent row (same light-select pattern as patch_agent).
+    agent_policy = (await session.execute(
+        select(Agent.access_policy).where(Agent.id == aid))).scalar_one_or_none()
+    if agent_policy is None:
+        raise NotFound("agent not found", detail={"agent_id": agent_id})
+    ensure_use(agent_policy, ap,
+               not_found=NotFound("agent not found", detail={"agent_id": agent_id}))
+
     version = await _load_version(session, agent_id, body.version_id)
     if version is None:
         raise NotFound("agent version not found", detail={"agent_id": agent_id, "version_id": body.version_id})

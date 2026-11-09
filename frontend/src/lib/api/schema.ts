@@ -442,6 +442,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/workspace/spend": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Spend
+         * @description Feature 009 (M6/US3): month-to-date spend vs the active monthly cap, from the same durable helpers the
+         *     spend-cap gate enforces (one source of truth — SC-004). Workspace-scoped; `view` permission.
+         */
+        get: operations["get_spend_api_v1_workspace_spend_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/workspace/settings": {
         parameters: {
             query?: never;
@@ -605,8 +626,50 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Healthz */
+        /**
+         * Healthz
+         * @description Liveness — the process is up. No dependency checks (never flaps on a slow DB).
+         */
         get: operations["healthz_healthz_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/readyz": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Readyz
+         * @description Readiness (orchestration probe, deployment infra slice) — the service can serve traffic:
+         *     verifies DB connectivity via the app (RLS) engine. Returns 503 not-ready if the DB is unreachable,
+         *     so a load balancer / k8s readiness gate holds traffic until the stack is up (migrations run first).
+         */
+        get: operations["readyz_readyz_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/metrics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Metrics Endpoint */
+        get: operations["metrics_endpoint_metrics_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -619,6 +682,41 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /**
+         * AccessPolicy
+         * @description Wire/stored access-policy. Unknown keys are rejected (fail-closed input); unknown `visibility` is rejected
+         *     at write time by the Literal — the evaluator still fails closed on any value it doesn't recognize on read.
+         */
+        AccessPolicy: {
+            /**
+             * Visibility
+             * @default workspace
+             * @enum {string}
+             */
+            visibility: "workspace" | "restricted" | "private";
+            /**
+             * Useroles
+             * @default []
+             */
+            useRoles: string[];
+            /**
+             * Useteams
+             * @default []
+             */
+            useTeams: string[];
+            /**
+             * Manageroles
+             * @default []
+             */
+            manageRoles: string[];
+            /**
+             * Manageteams
+             * @default []
+             */
+            manageTeams: string[];
+            /** Owner */
+            owner?: string | null;
+        };
         /**
          * AgentCreate
          * @description Create a draft agent + its first version fields (workspace comes from the request scope).
@@ -639,6 +737,10 @@ export interface components {
             io_contract?: {
                 [key: string]: unknown;
             };
+            /** Access Policy */
+            access_policy?: {
+                [key: string]: unknown;
+            } | null;
         };
         /**
          * AgentOut
@@ -664,6 +766,7 @@ export interface components {
              * Format: date-time
              */
             created_at: string;
+            access_policy: components["schemas"]["AccessPolicy"];
             /** Versions */
             versions?: components["schemas"]["VersionOut"][];
         };
@@ -678,6 +781,10 @@ export interface components {
             status?: ("draft" | "published" | "archived" | "eval_failing") | null;
             /** Active Version Id */
             active_version_id?: string | null;
+            /** Access Policy */
+            access_policy?: {
+                [key: string]: unknown;
+            } | null;
         };
         /** BaselineIn */
         BaselineIn: {
@@ -838,6 +945,10 @@ export interface components {
             chunk_config: {
                 [key: string]: unknown;
             };
+            /** Access Policy */
+            access_policy?: {
+                [key: string]: unknown;
+            } | null;
         };
         /** KnowledgeBaseOut */
         KnowledgeBaseOut: {
@@ -866,6 +977,7 @@ export interface components {
              * Format: date-time
              */
             created_at: string;
+            access_policy: components["schemas"]["AccessPolicy"];
         };
         /** KnowledgeBasePatch */
         KnowledgeBasePatch: {
@@ -875,6 +987,10 @@ export interface components {
             embedding_model?: string | null;
             /** Chunk Config */
             chunk_config?: {
+                [key: string]: unknown;
+            } | null;
+            /** Access Policy */
+            access_policy?: {
                 [key: string]: unknown;
             } | null;
         };
@@ -892,6 +1008,10 @@ export interface components {
              * @default http
              */
             transport: string;
+            /** Access Policy */
+            access_policy?: {
+                [key: string]: unknown;
+            } | null;
         };
         /** McpServerOut */
         McpServerOut: {
@@ -912,6 +1032,7 @@ export interface components {
              * Format: date-time
              */
             created_at: string;
+            access_policy: components["schemas"]["AccessPolicy"];
             /**
              * Tools
              * @default []
@@ -928,6 +1049,10 @@ export interface components {
             transport?: string | null;
             /** Status */
             status?: string | null;
+            /** Access Policy */
+            access_policy?: {
+                [key: string]: unknown;
+            } | null;
         };
         /** McpToolCreate */
         McpToolCreate: {
@@ -948,6 +1073,10 @@ export interface components {
              * @default read
              */
             risk_tier: string;
+            /** Access Policy */
+            access_policy?: {
+                [key: string]: unknown;
+            } | null;
         };
         /** McpToolOut */
         McpToolOut: {
@@ -963,6 +1092,7 @@ export interface components {
             enabled: boolean;
             /** Risk Tier */
             risk_tier: string;
+            access_policy: components["schemas"]["AccessPolicy"];
         };
         /** McpToolPatch */
         McpToolPatch: {
@@ -974,6 +1104,10 @@ export interface components {
             enabled?: boolean | null;
             /** Risk Tier */
             risk_tier?: string | null;
+            /** Access Policy */
+            access_policy?: {
+                [key: string]: unknown;
+            } | null;
         };
         /** MemberCreate */
         MemberCreate: {
@@ -994,6 +1128,8 @@ export interface components {
              * @default viewer
              */
             console_role: string;
+            /** Teams */
+            teams?: string[];
         };
         /** MemberOut */
         MemberOut: {
@@ -1007,6 +1143,8 @@ export interface components {
             email: string;
             /** Console Role */
             console_role: string;
+            /** Teams */
+            teams: string[];
         };
         /** MemberPatch */
         MemberPatch: {
@@ -1016,6 +1154,8 @@ export interface components {
             email?: string | null;
             /** Console Role */
             console_role?: string | null;
+            /** Teams */
+            teams?: string[] | null;
         };
         /** Page[AgentOut] */
         Page_AgentOut_: {
@@ -1196,6 +1336,10 @@ export interface components {
             resources: {
                 [key: string]: unknown;
             }[];
+            /** Access Policy */
+            access_policy?: {
+                [key: string]: unknown;
+            } | null;
         };
         /** SkillOut */
         SkillOut: {
@@ -1228,6 +1372,7 @@ export interface components {
              * Format: date-time
              */
             created_at: string;
+            access_policy: components["schemas"]["AccessPolicy"];
         };
         /** SkillPatch */
         SkillPatch: {
@@ -1241,6 +1386,10 @@ export interface components {
             resources?: {
                 [key: string]: unknown;
             }[] | null;
+            /** Access Policy */
+            access_policy?: {
+                [key: string]: unknown;
+            } | null;
         };
         /** ToolCreate */
         ToolCreate: {
@@ -1268,6 +1417,10 @@ export interface components {
              * @default read
              */
             risk_tier: string;
+            /** Access Policy */
+            access_policy?: {
+                [key: string]: unknown;
+            } | null;
         };
         /** ToolOut */
         ToolOut: {
@@ -1292,6 +1445,7 @@ export interface components {
              * Format: date-time
              */
             created_at: string;
+            access_policy: components["schemas"]["AccessPolicy"];
         };
         /** ToolPatch */
         ToolPatch: {
@@ -1305,6 +1459,10 @@ export interface components {
             } | null;
             /** Risk Tier */
             risk_tier?: string | null;
+            /** Access Policy */
+            access_policy?: {
+                [key: string]: unknown;
+            } | null;
         };
         /** ValidationError */
         ValidationError: {
@@ -1387,6 +1545,18 @@ export interface components {
                 [key: string]: unknown;
             } | null;
         };
+        /**
+         * WorkspaceSpendOut
+         * @description Feature 009 (M6): month-to-date spend vs the active monthly cap (same figures the gate enforces).
+         */
+        WorkspaceSpendOut: {
+            /** Monthtodateusd */
+            monthToDateUsd: number;
+            /** Capusd */
+            capUsd: number;
+            /** Remainingusd */
+            remainingUsd: number;
+        };
     };
     responses: never;
     parameters: never;
@@ -1405,7 +1575,6 @@ export interface operations {
             };
             header?: {
                 "X-Workspace-Id"?: string | null;
-                "X-Dev-Principal"?: string | null;
             };
             path?: never;
             cookie?: never;
@@ -1440,7 +1609,6 @@ export interface operations {
             header?: {
                 "Idempotency-Key"?: string | null;
                 "X-Workspace-Id"?: string | null;
-                "X-Dev-Principal"?: string | null;
             };
             path?: never;
             cookie?: never;
@@ -1478,7 +1646,6 @@ export interface operations {
             };
             header?: {
                 "X-Workspace-Id"?: string | null;
-                "X-Dev-Principal"?: string | null;
             };
             path: {
                 agent_id: string;
@@ -1515,7 +1682,6 @@ export interface operations {
             header?: {
                 "If-Match"?: string | null;
                 "X-Workspace-Id"?: string | null;
-                "X-Dev-Principal"?: string | null;
             };
             path: {
                 agent_id: string;
@@ -1556,7 +1722,6 @@ export interface operations {
             };
             header?: {
                 "X-Workspace-Id"?: string | null;
-                "X-Dev-Principal"?: string | null;
             };
             path: {
                 agent_id: string;
@@ -1592,7 +1757,6 @@ export interface operations {
             };
             header?: {
                 "X-Workspace-Id"?: string | null;
-                "X-Dev-Principal"?: string | null;
             };
             path: {
                 agent_id: string;
@@ -1632,7 +1796,6 @@ export interface operations {
             };
             header?: {
                 "X-Workspace-Id"?: string | null;
-                "X-Dev-Principal"?: string | null;
             };
             path: {
                 agent_id: string;
@@ -1672,7 +1835,6 @@ export interface operations {
             };
             header?: {
                 "X-Workspace-Id"?: string | null;
-                "X-Dev-Principal"?: string | null;
             };
             path: {
                 agent_id: string;
@@ -1715,7 +1877,6 @@ export interface operations {
             };
             header?: {
                 "X-Workspace-Id"?: string | null;
-                "X-Dev-Principal"?: string | null;
             };
             path?: never;
             cookie?: never;
@@ -1750,7 +1911,6 @@ export interface operations {
             header?: {
                 "Idempotency-Key"?: string | null;
                 "X-Workspace-Id"?: string | null;
-                "X-Dev-Principal"?: string | null;
             };
             path?: never;
             cookie?: never;
@@ -1788,7 +1948,6 @@ export interface operations {
             };
             header?: {
                 "X-Workspace-Id"?: string | null;
-                "X-Dev-Principal"?: string | null;
             };
             path: {
                 tool_id: string;
@@ -1825,7 +1984,6 @@ export interface operations {
             header?: {
                 "If-Match"?: string | null;
                 "X-Workspace-Id"?: string | null;
-                "X-Dev-Principal"?: string | null;
             };
             path: {
                 tool_id: string;
@@ -1865,7 +2023,6 @@ export interface operations {
             };
             header?: {
                 "X-Workspace-Id"?: string | null;
-                "X-Dev-Principal"?: string | null;
             };
             path: {
                 tool_id: string;
@@ -1901,7 +2058,6 @@ export interface operations {
             };
             header?: {
                 "X-Workspace-Id"?: string | null;
-                "X-Dev-Principal"?: string | null;
             };
             path: {
                 tool_id: string;
@@ -1940,7 +2096,6 @@ export interface operations {
             };
             header?: {
                 "X-Workspace-Id"?: string | null;
-                "X-Dev-Principal"?: string | null;
             };
             path?: never;
             cookie?: never;
@@ -1975,7 +2130,6 @@ export interface operations {
             header?: {
                 "Idempotency-Key"?: string | null;
                 "X-Workspace-Id"?: string | null;
-                "X-Dev-Principal"?: string | null;
             };
             path?: never;
             cookie?: never;
@@ -2013,7 +2167,6 @@ export interface operations {
             };
             header?: {
                 "X-Workspace-Id"?: string | null;
-                "X-Dev-Principal"?: string | null;
             };
             path: {
                 server_id: string;
@@ -2050,7 +2203,6 @@ export interface operations {
             header?: {
                 "If-Match"?: string | null;
                 "X-Workspace-Id"?: string | null;
-                "X-Dev-Principal"?: string | null;
             };
             path: {
                 server_id: string;
@@ -2090,7 +2242,6 @@ export interface operations {
             };
             header?: {
                 "X-Workspace-Id"?: string | null;
-                "X-Dev-Principal"?: string | null;
             };
             path: {
                 server_id: string;
@@ -2126,7 +2277,6 @@ export interface operations {
             };
             header?: {
                 "X-Workspace-Id"?: string | null;
-                "X-Dev-Principal"?: string | null;
             };
             path: {
                 server_id: string;
@@ -2167,7 +2317,6 @@ export interface operations {
             header?: {
                 "If-Match"?: string | null;
                 "X-Workspace-Id"?: string | null;
-                "X-Dev-Principal"?: string | null;
             };
             path: {
                 tool_id: string;
@@ -2210,7 +2359,6 @@ export interface operations {
             };
             header?: {
                 "X-Workspace-Id"?: string | null;
-                "X-Dev-Principal"?: string | null;
             };
             path?: never;
             cookie?: never;
@@ -2245,7 +2393,6 @@ export interface operations {
             header?: {
                 "Idempotency-Key"?: string | null;
                 "X-Workspace-Id"?: string | null;
-                "X-Dev-Principal"?: string | null;
             };
             path?: never;
             cookie?: never;
@@ -2283,7 +2430,6 @@ export interface operations {
             };
             header?: {
                 "X-Workspace-Id"?: string | null;
-                "X-Dev-Principal"?: string | null;
             };
             path: {
                 skill_id: string;
@@ -2320,7 +2466,6 @@ export interface operations {
             header?: {
                 "If-Match"?: string | null;
                 "X-Workspace-Id"?: string | null;
-                "X-Dev-Principal"?: string | null;
             };
             path: {
                 skill_id: string;
@@ -2360,7 +2505,6 @@ export interface operations {
             };
             header?: {
                 "X-Workspace-Id"?: string | null;
-                "X-Dev-Principal"?: string | null;
             };
             path: {
                 skill_id: string;
@@ -2396,7 +2540,6 @@ export interface operations {
             };
             header?: {
                 "X-Workspace-Id"?: string | null;
-                "X-Dev-Principal"?: string | null;
             };
             path: {
                 skill_id: string;
@@ -2432,7 +2575,6 @@ export interface operations {
             };
             header?: {
                 "X-Workspace-Id"?: string | null;
-                "X-Dev-Principal"?: string | null;
             };
             path: {
                 skill_id: string;
@@ -2471,7 +2613,6 @@ export interface operations {
             };
             header?: {
                 "X-Workspace-Id"?: string | null;
-                "X-Dev-Principal"?: string | null;
             };
             path?: never;
             cookie?: never;
@@ -2506,7 +2647,6 @@ export interface operations {
             header?: {
                 "Idempotency-Key"?: string | null;
                 "X-Workspace-Id"?: string | null;
-                "X-Dev-Principal"?: string | null;
             };
             path?: never;
             cookie?: never;
@@ -2544,7 +2684,6 @@ export interface operations {
             };
             header?: {
                 "X-Workspace-Id"?: string | null;
-                "X-Dev-Principal"?: string | null;
             };
             path: {
                 kb_id: string;
@@ -2581,7 +2720,6 @@ export interface operations {
             header?: {
                 "If-Match"?: string | null;
                 "X-Workspace-Id"?: string | null;
-                "X-Dev-Principal"?: string | null;
             };
             path: {
                 kb_id: string;
@@ -2621,7 +2759,6 @@ export interface operations {
             };
             header?: {
                 "X-Workspace-Id"?: string | null;
-                "X-Dev-Principal"?: string | null;
             };
             path: {
                 kb_id: string;
@@ -2657,7 +2794,6 @@ export interface operations {
             };
             header?: {
                 "X-Workspace-Id"?: string | null;
-                "X-Dev-Principal"?: string | null;
             };
             path: {
                 kb_id: string;
@@ -2693,7 +2829,6 @@ export interface operations {
             };
             header?: {
                 "X-Workspace-Id"?: string | null;
-                "X-Dev-Principal"?: string | null;
             };
             path?: never;
             cookie?: never;
@@ -2720,6 +2855,39 @@ export interface operations {
             };
         };
     };
+    get_spend_api_v1_workspace_spend_get: {
+        parameters: {
+            query?: {
+                workspace?: string | null;
+            };
+            header?: {
+                "X-Workspace-Id"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceSpendOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_settings_api_v1_workspace_settings_get: {
         parameters: {
             query?: {
@@ -2727,7 +2895,6 @@ export interface operations {
             };
             header?: {
                 "X-Workspace-Id"?: string | null;
-                "X-Dev-Principal"?: string | null;
             };
             path?: never;
             cookie?: never;
@@ -2762,7 +2929,6 @@ export interface operations {
             header?: {
                 "If-Match"?: string | null;
                 "X-Workspace-Id"?: string | null;
-                "X-Dev-Principal"?: string | null;
             };
             path?: never;
             cookie?: never;
@@ -2800,7 +2966,6 @@ export interface operations {
             };
             header?: {
                 "X-Workspace-Id"?: string | null;
-                "X-Dev-Principal"?: string | null;
             };
             path?: never;
             cookie?: never;
@@ -2835,11 +3000,11 @@ export interface operations {
         parameters: {
             query?: {
                 limit?: number | null;
+                cursor?: string | null;
                 workspace?: string | null;
             };
             header?: {
                 "X-Workspace-Id"?: string | null;
-                "X-Dev-Principal"?: string | null;
             };
             path?: never;
             cookie?: never;
@@ -2873,7 +3038,6 @@ export interface operations {
             };
             header?: {
                 "X-Workspace-Id"?: string | null;
-                "X-Dev-Principal"?: string | null;
             };
             path?: never;
             cookie?: never;
@@ -2911,7 +3075,6 @@ export interface operations {
             };
             header?: {
                 "X-Workspace-Id"?: string | null;
-                "X-Dev-Principal"?: string | null;
             };
             path: {
                 member_id: string;
@@ -2945,7 +3108,6 @@ export interface operations {
             };
             header?: {
                 "X-Workspace-Id"?: string | null;
-                "X-Dev-Principal"?: string | null;
             };
             path: {
                 member_id: string;
@@ -2987,7 +3149,6 @@ export interface operations {
             };
             header?: {
                 "X-Workspace-Id"?: string | null;
-                "X-Dev-Principal"?: string | null;
             };
             path?: never;
             cookie?: never;
@@ -3021,7 +3182,6 @@ export interface operations {
             };
             header?: {
                 "X-Workspace-Id"?: string | null;
-                "X-Dev-Principal"?: string | null;
             };
             path: {
                 run_id: string;
@@ -3057,7 +3217,6 @@ export interface operations {
             };
             header?: {
                 "X-Workspace-Id"?: string | null;
-                "X-Dev-Principal"?: string | null;
             };
             path?: never;
             cookie?: never;
@@ -3091,7 +3250,6 @@ export interface operations {
             };
             header?: {
                 "X-Workspace-Id"?: string | null;
-                "X-Dev-Principal"?: string | null;
             };
             path?: never;
             cookie?: never;
@@ -3125,7 +3283,6 @@ export interface operations {
             };
             header?: {
                 "X-Workspace-Id"?: string | null;
-                "X-Dev-Principal"?: string | null;
             };
             path?: never;
             cookie?: never;
@@ -3170,6 +3327,46 @@ export interface operations {
                     "application/json": {
                         [key: string]: unknown;
                     };
+                };
+            };
+        };
+    };
+    readyz_readyz_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    metrics_endpoint_metrics_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
         };

@@ -8,6 +8,8 @@ import datetime
 
 from pydantic import BaseModel
 
+from api.schemas.access_policy import AccessPolicy
+
 
 class SkillCreate(BaseModel):
     slug: str
@@ -15,6 +17,7 @@ class SkillCreate(BaseModel):
     description: str = ""
     instructions: str = ""
     resources: list[dict] = []
+    access_policy: dict | None = None       # feature 013
 
 
 class SkillPatch(BaseModel):
@@ -22,6 +25,7 @@ class SkillPatch(BaseModel):
     description: str | None = None
     instructions: str | None = None
     resources: list[dict] | None = None
+    access_policy: dict | None = None       # feature 013
 
 
 class SkillOut(BaseModel):
@@ -36,3 +40,4 @@ class SkillOut(BaseModel):
     provenance: dict | None
     archived: bool
     created_at: datetime.datetime
+    access_policy: AccessPolicy

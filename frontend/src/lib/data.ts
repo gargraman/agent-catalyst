@@ -55,15 +55,16 @@ export type Member = {
   email: string;
   role: "Admin" | "Publisher" | "Builder" | "Viewer";   // resolved for the active workspace (display)
   groups: string[];                                      // mock-only raw per-workspace role claims (ap-<prefix>-<role> + maybe ap-platform-admin)
+  teams: string[];                                       // @backend server-owned functional teams (iam Team slugs; OIDC `groups` claim) — drive per-resource access policy; display-only in the roster (feature 013, FR-017)
   lastActive: string;
 };
 export const MEMBERS: Member[] = [
-  { name: "Raman Garg", email: `raman.garg@${ORG.emailDomain}`, role: "Admin", groups: ["ap-platform-admin"], lastActive: "2026-10-04T09:12:00Z" },
-  { name: "Priya Nair", email: `priya.nair@${ORG.emailDomain}`, role: "Publisher", groups: ["ap-xdr-publisher", "ap-grc-builder"], lastActive: "2026-10-04T07:40:00Z" },
-  { name: "Diego Fuentes", email: `diego.fuentes@${ORG.emailDomain}`, role: "Builder", groups: ["ap-xdr-builder", "ap-labs-publisher"], lastActive: "2026-10-03T18:22:00Z" },
-  { name: "Mei-Ling Chen", email: `meiling.chen@${ORG.emailDomain}`, role: "Builder", groups: ["ap-xdr-builder"], lastActive: "2026-10-03T14:05:00Z" },
-  { name: "Omar Haddad", email: `omar.haddad@${ORG.emailDomain}`, role: "Viewer", groups: ["ap-grc-viewer", "ap-labs-builder"], lastActive: "2026-10-01T11:48:00Z" },
-  { name: "Sofia Rossi", email: `sofia.rossi@${ORG.emailDomain}`, role: "Publisher", groups: ["ap-people-publisher", "ap-xdr-builder"], lastActive: "2026-10-02T16:30:00Z" },
+  { name: "Raman Garg", email: `raman.garg@${ORG.emailDomain}`, role: "Admin", groups: ["ap-platform-admin"], teams: ["SOC", "Platform", "People"], lastActive: "2026-10-04T09:12:00Z" },
+  { name: "Priya Nair", email: `priya.nair@${ORG.emailDomain}`, role: "Publisher", groups: ["ap-xdr-publisher", "ap-grc-builder"], teams: ["SOC", "GRC"], lastActive: "2026-10-04T07:40:00Z" },
+  { name: "Diego Fuentes", email: `diego.fuentes@${ORG.emailDomain}`, role: "Builder", groups: ["ap-xdr-builder", "ap-labs-publisher"], teams: ["Detection", "Research"], lastActive: "2026-10-03T18:22:00Z" },
+  { name: "Mei-Ling Chen", email: `meiling.chen@${ORG.emailDomain}`, role: "Builder", groups: ["ap-xdr-builder"], teams: ["Detection"], lastActive: "2026-10-03T14:05:00Z" },
+  { name: "Omar Haddad", email: `omar.haddad@${ORG.emailDomain}`, role: "Viewer", groups: ["ap-grc-viewer", "ap-labs-builder"], teams: ["GRC"], lastActive: "2026-10-01T11:48:00Z" },
+  { name: "Sofia Rossi", email: `sofia.rossi@${ORG.emailDomain}`, role: "Publisher", groups: ["ap-people-publisher", "ap-xdr-builder"], teams: ["People", "SOC"], lastActive: "2026-10-02T16:30:00Z" },
 ];
 
 export type Version = {

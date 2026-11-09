@@ -9,6 +9,8 @@ import datetime
 
 from pydantic import BaseModel
 
+from api.schemas.access_policy import AccessPolicy
+
 
 class KnowledgeBaseCreate(BaseModel):
     slug: str
@@ -16,12 +18,14 @@ class KnowledgeBaseCreate(BaseModel):
     embedding_model: str
     embedding_dim: int = 1536
     chunk_config: dict = {}
+    access_policy: dict | None = None       # feature 013
 
 
 class KnowledgeBasePatch(BaseModel):
     name: str | None = None
     embedding_model: str | None = None
     chunk_config: dict | None = None
+    access_policy: dict | None = None       # feature 013
 
 
 class KnowledgeBaseOut(BaseModel):
@@ -35,6 +39,7 @@ class KnowledgeBaseOut(BaseModel):
     ingestion_status: str           # honest deferred marker (FR-009)
     archived: bool
     created_at: datetime.datetime
+    access_policy: AccessPolicy
 
 
 class IngestionJobOut(BaseModel):

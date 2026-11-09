@@ -25,7 +25,7 @@ router = APIRouter(prefix="/api/v1/members", tags=["members"])
 
 def _member_out(m: Member) -> MemberOut:
     return MemberOut(id=str(m.id), subject=m.subject, display_name=m.display_name,
-                     email=m.email, console_role=m.console_role)
+                     email=m.email, console_role=m.console_role, teams=list(m.teams or []))
 
 
 async def _load(session: AsyncSession, member_id: str) -> Member | None:
@@ -59,7 +59,7 @@ async def list_members(ws: str = Depends(resolve_workspace), session: AsyncSessi
 async def add_member(body: MemberCreate, ws: str = Depends(resolve_workspace),
                      session: AsyncSession = Depends(tenant_db), _rl: None = Depends(rate_limit)) -> MemberOut:
     m = Member(workspace_id=uuid.UUID(ws), subject=body.subject, display_name=body.display_name,
-               email=body.email, console_role=body.console_role)
+               email=body.email, console_role=body.console_role, teams=list(body.teams))
     session.add(m)
     try:
         await session.flush()
@@ -75,7 +75,7 @@ async def patch_member(member_id: str, body: MemberPatch, ws: str = Depends(reso
     m = await _load(session, member_id)
     if m is None:
         raise NotFound("member not found", detail={"member_id": member_id})
-    for f in ("display_name", "email", "console_role"):
+    for f in ("display_name", "email", "console_role", "teams"):
         v = getattr(body, f)
         if v is not None:
             setattr(m, f, v)

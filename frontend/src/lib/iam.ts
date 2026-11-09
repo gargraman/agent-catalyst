@@ -69,6 +69,10 @@ export type IamProfile = {
   groups: string[]; // per-workspace role claims (idpBinding) + maybe PLATFORM_ADMIN_GROUP
 };
 
+// @backend teams are SERVER-OWNED for authorization: the backend sources them from the member row / OIDC `groups`
+// claim and evaluates them in the per-resource access policy (feature 013; services access_policy.PolicyPrincipal.teams
+// via membership.teams_for). This client `teams` list is a PRE-WIRING PREVIEW only — never trusted for a real
+// access decision once the token/session carries the claim; the roster shows teams read-only (settings, FR-017).
 export const MOCK_PROFILE: IamProfile = {
   name: "Raman Garg",
   email: `raman.garg@${ORG.emailDomain}`,

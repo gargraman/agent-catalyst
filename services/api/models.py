@@ -70,6 +70,7 @@ class Agent(Base, WorkspaceScoped):
     status: Mapped[str] = mapped_column(_AGENT_STATUS, default="draft")
     active_version_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
     needs_reeval: Mapped[bool] = mapped_column(Boolean, default=False)  # drift flag (feature 006, FR-002)
+    access_policy: Mapped[dict] = mapped_column(JSONB, default=lambda: {"visibility": "workspace"})  # feature 013
     created_at: Mapped[datetime.datetime] = mapped_column(server_default=func.now())
     versions: Mapped[list["AgentVersion"]] = relationship(
         back_populates="agent", foreign_keys="AgentVersion.agent_id"
@@ -221,6 +222,7 @@ class Tool(Base, WorkspaceScoped):
     kind: Mapped[str] = mapped_column(_TOOL_KIND, default="http")
     http_config: Mapped[dict] = mapped_column(JSONB, default=dict)
     risk_tier: Mapped[str] = mapped_column(_TOOL_RISK_TIER, default="read")
+    access_policy: Mapped[dict] = mapped_column(JSONB, default=lambda: {"visibility": "workspace"})  # feature 013
     archived_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime.datetime] = mapped_column(server_default=func.now())
 
@@ -232,6 +234,7 @@ class McpServer(Base, WorkspaceScoped):
     url: Mapped[str] = mapped_column(Text, default="")
     transport: Mapped[str] = mapped_column(Text, default="http")
     status: Mapped[str] = mapped_column(Text, default="disabled")
+    access_policy: Mapped[dict] = mapped_column(JSONB, default=lambda: {"visibility": "workspace"})  # feature 013
     archived_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime.datetime] = mapped_column(server_default=func.now())
     tools: Mapped[list["McpTool"]] = relationship(order_by="McpTool.name")
@@ -245,6 +248,7 @@ class McpTool(Base, WorkspaceScoped):
     description: Mapped[str] = mapped_column(Text, default="")
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     risk_tier: Mapped[str] = mapped_column(_TOOL_RISK_TIER, default="read")
+    access_policy: Mapped[dict] = mapped_column(JSONB, default=lambda: {"visibility": "workspace"})  # feature 013
 
 
 class Skill(Base, WorkspaceScoped):
@@ -259,6 +263,7 @@ class Skill(Base, WorkspaceScoped):
     content_hash: Mapped[str] = mapped_column(Text, default="")
     status: Mapped[str] = mapped_column(Text, default="draft")
     provenance: Mapped[dict | None] = mapped_column(JSONB)
+    access_policy: Mapped[dict] = mapped_column(JSONB, default=lambda: {"visibility": "workspace"})  # feature 013
     archived_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime.datetime] = mapped_column(server_default=func.now())
 
@@ -282,6 +287,7 @@ class Member(Base, WorkspaceScoped):
     display_name: Mapped[str] = mapped_column(Text, default="")
     email: Mapped[str] = mapped_column(Text, default="")
     console_role: Mapped[str] = mapped_column(Text, default="viewer")
+    teams: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list)  # feature 013: server-owned team membership (authZ)
     created_at: Mapped[datetime.datetime] = mapped_column(server_default=func.now())
 
 
