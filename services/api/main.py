@@ -7,8 +7,10 @@ the Pydantic schemas and is the source of truth for the generated frontend clien
 from __future__ import annotations
 
 from fastapi import FastAPI, Response
+from fastapi.responses import JSONResponse
+from sqlalchemy import text
 
-from api import metrics
+from api import db, metrics
 from api.errors import AppError, app_error_handler
 from api.routers import (
     agents, evals, invoke, knowledge, members, runs, skills, tools, workspaces,
@@ -33,7 +35,20 @@ def create_app() -> FastAPI:
 
     @app.get("/healthz", tags=["meta"])
     async def healthz() -> dict:
+        """Liveness — the process is up. No dependency checks (never flaps on a slow DB)."""
         return {"status": "ok"}
+
+    @app.get("/readyz", tags=["meta"])
+    async def readyz() -> Response:
+        """Readiness (orchestration probe, deployment infra slice) — the service can serve traffic:
+        verifies DB connectivity via the app (RLS) engine. Returns 503 not-ready if the DB is unreachable,
+        so a load balancer / k8s readiness gate holds traffic until the stack is up (migrations run first)."""
+        try:
+            async with db.app_engine().connect() as conn:
+                await conn.execute(text("select 1"))
+        except Exception:                                    # noqa: BLE001 — any DB failure → not ready
+            return JSONResponse({"status": "not-ready", "checks": {"database": "down"}}, status_code=503)
+        return JSONResponse({"status": "ready", "checks": {"database": "ok"}})
 
     # Feature 010 (F12): unauthenticated, non-/api/v1 Prometheus scrape surface (aggregate counts only —
     # no tenant/content). Network restriction is a deploy concern (FR-011).

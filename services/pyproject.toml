@@ -22,7 +22,7 @@ dependencies = [
 # litellm pinned to a compatible-minor range: its streamed-chunk + usage shapes are what our adapters map,
 # and those are re-proven against the live wire only at M2 — an unbounded floor could silently reshape them
 # (wrong usage → wrong cost). Tested against 1.106.6; widen deliberately after re-verifying the mapping.
-api = ["fastapi", "uvicorn", "sqlalchemy>=2.0", "asyncpg", "psycopg[binary]>=3", "alembic", "redis", "litellm~=1.106", "prometheus-client>=0.20,<1", "pyjwt[crypto]>=2.8,<3"]
+api = ["fastapi", "uvicorn", "sqlalchemy[asyncio]>=2.0", "asyncpg", "psycopg[binary]>=3", "alembic", "redis", "litellm~=1.106", "prometheus-client>=0.20,<1", "pyjwt[crypto]>=2.8,<3"]
 test = ["pytest>=8", "pytest-asyncio"]
 
 # Editable/wheel package discovery. setuptools flat-layout auto-discovery fails on this tree

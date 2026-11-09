@@ -30,5 +30,44 @@ services:
       timeout: 3s
       retries: 20
 
+  # One-shot migration step — applies Alembic migrations as the superuser `ac` (creates ac_app + RLS policies)
+  # BEFORE the API starts. Exits 0 on success; the api service waits on its completion.
+  migrate:
+    build:
+      context: ../services
+    command: ["alembic", "upgrade", "head"]
+    environment:
+      AC_DATABASE_SYNC_URL: postgresql+psycopg://ac:ac_dev_pw@postgres:5432/agent_catalyst
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  # The FastAPI service, built from services/Dockerfile. Dev profile: AC_ENV=dev + AC_AUTH_PROVIDER=dev enable
+  # the (unverified) dev auth provider — feature 012 is FAIL-CLOSED by default. A real deployment sets
+  # AC_ENV=prod + AC_AUTH_PROVIDER=trellix-iam (+ AC_IAM_* config) and injects creds from a secret store (Vault).
+  api:
+    build:
+      context: ../services
+    ports:
+      - "8000:8000"
+    environment:
+      AC_DATABASE_URL: postgresql+asyncpg://ac:ac_dev_pw@postgres:5432/agent_catalyst
+      AC_DATABASE_SYNC_URL: postgresql+psycopg://ac:ac_dev_pw@postgres:5432/agent_catalyst
+      AC_APP_DATABASE_URL: postgresql+asyncpg://ac_app:ac_app_pw@postgres:5432/agent_catalyst
+      AC_REDIS_URL: redis://redis:6379/0
+      AC_ENV: dev                            # dev-only; prod sets prod + trellix-iam (see note above)
+      AC_AUTH_PROVIDER: dev
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/readyz')\""]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
 volumes:
   pgdata:
