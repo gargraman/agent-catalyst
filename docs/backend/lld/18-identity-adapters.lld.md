@@ -1,5 +1,7 @@
 # 18 (LLD) — Identity Adapters (IdP-agnostic authN → `Principal`)
 
+> **⚠️ Secret custody — as built (feature 014, 2026-11-11):** secret custody now runs through a pluggable secrets backend (**AWS Secrets Manager** / LocalStack / `local`), **not** HashiCorp Vault Transit. The `transit/keys/platform-idp` / Vault adapter-credential detail in this LLD is the **superseded design baseline** for the still-unbuilt IdP-adapter credential family — to be re-reconciled when built. See `docs/scope.md` (2026-11-11) and [`../09-security-tenancy.md §9`](../09-security-tenancy.md).
+
 > **Parent:** [`../18-identity-adapters.md`](../18-identity-adapters.md) (the `IdentityProvider` adapter
 > boundary, `workspaces.idp_binding`, the `group_members` projection cache, the adapter table, the deploy-time
 > config shape, the propagation index).

@@ -2,6 +2,12 @@
 
 > Companion to `docs/scope.md` and `docs/spec.md`. Roadmap-level plan (steps + complexity + options),
 > not a line-level implementation plan.
+>
+> **⚠️ As built (feature 014, 2026-11-11):** every "Vault" / "Vault Transit" / "per-workspace DEK" reference
+> in this doc is **superseded** — secret custody now runs through a pluggable backend (**AWS Secrets Manager**
+> / LocalStack / in-process `local`), selected by `AC_SECRETS_PROVIDER`. Read "Vault" below as "the secrets
+> backend." Provider keys are wired end-to-end; other cred families are designed for the same seam, not built.
+> See `docs/scope.md` 2026-11-11 and `docs/backend/09 §9`.
 
 ## Context
 
@@ -10,7 +16,7 @@ and writes go through a client store (`frontend/src/lib/store.ts`) seeded from `
 auth/tenancy is a mock IdP profile — claim-based, IdP-agnostic (`auth.tsx` + `iam.ts` + `permissions.ts` + `access-policy.ts`),
 and the runtime token check is a deterministic decode (`runtime-access.ts`). This plan turns that into a
 real internal pilot: build the backend per `docs/spec.md` (Python/FastAPI + LangGraph + LiteLLM +
-Postgres/pgvector + Redis + Vault + Langfuse + MinIO, portable containers), wire the existing UI to it,
+Postgres/pgvector + Redis + AWS Secrets Manager (LocalStack locally; replaces Vault) + Langfuse + MinIO, portable containers), wire the existing UI to it,
 and run agents safely across workspaces in one corporate deployment. The frontend data types were
 authored to mirror backend entities, but mock-only flows still need real authorization, persistence,
 failure behavior, and operational semantics; matching shapes does not make integration a store swap.

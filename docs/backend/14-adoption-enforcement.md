@@ -1,5 +1,7 @@
 # 14 — Adoption & Enforcement (import, registration gate, dedup)
 
+> **⚠️ Secret custody — as built (feature 014, 2026-11-11):** the provider-key custody spine now runs through a pluggable secrets backend (**AWS Secrets Manager** / LocalStack / `local`), **not** HashiCorp Vault Transit. The "platform-shared pool custodied in Vault" / per-workspace-DEK material in this doc is the **superseded design baseline** for the still-unbuilt enforcement path — it will be re-reconciled to the new backend when enforcement is built. The *concept* (one platform-scope key path for enforced orgs) still holds; only the custody engine changed. See `docs/scope.md` (2026-11-11) and `backend/09 §9`.
+
 > Implements the `scope.md` governing principle — the platform exists to **govern** agents
 > (build → configure → test → publish with guardrails + a drift-aware eval gate) — and `spec.md §B3`
 > (agents/versions lifecycle). It closes **P0 adoption gap #1**: today the platform governs agents it

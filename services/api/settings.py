@@ -31,9 +31,19 @@ class Settings(BaseSettings):
     # Non-superuser app role — the request/job path where RLS applies.
     app_database_url: str = Field(default=_DEV_APP, alias="AC_APP_DATABASE_URL")
 
-    # Optional slots consumed by later phases (worker, custody) — unset until wired.
+    # Optional slots consumed by later phases (worker) — unset until wired.
     redis_url: str | None = Field(default=None, alias="AC_REDIS_URL")
-    vault_addr: str | None = Field(default=None, alias="AC_VAULT_ADDR")
+
+    # --- Secret custody (feature 014) -----------------------------------------------------------
+    # Pluggable secrets backend selector, resolved by api.secrets.registry: "local" | "aws".
+    # `local` = in-process (unit tests + offline dev); `aws` = AWS Secrets Manager (boto3), pointed at
+    # LocalStack locally via AC_AWS_ENDPOINT_URL and at real AWS in prod. Raw provider keys live ONLY in the
+    # backend; the app DB holds masked value + opaque vault_path (09, feature 014). Replaces the HashiCorp
+    # Vault slot (Vault→AWS reversal, see docs/scope.md).
+    secrets_provider: str = Field(default="local", alias="AC_SECRETS_PROVIDER")
+    aws_endpoint_url: str | None = Field(default=None, alias="AC_AWS_ENDPOINT_URL")  # LocalStack URL locally; unset → real AWS
+    aws_region: str = Field(default="us-east-1", alias="AC_AWS_REGION")
+    secrets_prefix: str = Field(default="ac", alias="AC_SECRETS_PREFIX")  # secret-name namespace root
 
     # --- Auth / IdP (feature 012) ---------------------------------------------------------------
     # Deployment profile. Defaults to `prod` so an UNCONFIGURED process is fail-closed: the unverified

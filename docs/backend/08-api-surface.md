@@ -12,7 +12,7 @@
 > decision #3). **Fail-closed tenancy (P5):** every request is workspace-authorized (403/401) then served on an
 > `ac_app` RLS session (`tenant_session`); **negative cross-tenant → 404 verified on live Postgres**. Fully
 > mocked at the provider boundary (no live/paid calls). **NOT yet built (deferred):** the caller bearer-token
-> plane + token mint, the `/api/v1/org/*` admin plane, the full 253-seam CRUD, real OIDC (18)/Vault/RBAC, the
+> plane + token mint, the `/api/v1/org/*` admin plane, the full 253-seam CRUD, real OIDC (18)/RBAC, the
 > async worker + `GET /jobs/:id`, the Redis idempotency replay store, real rate-limit thresholds, the real
 > (κ-calibrated) publish gate, and the OpenAPI→FE-client drift CI (M12). The sections below describe the full
 > target surface.
@@ -26,7 +26,7 @@
 > history + `metrics/{dashboard,runs,evals}` (invoke + eval persist identity+metrics only — **no raw content**,
 > SC-009 — closing the M4a in-memory-sink gap). A deterministic `drift.py` flags bound agents for re-eval on a
 > trigger-surface edit. **365 tests green** (live Postgres, purity intact, no live/paid calls). **Still deferred:**
-> provider keys/tokens/tool-approval + Vault, OIDC/Vault/RBAC/access-policy (M5), real ingestion (M7), channels
+> tokens/tool-approval, OIDC/access-policy (M5), real ingestion (M7), channels
 > (P2), workspace-root create/delete, async worker. **Frontend wiring (US2) pending a Node toolchain** — OpenAPI
 > emitted to `frontend/openapi.json`; status tracked in `docs/backend-integration-status.md` (0/253 seams wired).
 
@@ -189,7 +189,7 @@ there is deliberately **no test-invoke, no risk-tier, and no approval route** he
 | **`DELETE /api/v1/workspaces/:id`** *(net-new, not in base design)* | S(admin) | — | `deleteWorkspace` — **FE mock-only** hard-delete cascade over every scoped resource. Base design **archives (soft)** instead; a real deploy would add a guarded admin cascade or disallow it |
 | `GET /api/v1/workspaces/:id/limits` · `PUT …` | S(admin) | — | `useLimits` / `updateLimits` — per-workspace spend + concurrency + timeout. **Monthly spend cap enforced P1; concurrency P2** (07 §3) |
 | `GET /api/v1/provider-keys?workspace=:id` | S | — | `useProviderKeys` (masked) |
-| `POST /api/v1/provider-keys` | S(admin) | — | `addProviderKey` (vaulted; 09) |
+| `POST /api/v1/provider-keys` | S(admin) | — | **BUILT (014)** `addProviderKey` — custodied in the secrets backend (not Vault; 09 §9), masked-only reads, `key.manage`+RLS; + `GET` list, `:id/rotate`, `:id/revoke` |
 | `POST /api/v1/provider-keys/:id/rotate` · `…/revoke` | S(admin) | — | `rotateProviderKey` / `revokeProviderKey` (audited; 09 §12) |
 | `GET /api/v1/members?workspace=:id` | S | — | `useMembers` — **READ-ONLY** projection of the workspace's `viewer`/`builder`/`publisher` claim holders, resolved through the active identity adapter (18 §3; each member's role = the claim they hold). Identity + membership from the IdP; no Postgres roster (09 §2.1) |
 | ~~`POST/DELETE …/invites`, `DELETE /members/:id`, `POST …/join`~~ | — | — | **REMOVED (claim-based model, 2026-10-22).** No invites, no self-join, no in-app remove — membership **is** the per-workspace IdP role claim (mapped by `idp_binding`, 18). Add/remove happens in the IdP; app-wide admin is the adapter's admin claim (15). |

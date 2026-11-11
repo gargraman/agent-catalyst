@@ -261,7 +261,7 @@ def redact_for_telemetry(text: str | None, ctx: "RunContext") -> str:
 ```
 
 **Never-logged list** (not merely redacted — *never present* in any sink):
-- **Vault-decrypted provider / per-user keys** — `resolve_provider_key` (`03 §4`, `09`) holds them in memory for
+- **Secrets-backend-resolved provider / per-user keys** (feature 014 — AWS Secrets Manager, not Vault; `09 §9`) — `resolve_provider_key` (`03 §4`, `09`) holds them in memory for
   the call only; they are never put on a `SpanRecord.attrs`, so they cannot reach §2/§3.
 - **Tool-call arguments** are already scrubbed by `03 §4 redact(args)` *before* they land on a `tool` span, so
   the Langfuse `tool` observation carries redacted args by construction.

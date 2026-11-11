@@ -34,7 +34,7 @@
 
     <svg viewBox="0 0 1080 600" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="sec-title sec-desc">
       <title id="sec-title">Agent Catalyst security and tenancy</title>
-      <desc id="sec-desc">A secure paved road across three trust zones: an untrusted caller enters the tenant-scoped platform only through the api auth guard, which pins the tenant for RLS, decrypts Vault keys in memory, audits every action, and dispatches tool execution through an approval gate into a gVisor sandbox whose only egress is a deny-by-default allow-list proxy. Direct caller-to-sandbox access and open sandbox egress are blocked.</desc>
+      <desc id="sec-desc">A secure paved road across three trust zones: an untrusted caller enters the tenant-scoped platform only through the api auth guard, which pins the tenant for RLS, resolves provider keys from the secrets backend (AWS Secrets Manager) in memory, audits every action, and dispatches tool execution through an approval gate into a gVisor sandbox whose only egress is a deny-by-default allow-list proxy. Direct caller-to-sandbox access and open sandbox egress are blocked.</desc>
       <defs>
         <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#64748b"/></marker>
         <marker id="arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#059669"/></marker>
@@ -65,7 +65,7 @@
       <!-- P2 api -> Postgres (RLS) — relationship carried by the Postgres·RLS node label -->
       <path d="M 460,236 H 484 Q 492,236 492,228 V 192 Q 492,184 500,184 H 520" fill="none" stroke="#64748b" stroke-width="1.2" marker-end="url(#arrow)"/>
 
-      <!-- P3 api -> Vault (decrypt, privileged, dashed) — carried by the Vault node label -->
+      <!-- P3 api -> secrets backend (resolve, privileged, dashed) — carried by the secrets-backend node label -->
       <path d="M 460,256 H 492 Q 500,256 500,264 V 268 Q 500,276 508,276 H 520" fill="none" stroke="#e11d48" stroke-width="1.1" stroke-dasharray="4,3" marker-end="url(#arrow)"/>
 
       <!-- P4 api -> sandbox (approved exec, through gate, accent) -->
@@ -137,13 +137,13 @@
       <text x="604" y="186" fill="#111827" font-size="12" font-weight="600" font-family="'Geist',sans-serif" text-anchor="middle">Postgres · RLS</text>
       <text x="604" y="201" fill="#5b6474" font-size="8.5" font-family="'Geist Mono',monospace" text-anchor="middle">SET LOCAL workspace_id</text>
 
-      <!-- Vault -->
+      <!-- Secrets backend -->
       <rect x="520" y="248" width="168" height="56" rx="6" fill="#f4f5f7"/>
       <rect x="520" y="248" width="168" height="56" rx="6" fill="rgba(251,113,133,0.15)" stroke="#e11d48" stroke-width="1"/>
       <rect x="528" y="254" width="28" height="12" rx="2" fill="transparent" stroke="rgba(225,29,72,0.45)" stroke-width="0.8"/>
       <text x="542" y="263" fill="#e11d48" font-size="7" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.06em">SEC</text>
-      <text x="604" y="280" fill="#111827" font-size="12" font-weight="600" font-family="'Geist',sans-serif" text-anchor="middle">Vault Transit</text>
-      <text x="604" y="294" fill="#5b6474" font-size="8.5" font-family="'Geist Mono',monospace" text-anchor="middle">envelope · per-key DEK</text>
+      <text x="604" y="280" fill="#111827" font-size="12" font-weight="600" font-family="'Geist',sans-serif" text-anchor="middle">Secrets backend</text>
+      <text x="604" y="294" fill="#5b6474" font-size="8.5" font-family="'Geist Mono',monospace" text-anchor="middle">AWS Secrets Manager (014)</text>
 
       <!-- Audit log -->
       <rect x="520" y="344" width="168" height="56" rx="6" fill="#f4f5f7"/>
@@ -217,7 +217,7 @@
       </div>
     </div>
 
-    <footer>AGENT CATALYST · docs/backend 09 §1–§12 · 11 §1 — secure paved road · three planes, guard + RLS, Vault envelope, gVisor egress · diagram-design</footer>
+    <footer>AGENT CATALYST · docs/backend 09 §1–§12 · 11 §1 — secure paved road · three planes, guard + RLS, secret custody (AWS Secrets Manager), gVisor egress · diagram-design</footer>
   </div>
 </body>
 </html>

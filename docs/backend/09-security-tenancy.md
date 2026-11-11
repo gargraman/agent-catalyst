@@ -6,9 +6,10 @@
 > `require_permission(...)` dependency on all 47 workspace-scoped routes — **deny-by-default** (coverage
 > test), **fail-closed** (unknown role → 403), **403 before resource load** (no existence leak), composed
 > with workspace membership + RLS. Role is read from the resolved principal claim. **Still deferred:**
-> per-resource access policy (role+team visibility), OIDC/member-sourced role origin, Vault key custody,
+> per-resource access policy (role+team visibility), OIDC/member-sourced role origin,
 > `rate_limit()` thresholds (F5), and SSRF egress controls (F19) — the sections below remain the design
-> target for those.
+> target for those. *(Provider-key custody is now BUILT via a pluggable secrets backend — §9; it reverses the
+> Vault-Transit design, see `scope.md` 2026-11-11.)*
 
 > Implements `spec.md §B12` and `backend-integration-plan.md Part 4`, and makes the frontend's existing
 > auth/access model (`docs/frontend-auth-access-plan.md`) real on the server. Trellix context: these
@@ -382,7 +383,31 @@ A dedicated suite asserts tenant A can never read or act on tenant B, run in CI 
   and the suite asserts (a) no *other* role/plane can call the `SECURITY DEFINER` reader, and (b) every
   successful cross-tenant read emitted an `org.report.read` audit row. Anything else crossing = a failure.
 
-## 9. Secrets — Vault Transit envelope encryption
+## 9. Secrets — custody backend
+
+> ### ⚠️ AS BUILT (feature 014, 2026-11-11) — this section's Vault-Transit scheme is SUPERSEDED for provider keys
+>
+> The deployment target moved to AWS, so secret custody is now a **pluggable secrets backend**, not
+> HashiCorp Vault Transit. See the `docs/scope.md` 2026-11-11 decision-log entry. What actually ships:
+>
+> - **Seam:** `services/api/secrets/` — a `SecretsProvider` protocol (`put/get/rotate/disable`) + a
+>   config-selected registry (`AC_SECRETS_PROVIDER=local|aws`), mirroring the feature-012 `api/auth/` pattern.
+>   `local` = in-process (tests + offline dev); `aws` = **AWS Secrets Manager** (real AWS in prod, LocalStack
+>   locally via `AWS_ENDPOINT_URL`). The cloud provider is swappable without touching callers.
+> - **No app-level envelope encryption / DEK.** Secrets Manager's KMS-at-rest sits behind the seam; the
+>   per-workspace-DEK / Vault-Transit design below is NOT built.
+> - **`vault_path` is an OPAQUE handle** — a Secrets Manager ARN (`aws`) or a `local://…` ref (`local`) — not
+>   a Vault path. (Column name kept for FE/DB contract stability; see 01 §4.3.)
+> - **P6 boundary correction:** the custody code lives in **`services/api/`** (may import boto3), NOT
+>   `services/runtime/`. `runtime/` stays a pure library and only receives the **resolved plaintext string** via
+>   `RunContext.api_key`. The `services/runtime/secrets.py` sketch below would VIOLATE P6 and was never built.
+> - **Resolve-at-invoke** (and at eval-run) replaces the single `PROVIDER_API_KEY` env var: the API resolves
+>   the workspace's active key for the agent's provider from the custody service just-in-time. Missing / revoked
+>   / unresolvable → fail closed with `config_error` (503) before any provider call (non-prod may fall back to
+>   `PROVIDER_API_KEY` for dev continuity only). Capture is write-once; reads are masked-only; revoke is a
+>   tombstone that disables the backend secret. RBAC `key.manage` (admin) + RLS; no per-resource policy.
+> - **Scope:** provider keys ONLY. MCP/tool/connector/channel creds are *designed for* the same seam but not
+>   yet built — the Vault-Transit material below remains their (unimplemented) design reference.
 
 Provider keys, tool creds, connector creds, MCP auth — **none are ever stored plaintext** (01
 `provider_keys` holds only `masked` + `vault_path`). Base envelope scheme, **per-workspace DEK** (the

@@ -1,5 +1,7 @@
 # 11 (LLD) — Deployment: process boundaries, the shared DB layer, boot & migrations
 
+> **⚠️ Secret custody — as built (feature 014, 2026-11-11):** secret custody now runs through a pluggable secrets backend (**AWS Secrets Manager** / LocalStack / `local`), **not** HashiCorp Vault Transit. The Vault AppRole boot, `services/api/vault.py`, and the `/readyz` Vault-token check in this LLD are **superseded**: prod uses an **IAM role** on the task/pod (no AppRole token-at-boot); local uses LocalStack; `/readyz` checks the secrets backend's reachability instead. See `docs/scope.md` (2026-11-11) and [`../09-security-tenancy.md §9`](../09-security-tenancy.md).
+
 > **Parent:** [`../11-deployment.md`](../11-deployment.md) (topology, Dockerfiles, compose, nginx/SSE,
 > CI/CD + eval gate, k8s/Helm, backup/DR, dependency policy).
 > The parent is the ops manual. It is complete on *what runs where* but leaves four buildable seams that

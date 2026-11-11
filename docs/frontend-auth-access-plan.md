@@ -26,7 +26,8 @@ There are **two distinct access contexts** the console surfaces:
 `effective access = agent config ∩ caller grants ∩ caller tenant ∩ resource access policy`.
 
 **Caller token vs provider key:** the caller token governs **tools/knowledge/MCP** access. The LLM
-provider credential is held in the platform's Vault-backed shared pool and injected server-side; it is
+provider credential is custodied in the platform's secrets backend (AWS Secrets Manager / LocalStack —
+feature 014, not Vault; `backend/09 §9`) and resolved/injected server-side at invoke; it is
 not supplied by the caller or held as a usable workspace BYO key. Workspace IDs still scope usage and
 cost attribution.
 

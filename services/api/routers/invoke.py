@@ -17,8 +17,9 @@ from sqlalchemy.orm import selectinload
 from api import sse
 from api.access_policy import PolicyPrincipal
 from api.correlation import correlation_id
-from api.deps import (access_principal, enforce_spend_cap, ensure_use, require_permission, PROVIDER_API_KEY,
+from api.deps import (access_principal, enforce_spend_cap, ensure_use, require_permission,
                       rate_limit, resolve_workspace, tenant_db)
+from api.provider_keys import resolve_provider_key
 from api.run_sink import persist_run_record
 from api.errors import NotFound
 from api.models import Agent, AgentVersion, RetrievalBinding
@@ -88,11 +89,16 @@ async def invoke_agent(
         raise NotFound("agent version not found", detail={"agent_id": agent_id, "version_id": body.version_id})
     snapshot = version.to_snapshot()          # pure frozen dataclass — safe to use after the session closes
 
+    # feature 014: resolve the workspace's active provider key for THIS agent's provider from custody, just-in-
+    # time, and fail closed (503 config_error) BEFORE opening the stream / calling the gateway if none resolves.
+    provider = (snapshot.model_config or {}).get("provider", "")
+    api_key = await resolve_provider_key(session, ws, provider)
+
     runs: list = []
     # Mint the run id here so the run_start frame and the final run (done frame) name the SAME id; correlation
     # is a separate concept carried via ctx.correlation_id + the X-Correlation-Id header (code-review fix).
     run_id = uuid.uuid4().hex
-    ctx = RunContext(workspace_id=ws, source="playground", api_key=PROVIDER_API_KEY,
+    ctx = RunContext(workspace_id=ws, source="playground", api_key=api_key,
                      record_run=runs.append, correlation_id=corr, run_id=run_id, deadline_s=30.0)
 
     async def _event_stream():

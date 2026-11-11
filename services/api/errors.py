@@ -93,6 +93,14 @@ class ProviderUnavailable(AppError):
     http_status, code = 502, "provider.unavailable"
 
 
+class ConfigError(AppError):
+    """Fail-closed configuration refusal (feature 014, FR-014): the workspace has no active provider key
+    for the agent's provider, or the secrets backend is unavailable. Raised BEFORE any provider call so a
+    run never starts without a credential. 503 (not 500): an operator fix — capture/rotate a key — clears
+    it; it is not an internal bug. Message carries no secret and no vault reference (FR-017)."""
+    http_status, code = 503, "config_error"
+
+
 # Refusal codes counted for observability (feature 010, F12) — requests refused by a deterministic control
 # that never become a run. NOTE: budget.exceeded is run-admission-specific (paid paths), while access.denied
 # spans ALL gated routes (incl. reads) — the `code` label distinguishes them; the counter is named

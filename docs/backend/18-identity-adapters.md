@@ -1,5 +1,7 @@
 # 18 — Identity Adapters (IdP-agnostic auth)
 
+> **⚠️ Secret custody — as built (feature 014, 2026-11-11):** secret custody now runs through a pluggable secrets backend (**AWS Secrets Manager** / LocalStack / `local`), **not** HashiCorp Vault Transit. The Vault / platform-idp-DEK material in this doc is the **superseded design baseline** for the still-unbuilt IdP-adapter credential family — it will be re-reconciled to the new backend when built. See `docs/scope.md` (2026-11-11) and `backend/09 §9`.
+
 > **Why this doc.** The 2026-10-22 claim-based model (`09`, `scope.md`) was written against **Okta** — it
 > bakes the `ap-<prefix>-builder` group-**name** convention and `okta.*` API calls into the auth path. Real
 > deployments run **Okta, Ping, Azure AD / Entra, AWS (Cognito / IAM Identity Center), or a custom IdP**. We

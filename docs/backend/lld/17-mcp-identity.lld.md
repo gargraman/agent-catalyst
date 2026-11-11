@@ -1,5 +1,7 @@
 # 17 (LLD) — Per-User MCP Identity (delegated connected accounts)
 
+> **⚠️ Secret custody — as built (feature 014, 2026-11-11):** secret custody now runs through a pluggable secrets backend (**AWS Secrets Manager** / LocalStack / `local`), **not** HashiCorp Vault Transit. The per-user/per-workspace-DEK Vault code and `VaultEnvelope` sketches in this LLD are the **superseded design baseline** for the still-unbuilt per-user-MCP family (P2+) — to be re-reconciled when built. See `docs/scope.md` (2026-11-11) and [`../09-security-tenancy.md §9`](../09-security-tenancy.md).
+
 > **Parent:** [`../17-mcp-identity.md`](../17-mcp-identity.md) (the `auth_mode` model, the
 > `mcp_user_connections` DDL, the in-chat connect flow, the invoke-time resolution sketch, the caller-mode
 > table, the eval caveat, token lifecycle, phasing).

@@ -149,7 +149,7 @@ uncommitted edits / PR authorship — inverts stateless `invoke()`; see
 | Observability | **Langfuse v3** (OSS, self-hosted, pinned) + **ClickHouse** (columnar analytics) | Per-call logs, traces, cost, eval — free LangSmith alt. v3 is columnar (ships ClickHouse) so traces are unsampled; Postgres stays SoT for money+tenancy, ClickHouse is a derived, non-authoritative analytics store (10, 11) |
 | Guardrails | **Guardrails AI / NeMo Guardrails** (OSS) behind our stage API | Don't hand-build PII/toxicity |
 | DB / queue | Postgres + pgvector · Redis + RQ/Celery | Transactional + async eval/ingest jobs |
-| Secrets | **HashiCorp Vault (Transit)** | Portable KMS-equivalent |
+| Secrets | ~~HashiCorp Vault (Transit)~~ → **pluggable secrets backend (AWS Secrets Manager / LocalStack)** | Reversed 2026-11-11 (deploy target is AWS) — see `scope.md` decision log + `backend/09 §9`. Custody is pluggable (`AC_SECRETS_PROVIDER`); provider keys built (feature 014) |
 | Deploy | Docker + compose (dev); Helm/k8s or compose (prod) | Portable |
 
 **Pushback captured:** LangGraph/LangChain's model wrapper flattens provider-specific features
@@ -247,7 +247,7 @@ flowchart LR
   WORKER --> PG
   PUB[Published endpoint] --> ORCH
   EXT[External dev / cURL] -->|Bearer| PUB
-  API -.->|secrets| VAULT[(Vault)]
+  API -.->|secrets| VAULT[(Secrets backend<br/>AWS Secrets Manager)]
   GW -.-> VAULT
   MCPW -.-> VAULT
   ORCH --> OBS[Langfuse]
@@ -338,7 +338,7 @@ Immutable per version → changing guardrails = new version = re-eval.
 
 ### B10. Published-agent runtime + export
 `POST /v1/agents/:endpointId/invoke` (JSON or SSE): bearer auth → `[P2]` concurrency slot → `[P2]`
-spend check → input guardrails → inject decrypted provider/tool creds (Vault, in-memory only) → run
+spend check → input guardrails → inject resolved provider/tool creds (secrets backend / AWS Secrets Manager, in-memory only) → run
 pinned version via LangGraph (retrieval + MCP as configured) → output guardrails → record Run/usage/
 cost → respond. Accepts an **idempotency key** (dedupes retried invokes). Editing the agent changes
 nothing live until an explicit, eval-gated re-point.
@@ -355,8 +355,9 @@ cases, `versions/:vid/eval-runs` (async), `versions/:vid/baseline`; `versions/:v
 route has separate bearer-token auth.
 
 ### B12. Security
-Provider/tool/source creds: envelope encryption via **Vault Transit** (per-workspace DEK); plaintext
-only in memory at call time; log-redaction scrubs key-shaped strings; never in config/traces/exports.
+Provider/tool/source creds: custodied in a **pluggable secrets backend** (AWS Secrets Manager / LocalStack
+/ in-process `local`; **reverses Vault Transit** — `scope.md` 2026-11-11, `backend/09 §9`, feature 014);
+plaintext only in memory at call time; log-redaction scrubs key-shaped strings; never in config/traces/exports.
 Builder UI: OIDC/SSO + CSRF; `[P2]` RBAC — per-workspace `viewer|builder|publisher` + an **app-wide `admin`**
 claim + the **`executer`** caller role (09 §1; claim-based, IdP-agnostic): **publish** gated to publisher+,
 **provider-key mgmt + governance + workspace CRUD gated to admin**, **MCP/tool mgmt gated to builder+**
@@ -432,7 +433,7 @@ RBAC + audit hardening; usage/cost dashboards.
 
 ## Part F — Resolved decisions
 - **RAG + MCP phasing (decided 2026-10-04):** minimal file-upload RAG in **P1**; MCP in **P2**.
-- Stack: Python/FastAPI + LangGraph + LiteLLM + pgvector + Langfuse + Vault (portable containers).
+- Stack: Python/FastAPI + LangGraph + LiteLLM + pgvector + Langfuse + AWS Secrets Manager/LocalStack (feature 014, replaces Vault; portable containers).
 - Voice dropped. Reference video to be reconciled first on implementation.
 - **P0 gaps promoted into P1 (decided 2026-10-18; see `scope.md` decision log):**
   - **Adoption/enforcement = key custody** (platform-exclusive provider creds; BYO superseded; teeth

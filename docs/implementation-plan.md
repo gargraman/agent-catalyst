@@ -1,5 +1,7 @@
 # Agent Platform — Architecture Review + Spec-Driven Implementation Roadmap
 
+> **⚠️ Secret custody — as built (feature 014, 2026-11-11):** every "Vault" / "Vault Transit" / "per-workspace DEK" / "AppRole" reference in this roadmap is **superseded**. Provider-key custody now runs through a pluggable secrets backend (**AWS Secrets Manager** / LocalStack / `local`, selected by `AC_SECRETS_PROVIDER`); other cred families are designed for the same seam but not built. Read "Vault" as "the secrets backend." See `docs/scope.md` (2026-11-11) and `docs/backend/09 §9`.
+
 ## Context
 
 **Why this plan exists.** `agent-catalyst` is an internal platform to build → configure → test → publish

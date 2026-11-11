@@ -12,6 +12,22 @@
 > **prod rollout stage is always manual-gated** (§6). Treat "merge" and "deploy to prod" as two
 > separate, separately-authorized actions.
 
+> ### ⚠️ AS BUILT (feature 014, 2026-11-11) — secret custody is AWS Secrets Manager, NOT Vault
+>
+> This doc still describes **HashiCorp Vault** throughout (topology, compose, DR, boot/AppRole). That is
+> **superseded**: secret custody now runs through a pluggable backend (`AC_SECRETS_PROVIDER=local|aws`), with
+> **AWS Secrets Manager** in the cloud and **LocalStack** locally — see `docs/scope.md` 2026-11-11 and `09 §9`.
+> Wherever this doc says "Vault", read: **the secrets backend**. Concrete deltas vs. the text below:
+> - The **dev compose** service is `localstack` (Secrets Manager + KMS on `:4566`), not a `vault` container.
+>   The `api` service sets `AC_SECRETS_PROVIDER=aws`, `AC_AWS_ENDPOINT_URL=http://localstack:4566`,
+>   `AC_AWS_REGION`. (See the actual `deploy/compose.yaml`.) Unit tests use the in-process `local` provider.
+> - **Prod** uses real AWS Secrets Manager via an **IAM role** on the task/pod (no static creds, no AppRole
+>   token-at-boot). KMS-at-rest replaces the per-workspace-DEK / Transit envelope scheme.
+> - **DR:** the "Vault = highest-stakes asset / unseal-key custody" material becomes AWS Secrets Manager +
+>   KMS key management (cross-region replication / KMS key policy + rotation), not Raft snapshots + unseal quorum.
+> - Scope: **provider keys only** are wired end-to-end; other cred families are designed for the same seam but
+>   not built.
+
 ## 1. Topology at a glance
 
 ```mermaid
@@ -170,8 +186,9 @@ x-app-env: &app-env
   AC_ENV: dev
   AC_DATABASE_URL: postgresql+asyncpg://app:app@postgres:5432/catalyst   # asyncpg driver (00-conv §4.1 / 11 LLD §2)
   AC_REDIS_URL: redis://redis:6379/0
-  AC_VAULT_ADDR: http://vault:8200
-  AC_VAULT_ROLE: dev
+  AC_SECRETS_PROVIDER: aws                  # pluggable custody (014); local provider for unit tests
+  AC_AWS_ENDPOINT_URL: http://localstack:4566   # LocalStack Secrets Manager; unset in prod → real AWS
+  AC_AWS_REGION: us-east-1
   AC_LANGFUSE_HOST: http://langfuse:3000
   AC_MINIO_ENDPOINT: http://minio:9000
   AC_OIDC_ISSUER: ${OIDC_ISSUER}            # from a gitignored .env (never committed)
@@ -187,11 +204,11 @@ services:
     image: redis:7
     healthcheck: { test: ["CMD","redis-cli","ping"], interval: 5s, retries: 10 }
 
-  vault:
-    image: hashicorp/vault
-    cap_add: ["IPC_LOCK"]
-    environment: { VAULT_DEV_ROOT_TOKEN_ID: dev-root, VAULT_DEV_LISTEN_ADDRESS: 0.0.0.0:8200 }
-    # dev mode auto-enables Transit; a bootstrap script creates the per-workspace keys (09).
+  localstack:
+    image: localstack/localstack:3
+    environment: { SERVICES: "secretsmanager,kms" }   # emulates AWS Secrets Manager + KMS on :4566
+    healthcheck: { test: ["CMD-SHELL","curl -sf http://localhost:4566/_localstack/health || exit 1"], interval: 5s, retries: 10 }
+    # prod has no localstack: the api runs AC_SECRETS_PROVIDER=aws against real Secrets Manager via an IAM role (09 §9).
 
   minio:
     image: minio/minio

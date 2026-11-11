@@ -30,6 +30,21 @@ services:
       timeout: 3s
       retries: 20
 
+  # Local AWS emulator for secret custody (feature 014) — Secrets Manager (+ KMS at-rest). Stands in for the
+  # real AWS account locally so the SAME boto3 code path runs in dev. Dev-only; no real cloud, no real creds.
+  localstack:
+    image: localstack/localstack:3
+    ports:
+      - "4566:4566"                          # LocalStack edge (Secrets Manager, KMS)
+    environment:
+      SERVICES: secretsmanager,kms
+      DEBUG: "0"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:4566/_localstack/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
   # One-shot migration step — applies Alembic migrations as the superuser `ac` (creates ac_app + RLS policies)
   # BEFORE the API starts. Exits 0 on success; the api service waits on its completion.
   migrate:
@@ -58,11 +73,20 @@ services:
       AC_REDIS_URL: redis://redis:6379/0
       AC_ENV: dev                            # dev-only; prod sets prod + trellix-iam (see note above)
       AC_AUTH_PROVIDER: dev
+      # Secret custody (feature 014): drive the real boto3 path against LocalStack in dev. Prod sets
+      # AC_SECRETS_PROVIDER=aws with no endpoint override (real AWS) + an IAM role, not static creds.
+      AC_SECRETS_PROVIDER: aws
+      AC_AWS_ENDPOINT_URL: http://localstack:4566
+      AC_AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: test                # dev-only dummy creds for LocalStack — never a real key
+      AWS_SECRET_ACCESS_KEY: test
     depends_on:
       postgres:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+      localstack:
+        condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/readyz')\""]
       interval: 5s

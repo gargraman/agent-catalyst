@@ -761,7 +761,7 @@ model exactly. ✅ No change. (Caller gating nuance — an `executer` is gated o
 | `Agent.endpoint?` (URL slug) ≠ `Agent.id` | `published_endpoints.slug` vs `agents.slug`; endpoint assigned on publish (`endpoint ?? id`). |
 | `ApiToken.agent`, `IngestionJob.kb` link **by display name** | backend keys by id; the name is denormalized for display + the FE cascade-delete. API must resolve name→id. |
 | `RepoTool` identity = **`name`** (no id) | `tools.name` unique per workspace; `tools.id` exists but the FE addresses tools by name. |
-| Credentials everywhere = `{masked, vaultPath}` (`CredentialRef`) | raw secret write-only to Vault; only `masked` + `vault_path` persisted (`01 §4.3`, `§4.4`, `§4.6`). Never return the secret. |
+| Credentials everywhere = `{masked, vaultPath}` (`CredentialRef`) | raw secret write-only to the secrets backend (AWS Secrets Manager — feature 014, not Vault; `09 §9`); only `masked` + `vault_path` persisted (`01 §4.3`, `§4.4`, `§4.6`). Never return the secret. |
 | `KnowledgeBase.chunkConfig.indexType: HNSW\|IVF` | backend `chunk_config` has **no** `index_type` (§3.2); the index is a DDL/`04` concern. API accepts+ignores it or surfaces it from KB metadata. |
 | `McpServer.auth` seen as `oauth\|bearer\|none` | `mcp.ts McpAuth = none\|bearer\|oauth\|headers` (**4th: `headers`**); `mcp_servers.config` vaults the credential. |
 | Workspace FE `{id,name,short,groupPrefix}` | `workspaces` has `slug`,`name`,`idp_binding` (jsonb); `groupPrefix` is the **Okta-adapter sugar** for `idp_binding` (`iam.ts idpBinding`, `18 §3`); `short` is FE-derived (`shortOf`). |

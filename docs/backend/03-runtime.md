@@ -104,7 +104,7 @@ async def retrieve_always_on(state):        # only when injection == "always_on"
 
 async def model_call(state):                # the streaming provider call (02)
     req = build_normalized_request(state["snapshot"], state["messages"])     # tools incl. retriever-tool
-    key = await resolve_provider_key(state["ctx"], state["snapshot"])        # Vault, in-memory (09)
+    key = await resolve_provider_key(state["ctx"], state["snapshot"])        # resolved by the API layer via the secrets backend (09 §9 / 014); runtime only gets the plaintext string (P6)
     async for ev in gateway.stream(req, api_key=key, profile=state["snapshot"].profile):
         emit(ev)                            # forwarded to the SSE bridge (§5) as it arrives
         accumulate(state, ev)               # text, tool-call assembly, usage, substitutions

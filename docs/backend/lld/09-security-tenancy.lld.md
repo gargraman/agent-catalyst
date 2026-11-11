@@ -1,5 +1,7 @@
 # 09 (LLD) — Security, Auth & Multi-Tenancy
 
+> **⚠️ Secret custody — as built (feature 014, 2026-11-11):** provider-key custody now runs through a pluggable secrets backend (**AWS Secrets Manager** / LocalStack / `local`), **not** HashiCorp Vault Transit. Every Vault / `transit/keys/*` / DEK / AppRole detail in this LLD (incl. the §3 envelope design) is the **superseded design baseline** — the provider-keys row is BUILT on the new backend; the other secret classes are the baseline for the still-unbuilt cred families, to be re-reconciled when each is built. See `docs/scope.md` (2026-11-11) and [`../09-security-tenancy.md §9`](../09-security-tenancy.md).
+
 > **Parent:** [`../09-security-tenancy.md`](../09-security-tenancy.md) (the three auth planes, OIDC/claim
 > sourcing, the workspace-scope guard, RBAC, per-resource access policy, caller tokens, the RLS backstop, the
 > Vault-Transit envelope + key custody, the threat model, retention, audit).

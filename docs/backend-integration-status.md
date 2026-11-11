@@ -1,15 +1,15 @@
 # Backend Integration Status (mock ↔ real)
 
-**Last reconciled against:** feature 010 (M6 run observability) backend, branch `feat/backend-m0-foundation` · **Date:** 2026-11-07
-(history: 006 M4-remainder → 007 trust boundary → 008 RBAC enforcement → 009 spend cap → 010 observability)
-**Total `@backend` seams** (`grep -rn "@backend" frontend/src | wc -l`): **253**
+**Last reconciled against:** feature 014 (M5 provider-key custody) backend, branch `feat/backend-m0-foundation` · **Date:** 2026-11-11
+(history: 006 M4-remainder → 007 trust boundary → 008 RBAC enforcement → 009 spend cap → 010 observability → 012 IdP authN → 013 access policy → 014 provider-key custody)
+**Total `@backend` seams** (`grep -rn "@backend" frontend/src | wc -l`): **257**
 
 This tracker records the honest state of the mock→real migration on **two independent axes**:
 
 - **Backend endpoint** — does a real, tested API endpoint exist? (BUILT / DEFERRED)
 - **Frontend wired** — has the console hook been swapped from the mock store to that endpoint? (MOCK / REAL)
 
-> ⚠️ **Current frontend-wired state: 0 / 253 seams are REAL.** The backend endpoints below are built and tested,
+> ⚠️ **Current frontend-wired state: 0 / 257 seams are REAL.** The backend endpoints below are built and tested,
 > but the frontend console still calls the in-memory mock store. Wiring requires generating the typed client
 > (`npm run gen:api`) and swapping hooks. The OpenAPI 3.1 contract is emitted to `frontend/openapi.json` and the
 > `gen:api` script + `openapi-typescript` devDep are wired, so the wiring is a mechanical step.
@@ -18,13 +18,13 @@ This tracker records the honest state of the mock→real migration on **two inde
 > **Toolchain (updated 2026-11-07):** Node/npm **is** available via `nvm use 24` (Node v24.19.0 / npm 11.17.0);
 > `node_modules` is installed (`next@16.3.8`). `npm run lint` and `npm run build` pass clean today (the earlier
 > "Node unavailable" note was wrong — nvm just wasn't loaded in the non-interactive shell). So FE wiring is
-> **no longer blocked** — it is simply **not yet done** (0/253). The 009 FE contract-sync edits (`WorkspaceSpend`
+> **no longer blocked** — it is simply **not yet done** (0/257). The 009 FE contract-sync edits (`WorkspaceSpend`
 > type + `useWorkspaceSpend()` seam) are now **build-verified**.
 >
 > **Phase 5 contract proof — agents family (feature 011, 2026-11-07):** the typed client (`gen:api` →
 > `src/lib/api/schema.ts`), the mock→dev-auth bridge + fetch client (`client.ts`), and the AgentOut↔Agent
 > adapters (`adapters.ts`) are **built + proven end-to-end** against the real backend (list→create→list round
-> trip via the actual client code, tenant-scoped). **FE-wired count stays 0/253** — the in-browser agents view
+> trip via the actual client code, tenant-scoped). **FE-wired count stays 0/257** — the in-browser agents view
 > is **not** swapped yet: it is gated on **finding F-D** (the console workspace registry uses slug ids while the
 > backend scopes by UUID — the switcher must be backed by the real API first). See
 > `specs/011-fe-contract-proof/findings.md` (F-A thin AgentOut projection, F-B io_contract, F-C provider casing,
@@ -49,7 +49,7 @@ This tracker records the honest state of the mock→real migration on **two inde
 | **metrics** (dashboard) | ✅ BUILT (006/US5) | ⬜ MOCK | `GET /api/v1/metrics/{dashboard,runs,evals}` |
 | **spend cap** (durable monthly) | ✅ BUILT (009/M6) | ⬜ MOCK | `GET /api/v1/workspace/spend` (MTD vs cap); enforced on invoke + eval-runs — `402 budget.exceeded` over cap, durable (Postgres ledger, F7) |
 | **run observability** (correlation + metrics) | ✅ BUILT (010/M6) | ⬜ n/a (ops) | inbound `traceparent`/`X-Correlation-Id` honored → run `correlation_id` + echoed header (F13); `GET /metrics` Prometheus `ac_runs_total{status,source}` + `ac_requests_refused_total{code}` (F12, unauthenticated ops endpoint). Langfuse/ClickHouse deferred |
-| **provider keys** | 🟡 DEFERRED (M5) | ⬜ MOCK | secret custody (Vault) deferred — no endpoint built |
+| **provider keys** | ✅ BUILT (014/M5) | ⬜ MOCK | `/api/v1/provider-keys` capture (write-once) · list (masked-only) · `:id/rotate` · `:id/revoke` (tombstone); `key.manage` (admin) + RLS, no per-resource policy. Raw secret custodied in a **pluggable secrets backend** (`api/secrets/`: `local` for tests, `aws` AWS Secrets Manager / LocalStack) — **reverses the Vault-Transit design** (see `docs/scope.md` 2026-11-11). Resolve-at-invoke replaces the `PROVIDER_API_KEY` env var; fail-closed `config_error`. `services/runtime/` stays boto3-free (P6) |
 | **runtime tokens** (mint) | 🟡 DEFERRED (M5) | ⬜ MOCK | token plane deferred |
 | **tool approvals** | 🟡 DEFERRED (M5/P2) | ⬜ MOCK | approval workflow deferred |
 | **RBAC enforcement** (4-role) | ✅ BUILT (008/M5) | ⬜ MOCK | `require_permission` on all 47 workspace routes; deny-by-default (coverage test); fail-closed unknown role; 403-before-404; composes with membership + RLS |
@@ -61,9 +61,9 @@ This tracker records the honest state of the mock→real migration on **two inde
 
 ## Totals
 
-- **Backend endpoints/controls BUILT:** agents, invoke (SSE), eval, publish (advisory), tools, mcp, skills, KB, workspace settings, members (+ teams), runs, metrics (+ honest-deferred ingestion stub); **RBAC enforcement (008)**; **durable monthly spend cap + `GET /workspace/spend` (009)**; **correlation ingestion + `GET /metrics` (010)**; **pluggable IdP bearer authN + membership-sourced authZ (012)**; **per-resource access-policy enforcement (013)**. Cross-cutting on every paid/resource path: tenancy/RLS, RBAC role-gate, per-resource access policy, spend cap, correlation.
-- **Backend DEFERRED:** console user-login (auth-code/OIDC) + IdP group→member/team sync, token mint + deny-set, provider-key Vault custody, tool approvals, Redis spend-reservation, heavy observability (Langfuse/ClickHouse) — M5/M6-remainder; channels + workspace-root — P2.
-- **Frontend seams wired to real API:** **0 / 253** (pending Node toolchain for client-gen + hook swap).
+- **Backend endpoints/controls BUILT:** agents, invoke (SSE), eval, publish (advisory), tools, mcp, skills, KB, workspace settings, members (+ teams), runs, metrics (+ honest-deferred ingestion stub); **RBAC enforcement (008)**; **durable monthly spend cap + `GET /workspace/spend` (009)**; **correlation ingestion + `GET /metrics` (010)**; **pluggable IdP bearer authN + membership-sourced authZ (012)**; **per-resource access-policy enforcement (013)**; **provider-key custody via a pluggable secrets backend + resolve-at-invoke (014)**. Cross-cutting on every paid/resource path: tenancy/RLS, RBAC role-gate, per-resource access policy, spend cap, correlation.
+- **Backend DEFERRED:** console user-login (auth-code/OIDC) + IdP group→member/team sync, token mint + deny-set, tool approvals, Redis spend-reservation, heavy observability (Langfuse/ClickHouse) — M5/M6-remainder; channels + workspace-root — P2. *(Provider-key custody is now BUILT — see the provider-keys row; MCP/tool/data-source/channel credential storage remains designed-but-not-built behind the same secrets seam.)*
+- **Frontend seams wired to real API:** **0 / 257** (pending Node toolchain for client-gen + hook swap).
 
 ## How to complete the frontend wiring (in a Node environment)
 

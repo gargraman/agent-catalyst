@@ -9,7 +9,10 @@ import pathlib
 import re
 
 _RUNTIME = pathlib.Path(__file__).resolve().parents[1] / "runtime"
-_FORBIDDEN = re.compile(r"^\s*(?:import|from)\s+(fastapi|starlette|sqlalchemy|api)\b", re.MULTILINE)
+# feature 014: also ban the cloud SDK — the secrets backend (boto3) lives in api/, never runtime/. The resolved
+# plaintext reaches the runtime ONLY as the RunContext.api_key string (P6 purity, FR-015). `api` already covers
+# `api.secrets`.
+_FORBIDDEN = re.compile(r"^\s*(?:import|from)\s+(fastapi|starlette|sqlalchemy|api|boto3|botocore)\b", re.MULTILINE)
 
 
 def test_runtime_has_no_web_or_db_imports():

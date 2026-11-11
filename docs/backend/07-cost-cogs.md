@@ -255,7 +255,7 @@ install (one org, ~40 agents), to be replaced with real quotes:
 | Langfuse v3 (traces) | trace volume × retention | grows with run volume; cap via retention TTL (09 §11) |
 | ClickHouse (Langfuse v3 trace backend; P2 `analytics` rollups) | trace columns + P2 rollup tables | scales with trace volume; net-new with v3 (`11 §1`); shares one cluster until a `CLICKHOUSE_URL` split |
 | Redis | cache + queue + budget counters | small |
-| Vault | secrets | small |
+| AWS Secrets Manager (managed; LocalStack in dev — feature 014, replaces self-hosted Vault) | secrets | usage-based, small |
 | MinIO | uploaded docs | small, storage-bound |
 | `api` + `worker` compute | request + eval/ingest concurrency | scales with load (00 §2, 11 §7) |
 
@@ -266,9 +266,10 @@ install (one org, ~40 agents), to be replaced with real quotes:
 > separate capex/opex line that **must be sized against real quotes before the full build** — it is an
 > input to the build-vs-buy case, not an afterthought.
 
-**Ops burden is part of the cost.** Seven stateful services (Postgres, Redis, Vault, Langfuse, MinIO,
-**ClickHouse** — net-new with Langfuse v3, `11 §1` — + the worker fleet) need an owning team, backups, and
-the Vault-custody drill (11 §10). That staffing is a real COGS line the "lean, OSS, no per-call SaaS" framing
-must not hide.
+**Ops burden is part of the cost.** Six self-hosted stateful services (Postgres, Redis, Langfuse, MinIO,
+**ClickHouse** — net-new with Langfuse v3, `11 §1` — + the worker fleet) **plus managed AWS Secrets Manager**
+(feature 014 — moves custody off a self-hosted Vault you'd otherwise run and drill) need an owning team,
+backups, and a secret-backup / KMS-key drill (11 §10). That staffing is a real COGS line the "lean, OSS, no
+per-call SaaS" framing must not hide.
 
 → Next: `08-api-surface.md`.

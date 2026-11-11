@@ -335,7 +335,7 @@ endpoint. ✅ = contract-faithful, ⚠️ = mock-only / divergent (the server do
 | `addSuite`/`upsertCase`/… / `setEvalPolicy` / `reFreezeBaseline` | eval-suite + `/eval-policy` + `/baseline` | ✅ `eval.author`/`eval.govern` (§2) |
 | `addRun` | — | ⚠️ **mock-only**; real runs are server-recorded by `runtime.invoke` (no create endpoint) |
 | `setAccessPolicy` | `PUT /{…}/:id/access-policy` | ✅ unified `AccessPolicy` (01 LLD §3), admin |
-| `addToken`/`revokeToken`; `addProviderKey`/`rotate`/`revoke` | `/tokens`, `/provider-keys` | ✅ secret shown once; keys vaulted, masked on read |
+| `addToken`/`revokeToken`; `addProviderKey`/`rotate`/`revoke` | `/tokens`, `/provider-keys` | ✅ secret shown once; keys custodied in the secrets backend (AWS Secrets Manager — feature 014, not Vault), masked on read |
 | `updateWorkspace`/`updateWorkspaceSettings`/`updateLimits`/`setWorkspaceActive` | `PATCH /workspaces/:id`, `/limits`, `/archive` | ✅ admin; `archive` reversible |
 | `addWorkspace` / `deleteWorkspace` | `POST /workspaces` / `DELETE /workspaces/:id` | ⚠️ **mock-only** (net-new, not in base design — workspaces are org-provisioned; base design soft-archives). Already flagged in `08 §2`. |
 | `useMembers` | `GET /members` | ✅ **read-only** claim projection (no roster table) |

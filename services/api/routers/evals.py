@@ -15,7 +15,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from api.access_policy import PolicyPrincipal
 from api.correlation import correlation_id
 from api.deps import (access_principal, enforce_spend_cap, ensure_manage, ensure_use, require_permission,
-                      PROVIDER_API_KEY, rate_limit, resolve_workspace, tenant_db)
+                      rate_limit, resolve_workspace, tenant_db)
+from api.provider_keys import resolve_provider_key
 from api.run_sink import persist_run_record
 from api.errors import NotFound
 from api.models import Agent
@@ -81,8 +82,13 @@ async def create_eval_run(
         efficiency_budget_pct=body.policy.efficiency_budget_pct,
         allow_low_confidence_override=body.policy.allow_low_confidence_override,
     )
+    # feature 014: resolve the workspace's active provider key for the candidate's provider from custody (same
+    # seam as invoke) — fail closed (503 config_error) before any provider/judge call if none resolves.
+    provider = (candidate_snapshot.model_config or {}).get("provider", "")
+    api_key = await resolve_provider_key(session, ws, provider)
+
     runs: list = []
-    ctx = RunContext(workspace_id=ws, source="eval", api_key=PROVIDER_API_KEY,
+    ctx = RunContext(workspace_id=ws, source="eval", api_key=api_key,
                      record_run=runs.append, correlation_id=corr, deadline_s=30.0)
 
     result = await run_eval(cases, candidate_snapshot, baseline, policy, ctx, workspace_id=ws)

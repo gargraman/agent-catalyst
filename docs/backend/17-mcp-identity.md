@@ -1,5 +1,7 @@
 # 17 — Per-User MCP Identity (delegated connected accounts)
 
+> **⚠️ Secret custody — as built (feature 014, 2026-11-11):** provider-key custody now runs through a pluggable secrets backend (**AWS Secrets Manager** / LocalStack / `local`), **not** HashiCorp Vault Transit. The per-workspace-&-per-user-DEK Vault material in this doc is the **superseded design baseline** for the still-unbuilt per-user-MCP credential family (P2+) — it will be re-reconciled to the new backend when built. See `docs/scope.md` (2026-11-11) and `backend/09 §9`.
+
 > **Status: PROPOSED extension (P2+).** A delta on `09-security-tenancy.md`, `12-channels.md`, and
 > `14-adoption-enforcement.md §5`. Not yet locked into the schema (`01`) or the frozen API surface (`08`).
 > Companion diagram: `docs/diagrams/backend-design/mcp-per-user-connect.html`.

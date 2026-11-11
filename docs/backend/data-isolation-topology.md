@@ -107,13 +107,14 @@ Key constraints:
 ## 3. Infrastructure — what is shared
 
 Every backing service is a **single shared instance**; tenant isolation is logical (RLS + per-workspace
-Vault DEKs), never a separate stack per tenant (`11-deployment.md:63-75`).
+secret namespacing in the secrets backend — AWS Secrets Manager, feature 014, not Vault DEKs; `09 §9`),
+never a separate stack per tenant (`11-deployment.md:63-75`).
 
 | Component | Shared? | Per-tenant mechanism |
 |---|---|---|
 | Postgres + pgvector | shared single DB | `workspace_id` + RLS; vectors namespaced `(ws, kb)` |
 | Redis | shared | logical keys: queue, semaphores, cache, budget counters |
-| Vault | shared (HA 3-raft) | **per-workspace DEK**, envelope encryption, decrypt per-invoke into memory only |
+| Secrets backend (AWS Secrets Manager / LocalStack — feature 014, **not** Vault; `09 §9`) | shared | per-workspace secret names + RLS on `provider_keys`; raw resolved per-invoke into memory only |
 | Langfuse / ClickHouse | shared | rows carry `workspace_id`; ClickHouse derived, **no RLS** |
 | MinIO | shared | objects keyed from tenant-scoped rows |
 | `api` (FastAPI) | shared, stateless, HPA | tenancy guard in request layer; no tenant state in memory (`11-deployment.md:443`) |
@@ -122,9 +123,10 @@ Vault DEKs), never a separate stack per tenant (`11-deployment.md:63-75`).
 
 Deployable units are only `api`, `worker`, `web`, and (P2) `sandbox` (`00-overview.md:36-45`).
 
-Secrets: provider/tool/source keys are envelope-encrypted with per-workspace DEKs in Vault; credentials
-decrypt **per-invoke into memory only**, never baked into images; services auth via **AppRole**
-(`11-deployment.md:319-321,493-495`).
+Secrets: provider keys are custodied in a pluggable secrets backend (**AWS Secrets Manager** / LocalStack —
+feature 014, reverses the Vault/DEK scheme; `09 §9`); credentials resolve **per-invoke into memory only**,
+never baked into images; prod auth via an **IAM role** on the task/pod (no static creds). Tool/source/channel
+creds are designed for the same seam but not yet built.
 
 Compute sharing: queues split by job class so a 120-case eval can't starve ingestion
 (`11-deployment.md:85-87`); the **per-workspace monthly budget cap (→ HTTP 402)** is the primary tenant

@@ -13,7 +13,7 @@ from sqlalchemy import text
 from api import db, metrics
 from api.errors import AppError, app_error_handler
 from api.routers import (
-    agents, evals, invoke, knowledge, members, runs, skills, tools, workspaces,
+    agents, evals, invoke, knowledge, members, provider_keys, runs, skills, tools, workspaces,
 )
 
 
@@ -31,6 +31,7 @@ def create_app() -> FastAPI:
     app.include_router(knowledge.router)
     app.include_router(workspaces.router)
     app.include_router(members.router)
+    app.include_router(provider_keys.router)
     app.include_router(runs.router)
 
     @app.get("/healthz", tags=["meta"])

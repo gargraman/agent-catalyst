@@ -15,8 +15,8 @@ import httpx
 from api.db import tenant_session
 from api.main import app
 from api.models import (
-    Agent, AgentVersion, KnowledgeBase, Member, McpServer, McpTool, RetrievalBinding, Run, Skill,
-    SkillBinding, Tool, ToolBinding, Workspace, WorkspaceSettings,
+    Agent, AgentVersion, KnowledgeBase, Member, McpServer, McpTool, ProviderKey, RetrievalBinding, Run,
+    Skill, SkillBinding, Tool, ToolBinding, Workspace, WorkspaceSettings,
 )
 from tests._invoke_helpers import PROFILE_SNAPSHOT
 
@@ -144,6 +144,19 @@ async def seed_run(workspace_id: str, source: str = "playground", outcome: str =
         s.add(r)
         await s.flush()
         return str(r.id)
+
+
+async def seed_provider_key(workspace_id: str, provider: str = "openai", label: str = "default",
+                            masked: str = "sk-pro••••••••WXYZ", vault_path: str = "local://seed/none/0",
+                            status: str = "active", region: str | None = None) -> str:
+    """Seed a provider_keys row directly (via tenant_session so RLS applies). `vault_path` is a stub ref —
+    resolve tests that need a real plaintext use the custody capture path or the local provider."""
+    async with tenant_session(workspace_id) as s:
+        k = ProviderKey(workspace_id=uuid.UUID(workspace_id), provider=provider, label=label,
+                        masked=masked, vault_path=vault_path, status=status, region=region)
+        s.add(k)
+        await s.flush()
+        return str(k.id)
 
 
 async def seed_limits(workspace_id: str, monthly_spend_usd) -> None:

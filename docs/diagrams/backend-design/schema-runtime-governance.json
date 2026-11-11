@@ -1330,7 +1330,7 @@
       "items": [
         "tool_bindings freeze schema_snapshot + config_snapshot per version — changing a server's tools can't alter a published agent (drift trigger)",
         "tool_approvals gate high-risk tool calls: run parks via interrupt, publisher+ decides, 409 tool.approval.denied on deny",
-        "provider_keys hold only {masked, vault_path} — platform-custodied pool; the secret never lands in Postgres",
+        "provider_keys hold only {masked, vault_path} — raw secret custodied in the secrets backend (AWS Secrets Manager, feature 014; vault_path is the opaque ARN/handle); the secret never lands in Postgres",
         "agent_signatures (pgvector vector(1024)) powers registration-time dedup / reuse-first"
       ]
     },
@@ -1338,7 +1338,7 @@
       "dot": "slate",
       "title": "Source & scope",
       "items": [
-        "docs/backend/01-data-model.md §4 (DDL) · 09 (tokens, Vault, audit) · 10 (runs/spans) · 14 (adoption) · 16 (notifications)",
+        "docs/backend/01-data-model.md §4 (DDL) · 09 (tokens, secret custody, audit) · 10 (runs/spans) · 14 (adoption) · 16 (notifications)",
         "Part 2 of 2 — anchors agents/agent_versions shown compact; full columns in Part 1 (schema-core-authoring)",
         "Members view is a read-only projection of per-workspace IdP role claims (ap-<prefix>-<role>); no roster table"
       ]

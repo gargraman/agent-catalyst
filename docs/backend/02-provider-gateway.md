@@ -30,7 +30,9 @@
 >   scrubbed); a stream that ends with no `USAGE` → degraded `ERROR` (never silent success). Retry/
 >   fallback/circuit-breaking (§1) are **not yet built** — deferred (fallback model is a frontend-modelled
 >   field; circuit breaker is M3/M6, F8).
-> - Real Vault key custody is **P1**; the M1 gateway takes `api_key` from config/env.
+> - Real key custody is now **BUILT** (feature 014) via a pluggable secrets backend (AWS Secrets Manager /
+>   LocalStack / `local` — **not** Vault; `scope.md` 2026-11-11, `09 §9`): the API resolves `api_key` at invoke
+>   and passes the plaintext string in. The gateway itself still just **receives** `api_key` (no custody logic here).
 
 ## 1. What the gateway owns (and what it refuses to trust)
 

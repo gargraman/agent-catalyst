@@ -15,8 +15,9 @@ docs/backend/ → modules, interfaces, DDL, schemas, cost, guardrails        (th
 ```
 
 Read `scope.md` → `spec.md` → this folder. Nothing here contradicts the locked stack
-(FastAPI + LangGraph + LiteLLM + Postgres/pgvector + Redis + Vault + Langfuse + MinIO, portable
-containers); where it **extends or pushes back**, the delta is argued inline (see `00 §7`).
+(FastAPI + LangGraph + LiteLLM + Postgres/pgvector + Redis + AWS Secrets Manager/LocalStack + Langfuse + MinIO, portable
+containers; secret custody moved from Vault to a pluggable backend — feature 014, `scope.md` 2026-11-11); where it
+**extends or pushes back**, the delta is argued inline (see `00 §7`).
 
 ## Reading order
 
@@ -33,7 +34,7 @@ containers); where it **extends or pushes back**, the delta is argued inline (se
 | 06 | [06-guardrails.md](06-guardrails.md) | **Emphasis** — stage interface, concrete stages, cheap-first ordering, streaming redaction, fail-open vs fail-closed |
 | 07 | [07-cost-cogs.md](07-cost-cogs.md) | **Emphasis** — the cost model, levers ranked by impact, tiering/caching/budgets, worked example |
 | 08 | [08-api-surface.md](08-api-surface.md) | REST + SSE endpoints, Pydantic mapped to `frontend/data.ts`, OpenAPI → cURL/TS/Python export |
-| 09 | [09-security-tenancy.md](09-security-tenancy.md) | OIDC/token auth, RBAC + access policies, RLS + Vault envelope encryption, threat model, PII/retention |
+| 09 | [09-security-tenancy.md](09-security-tenancy.md) | OIDC/token auth, RBAC + access policies, RLS + secret custody (pluggable backend / AWS Secrets Manager — feature 014, supersedes Vault envelope), threat model, PII/retention |
 | 10 | [10-observability-monitoring.md](10-observability-monitoring.md) | Per-call log contract, Langfuse, metrics/SLOs/alerts, cost + drift monitoring, async job status |
 | 11 | [11-deployment.md](11-deployment.md) | Containers, compose→k8s, CI/CD + eval gate, secrets, scaling, zero-downtime, backup/DR |
 | 12 | [12-channels.md](12-channels.md) | **(P2)** Messaging channels (Slack/Teams/Google Chat) — inbound adapter, Okta federation, channel DDL, a fourth `invoke()` caller |

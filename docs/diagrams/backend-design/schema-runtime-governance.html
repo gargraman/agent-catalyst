@@ -7139,7 +7139,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
         <ul>
           <li>tool_bindings freeze schema_snapshot + config_snapshot per version — changing a server&#39;s tools can&#39;t alter a published agent (drift trigger)</li>
           <li>tool_approvals gate high-risk tool calls: run parks via interrupt, publisher+ decides, 409 tool.approval.denied on deny</li>
-          <li>provider_keys hold only {masked, vault_path} — platform-custodied pool; the secret never lands in Postgres</li>
+          <li>provider_keys hold only {masked, vault_path} — raw secret custodied in the secrets backend (AWS Secrets Manager, feature 014; vault_path is the opaque ARN/handle); the secret never lands in Postgres</li>
           <li>agent_signatures (pgvector vector(1024)) powers registration-time dedup / reuse-first</li>
         </ul>
       </div>
@@ -7150,7 +7150,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           <h3>Source &amp; scope</h3>
         </div>
         <ul>
-          <li>docs/backend/01-data-model.md §4 (DDL) · 09 (tokens, Vault, audit) · 10 (runs/spans) · 14 (adoption) · 16 (notifications)</li>
+          <li>docs/backend/01-data-model.md §4 (DDL) · 09 (tokens, secret custody, audit) · 10 (runs/spans) · 14 (adoption) · 16 (notifications)</li>
           <li>Part 2 of 2 — anchors agents/agent_versions shown compact; full columns in Part 1 (schema-core-authoring)</li>
           <li>Members view is a read-only projection of per-workspace IdP role claims (ap-&lt;prefix&gt;-&lt;role&gt;); no roster table</li>
         </ul>

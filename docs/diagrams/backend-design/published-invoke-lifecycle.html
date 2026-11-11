@@ -5152,7 +5152,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
         <div class="pulse-dot"></div>
         <h1>Published Invoke — the production request lifecycle</h1>
       </div>
-      <p class="subtitle">POST /v1/agents/:id/invoke: token auth → tenant pin (RLS) → spend + Vault key → runtime.invoke → Run record</p>
+      <p class="subtitle">POST /v1/agents/:id/invoke: token auth → tenant pin (RLS) → spend + resolve provider key (secrets backend) → runtime.invoke → Run record</p>
     </div>
 
 
@@ -5162,7 +5162,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
          data-preset-badge-editorial-plate="ARCHIFY / PLATE 04">
       <svg viewBox="0 0 920 746" data-sequence-column-fit="spread" data-reader-fit="width-first" role="img" lang="en" aria-labelledby="archify-diagram-title archify-diagram-description" data-animation="trace" data-preset="classic" data-quality-profile="showcase" data-motion-choreography="sequence">
         <title id="archify-diagram-title">Published Invoke — the production request lifecycle</title>
-        <desc id="archify-diagram-description">POST /v1/agents/:id/invoke: token auth → tenant pin (RLS) → spend + Vault key → runtime.invoke → Run record</desc>
+        <desc id="archify-diagram-description">POST /v1/agents/:id/invoke: token auth → tenant pin (RLS) → spend + resolve provider key (secrets backend) → runtime.invoke → Run record</desc>
         <!-- Definitions -->
         <defs>
           <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
@@ -5261,11 +5261,11 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
         </g>
         </g>
 
-        <g data-edge-from="api" data-edge-to="vault" data-edge-label="decrypt provider key (JIT)" data-edge-key="6" data-edge-id="decrypt">
+        <g data-edge-from="api" data-edge-to="vault" data-edge-label="resolve provider key (JIT)" data-edge-key="6" data-edge-id="decrypt">
           <path data-composition-edge-from="api" data-composition-edge-to="vault" data-composition-edge-id="decrypt" data-composition-points="265.3,404;534.9000000000001,404" d="M 265.3 404 L 534.9000000000001 404" class="a-security" data-animate="edge" style="--step:6" stroke-width="1.4" marker-end="url(#arrowhead-security)"/>
         <g data-detail="context">
           <rect x="308.3" y="384" width="183.6" height="18" rx="3" class="c-mask"/>
-          <text x="400.1" y="394" class="t-edge-security" font-size="11" text-anchor="middle">decrypt provider key (JIT)</text>
+          <text x="400.1" y="394" class="t-edge-security" font-size="11" text-anchor="middle">resolve provider key (JIT)</text>
         </g>
         <text data-detail="context" x="277.3" y="422" class="t-muted" font-size="7"><tspan x="277.3" dy="0">canUse first: config ∩</tspan><tspan x="277.3" dy="11">grants ∩ tenant ∩ policy</tspan></text>
         </g>
@@ -5364,16 +5364,16 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           <text data-detail="context" x="400.1" y="122" class="t-muted" font-size="7" text-anchor="middle">rate-limit · spend</text>
         </g>
 
-        <g id="node-vault" data-node-id="vault" data-node-label="Vault" tabindex="0" role="button" aria-label="Focus Vault, Transit decrypt, Sequence participant" aria-pressed="false" data-node-kind="security" data-node-sublabel="Transit decrypt" data-node-context="Sequence participant">
-          <title>Vault · Transit decrypt · Sequence participant</title>
+        <g id="node-vault" data-node-id="vault" data-node-label="Secrets backend" tabindex="0" role="button" aria-label="Focus Secrets backend, AWS Secrets Mgr · resolve, Sequence participant" aria-pressed="false" data-node-kind="security" data-node-sublabel="AWS Secrets Mgr · resolve" data-node-context="Sequence participant">
+          <title>Secrets backend · AWS Secrets Mgr · resolve · Sequence participant</title>
           <rect x="487.4000000000001" y="72" width="109" height="60" rx="6" class="c-mask"/>
           <rect x="487.4000000000001" y="72" width="109" height="60" rx="6" class="c-security" data-animate="node" style="--step:3" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="security" class="semantic-sigil s-security" transform="translate(493.4000000000001 78) scale(0.6875)">
             <path d="M8 2.2 13 4v3.5c0 3.1-1.8 5.4-5 6.5-3.2-1.1-5-3.4-5-6.5V4Z"/>
             <path d="m5.8 8 1.5 1.5 3-3"/>
           </g>
-          <text data-node-label="" data-detail-anchor="" x="541.9000000000001" y="108" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Vault</text>
-          <text data-detail="context" x="541.9000000000001" y="122" class="t-muted" font-size="7" text-anchor="middle">Transit decrypt</text>
+          <text data-node-label="" data-detail-anchor="" x="541.9000000000001" y="108" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Secrets backend</text>
+          <text data-detail="context" x="541.9000000000001" y="122" class="t-muted" font-size="6.7" text-anchor="middle">AWS Secrets Mgr · resolve</text>
         </g>
 
         <g id="node-runtime" data-node-id="runtime" data-node-label="runtime.invoke" tabindex="0" role="button" aria-label="Focus runtime.invoke, shared core, Sequence participant" aria-pressed="false" data-node-kind="backend" data-node-sublabel="shared core" data-node-context="Sequence participant">
@@ -5643,7 +5643,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
         </div>
         <ul>
           <li>runtime.invoke(run_source=api) is the SAME code playground + eval run — the drift guarantee holds in prod</li>
-          <li>Provider key is Vault-decrypted just-in-time into memory and discarded after the call</li>
+          <li>Provider key is resolved from the secrets backend (AWS Secrets Manager; feature 014, not Vault) just-in-time into memory and discarded after the call</li>
           <li>The Run is tagged caller_token_id + workspace_id so cost attributes to the endpoint; events re-encode 1:1 to SSE</li>
         </ul>
       </div>
@@ -5654,7 +5654,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           <h3>Source</h3>
         </div>
         <ul>
-          <li>docs/backend/00-overview §5B · 09-security-tenancy (tokens, Vault, RLS, access) · 08-api-surface (invoke) · 02 (gateway)</li>
+          <li>docs/backend/00-overview §5B · 09-security-tenancy (tokens, secret custody, RLS, access) · 08-api-surface (invoke) · 02 (gateway)</li>
           <li>services/api/publish/endpoint.py · services/runtime/invoke.py · tables api_tokens · published_endpoints · runs</li>
         </ul>
       </div>

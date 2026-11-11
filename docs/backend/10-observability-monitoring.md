@@ -134,7 +134,7 @@ flowchart LR
 ```python
 # services/runtime/obs.py (cont.)
 from langfuse import Langfuse
-_lf = Langfuse(host=settings.langfuse_host, ...)   # keys via Vault/env (09)
+_lf = Langfuse(host=settings.langfuse_host, ...)   # keys via the secrets backend/env (09 §9 — AWS Secrets Manager, not Vault)
 
 def _emit_langfuse(ctx: "RunContext", rec: SpanRecord):
     gen = _lf.generation(
@@ -203,9 +203,9 @@ SBX_FAIL = Counter("ac_sandbox_exec_failures_total", "sandbox MCP/tool-exec fail
 
 **Health/readiness probes** (used by k8s + the reverse proxy, 11):
 - `GET /healthz` — liveness: process up.
-- `GET /readyz` — readiness: Postgres reachable, Redis reachable, Vault token valid (09), migrations at
-  head. The published-invoke path refuses traffic until `readyz` is green so no request runs against a
-  half-initialized Vault (secret-injection would fail mid-run).
+- `GET /readyz` — readiness: Postgres reachable, Redis reachable, secrets backend reachable (feature 014 — AWS Secrets Manager / LocalStack, not Vault; 09 §9), migrations at
+  head. The published-invoke path refuses traffic until `readyz` is green so no request runs against an
+  unreachable secrets backend (key resolution would fail mid-run).
 
 ## 5. SLOs & alerting
 

@@ -33,6 +33,7 @@ class Base(DeclarativeBase):
 _AGENT_STATUS = Enum("draft", "published", "archived", "eval_failing", name="agent_status", create_type=False)
 _TOOL_KIND = Enum("http", "builtin", "subagent", "mcp", name="tool_kind", create_type=False)
 _TOOL_RISK_TIER = Enum("read", "write", "destructive", name="tool_risk_tier", create_type=False)
+_PROVIDER_KEY_STATUS = Enum("active", "expiring", "revoked", name="provider_key_status", create_type=False)  # 0007
 
 
 def _opt_str(x) -> str | None:
@@ -289,6 +290,26 @@ class Member(Base, WorkspaceScoped):
     console_role: Mapped[str] = mapped_column(Text, default="viewer")
     teams: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list)  # feature 013: server-owned team membership (authZ)
     created_at: Mapped[datetime.datetime] = mapped_column(server_default=func.now())
+
+
+class ProviderKey(Base, WorkspaceScoped):
+    """Workspace-scoped provider credential custody record (feature 014; data.ts ProviderKey).
+
+    Holds NO raw secret — only a server-computed `masked` display value, an OPAQUE `vault_path`
+    backend reference (an AWS Secrets Manager ARN for `aws`; a `local://…` handle for `local`), and
+    metadata. The plaintext lives only in the pluggable secrets backend (api/secrets/). Resolved
+    just-in-time at invoke/eval and passed as `RunContext.api_key` (P6: runtime never sees this row).
+    """
+    __tablename__ = "provider_keys"
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, server_default=func.gen_random_uuid())
+    provider: Mapped[str] = mapped_column(Text)            # matches the agent's provider for resolution
+    label: Mapped[str] = mapped_column(Text)               # UNIQUE(workspace_id, label)
+    masked: Mapped[str] = mapped_column(Text)              # server-computed head/tail; never the raw secret
+    vault_path: Mapped[str] = mapped_column(Text)          # OPAQUE backend ref; never returned to a client
+    region: Mapped[str | None] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(_PROVIDER_KEY_STATUS, default="active")
+    created_at: Mapped[datetime.datetime] = mapped_column(server_default=func.now())
+    rotated_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class Run(Base, WorkspaceScoped):
