@@ -46,6 +46,14 @@ class AccessDenied(AppError):
     http_status, code = 403, "access.denied"
 
 
+class CsrfInvalid(AppError):
+    """Double-submit CSRF check failed (feature 019): a cookie-authenticated state-changing request arrived
+    without a `csrf` cookie matching its `X-CSRF-Token` header. 403 — a distinct code from `access.denied` so
+    the UI can prompt a refresh rather than treat it as an authz denial. Raised/returned by the CSRF middleware
+    (outside the AppError exception handler), so the middleware builds the envelope from this class directly."""
+    http_status, code = 403, "csrf.invalid"
+
+
 class NotFound(AppError):
     http_status, code = 404, "not_found"
 

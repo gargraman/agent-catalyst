@@ -11,9 +11,10 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
 from api import db, metrics
+from api.csrf import CSRFMiddleware
 from api.errors import AppError, app_error_handler
 from api.routers import (
-    agents, evals, invoke, knowledge, members, provider_keys, runs, skills, tokens, tools, workspaces,
+    agents, auth, evals, invoke, knowledge, members, provider_keys, runs, skills, tokens, tools, workspaces,
 )
 
 
@@ -23,6 +24,11 @@ def create_app() -> FastAPI:
     # so one registration covers every AppError leaf (InputInvalid, AccessDenied, ConflictStale, …).
     app.add_exception_handler(AppError, app_error_handler)
 
+    # Feature 019: double-submit CSRF over cookie-authenticated state changes (one choke point, D5 exemptions).
+    # Added last → runs OUTERMOST, so a bad state-changing request is refused before any routing/auth work.
+    app.add_middleware(CSRFMiddleware)
+
+    app.include_router(auth.router)               # feature 019: /auth/login, /auth/callback, /auth/logout
     app.include_router(agents.router)
     app.include_router(invoke.router)
     app.include_router(invoke.published_router)   # feature 018: published caller-token invoke plane (/v1)

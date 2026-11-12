@@ -55,17 +55,23 @@ class Principal:
 
 
 async def session_principal(request: Request) -> Principal:
-    """Authenticate the caller via the ACTIVE IdP provider (feature 012). The provider is selected by config
-    (`AC_AUTH_PROVIDER`): `trellix-iam` verifies a real bearer JWT; `dev` trusts the `X-Dev-Principal` header
-    (test/dev only, disabled under `AC_ENV=prod`). Any auth failure → 401 (fail-closed, FR-010). The provider
-    import is lazy to avoid an import cycle (deps ← auth providers)."""
-    from api.auth import denyset
+    """Authenticate the caller. **Cookie-first (feature 019, D2):** a valid signed session cookie resolves the
+    `Principal` from its claims; otherwise fall back to the ACTIVE IdP provider (feature 012, selected by
+    `AC_AUTH_PROVIDER`): `trellix-iam` verifies a real bearer JWT; `dev` trusts the `X-Dev-Principal` header
+    (test/dev only, disabled under `AC_ENV=prod`). The cookie branch keeps browsers on the session path while the
+    whole existing bearer/dev-header suite stays green. Any auth failure → 401 (fail-closed, FR-010). Imports are
+    lazy to avoid an import cycle (deps ← auth providers / session codec)."""
+    from api.auth import denyset, session as session_codec
     from api.auth.base import AuthError
     from api.auth.registry import get_active_provider
     from api.settings import get_settings
 
-    provider = get_active_provider(get_settings())
-    principal = await provider.verify(request)
+    claims = session_codec.read_session(request)         # 019: signature + iss/aud/exp verified in the codec
+    if claims is not None:
+        principal = Principal(subject=claims.sub, workspace_claims={}, scopes=(), issuer=claims.iss)
+    else:
+        provider = get_active_provider(get_settings())
+        principal = await provider.verify(request)
     # Immediate revocation (feature 018, FR-013): an admin force-logout adds the subject to the deny-set, so an
     # ACTIVE console session is rejected on its NEXT request — not only on the next IdP login. The deny-set is a
     # SECURITY control: a configured-but-unreachable Redis fails CLOSED (D2/FR-024b), unlike the 016 limiter.

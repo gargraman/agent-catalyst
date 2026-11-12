@@ -51,6 +51,8 @@ protected route, confirm a state-changing request without a CSRF token is reject
   (018) before proceeding.
 - **FR-019**: State-changing console requests require a valid anti-CSRF token (double-submit).
 - **FR-020**: Users can log out, ending the session.
+- **FR-029**: The established session has a bounded lifetime of **≤ 1 hour**; on expiry the user must re-authenticate.
+  (This bound also sets the floor for the 018 deny-set TTL — FR-014 in the umbrella.)
 - **FR-027** (cross-cutting): Enforced server-side; fails closed (deny-set match or Redis down → 401).
 - **FR-028** (cross-cutting): No session secret leaks into logs, traces, or exports.
 

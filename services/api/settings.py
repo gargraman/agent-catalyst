@@ -14,7 +14,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Annotated
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 _DEV_ASYNC = "postgresql+asyncpg://ac:ac_dev_pw@localhost:5433/agent_catalyst"
@@ -148,6 +148,46 @@ class Settings(BaseSettings):
         if not 0 <= v <= 120:                                 # bounded tolerance (FR-003); no unbounded skew
             raise ValueError("AC_IAM_CLOCK_SKEW_S must be between 0 and 120 seconds")
         return v
+
+    # --- Console login + session + CSRF (feature 019) -------------------------------------------
+    # The session is a STATELESS signed cookie (HS256 JWT via pyjwt), not a server-side store (R4 rejects a
+    # store — it widens the Redis SPOF; revocation is the 018 deny-set, already wired into session_principal).
+    # AC_SESSION_SECRET signs/verifies the cookie. Optional at load so the dev/test header path (no cookie) and
+    # the infra-free unit run work unchanged; it is REQUIRED only to mint/read a real session (the codec raises
+    # if a login flow runs without it). Never logged/echoed (FR-028, P5). No insecure baked default under prod.
+    session_secret: str | None = Field(default=None, alias="AC_SESSION_SECRET")
+    # Session lifetime, HARD-CAPPED at 1h (FR-029): a misconfigured larger value is clamped, never honored, so a
+    # session can't outlive the deny-set window. The codec caps again (defense in depth).
+    session_ttl_s: int = Field(default=3600, alias="AC_SESSION_TTL_S")
+    # RESERVED knob for a future OIDC discovery-document fetch. NOT yet consumed: `oidc_login.config_from_settings`
+    # always derives the authorize/token/jwks endpoints from the 012 `iam_issuer`/`iam_jwks_uri` trust config. Set
+    # it now and it has no effect until discovery is implemented. Interactive login is gated on the OIDC CLIENT
+    # fields below (client_id/secret/redirect_uri), not on this — the dev profile leaves those unset (D4).
+    oidc_discovery_url: str | None = Field(default=None, alias="AC_OIDC_DISCOVERY_URL")
+    oidc_client_id: str | None = Field(default=None, alias="AC_OIDC_CLIENT_ID")
+    oidc_client_secret: str | None = Field(default=None, alias="AC_OIDC_CLIENT_SECRET")
+    oidc_redirect_uri: str | None = Field(default=None, alias="AC_OIDC_REDIRECT_URI")
+    # Post-login landing path in the console (relative — never an open redirect).
+    oidc_post_login_path: str = Field(default="/", alias="AC_OIDC_POST_LOGIN_PATH")
+    # Session/CSRF cookie attributes. Secure is ON by default (HTTPS-only); relaxable ONLY under a non-prod
+    # profile for local http dev. HttpOnly (session) + SameSite=Lax are pinned in the codec, not configurable.
+    session_cookie_secure: bool = Field(default=True, alias="AC_SESSION_COOKIE_SECURE")
+
+    @field_validator("session_ttl_s")
+    @classmethod
+    def _session_ttl_capped(cls, v: int) -> int:
+        if v <= 0:
+            raise ValueError("AC_SESSION_TTL_S must be a positive number of seconds")
+        return min(v, 3600)                                   # FR-029: hard cap at 1h (clamp, never reject-to-extend)
+
+    @model_validator(mode="after")
+    def _secure_cookie_required_in_prod(self) -> "Settings":
+        # The "Secure is relaxable ONLY under a non-prod profile" invariant must be ENFORCED, not just documented
+        # (mirrors the dev-auth-provider guard in api.auth.registry). Otherwise AC_SESSION_COOKIE_SECURE=false
+        # under prod would ship session/csrf cookies over plaintext HTTP. Fail closed at load, not deep in a flow.
+        if self.env == "prod" and not self.session_cookie_secure:
+            raise ValueError("AC_SESSION_COOKIE_SECURE cannot be disabled under a production profile (AC_ENV=prod)")
+        return self
 
     @field_validator("database_url", "app_database_url")
     @classmethod
