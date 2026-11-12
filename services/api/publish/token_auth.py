@@ -83,16 +83,21 @@ async def resolve_caller(request, session) -> CallerCtx:
     if revoked:
         raise AuthError("caller token revoked")
 
-    # 4. per-token rate limit (reuses the 016 engine, now keyed per token not per principal)
-    from api import ratelimit  # lazy: avoids importing the redis client at module load
-    window_s, limit = get_settings().rate_limit_for("invoke")
-    decision = await ratelimit.check(f"rl:token:{token_id}", limit, window_s)
-    if not decision.degraded and not decision.allowed:
-        raise RateLimited(f"rate limit exceeded; retry after {decision.retry_after}s",
-                          headers={"Retry-After": str(decision.retry_after),
-                                   "X-RateLimit-Limit": str(limit),
-                                   "X-RateLimit-Remaining": str(decision.remaining),
-                                   "X-RateLimit-Reset": str(decision.reset_epoch)})
+    # 4. per-token rate limit (reuses the 016 engine, now keyed per token not per principal). Honors the same
+    #    `rate_limit_enabled` switch as the console `rate_limit` dep so disabling the limiter disables BOTH
+    #    planes — otherwise a deployment with Redis configured only for the deny-set would silently keep
+    #    rate-limiting published callers after the operator turned the limiter off.
+    settings = get_settings()
+    if settings.rate_limit_enabled:
+        from api import ratelimit  # lazy: avoids importing the redis client at module load
+        window_s, limit = settings.rate_limit_for("invoke")
+        decision = await ratelimit.check(f"rl:token:{token_id}", limit, window_s)
+        if not decision.degraded and not decision.allowed:
+            raise RateLimited(f"rate limit exceeded; retry after {decision.retry_after}s",
+                              headers={"Retry-After": str(decision.retry_after),
+                                       "X-RateLimit-Limit": str(limit),
+                                       "X-RateLimit-Remaining": str(decision.remaining),
+                                       "X-RateLimit-Reset": str(decision.reset_epoch)})
 
     # 5. build the caller context — workspace pinned by the token, teams from scopes (access-policy source)
     scopes = row["scopes"] or {}

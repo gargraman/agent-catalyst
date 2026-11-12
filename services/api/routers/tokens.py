@@ -50,12 +50,18 @@ async def mint_token(agent_id: str, body: TokenMintIn, ws: str = Depends(resolve
     agent = (await session.execute(select(Agent).where(Agent.id == aid))).scalar_one_or_none()
     if agent is None:                                      # RLS-scoped: absent OR cross-tenant → 404 (no leak)
         raise NotFound("agent not found", detail={"agent_id": agent_id})
-    if body.expires_at is not None and body.expires_at <= datetime.datetime.now(datetime.timezone.utc):
-        raise InputInvalid("expires_at must be in the future", detail={"field": "expires_at"})
+    expires_at = body.expires_at
+    if expires_at is not None:
+        # A naive datetime from the client would raise TypeError on the aware comparison below (→ 500).
+        # Normalize to UTC so validation + storage are always tz-aware (the column is timestamptz).
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=datetime.timezone.utc)
+        if expires_at <= datetime.datetime.now(datetime.timezone.utc):
+            raise InputInvalid("expires_at must be in the future", detail={"field": "expires_at"})
     secret = _new_secret()
     tok = ApiToken(workspace_id=uuid.UUID(ws), agent_id=aid, name=body.name,
                    token_hash=hash_secret(secret), prefix=secret[:12],
-                   scopes={"invoke": True, "teams": body.teams or []}, expires_at=body.expires_at)
+                   scopes={"invoke": True, "teams": body.teams or []}, expires_at=expires_at)
     session.add(tok)
     await session.flush()
     # The ONLY response that ever carries the raw secret (FR-010); it is not logged or stored.

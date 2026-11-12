@@ -247,6 +247,57 @@ async def test_inflight_stream_cut_on_revoke(monkeypatch):
         get_settings.cache_clear()
 
 
+# ================================ review-fix regressions (post-018 code review) ====================
+async def test_mint_naive_expires_at_in_past_is_clean_400():
+    """A tz-naive `expires_at` must yield a clean 400 (input.invalid), not a 500 from comparing a naive value
+    to an aware now(). Regression for the mint_token datetime fix."""
+    ws, aid, _ = await _seed()
+    async with client() as c:
+        pub = dev_headers(workspace=ws, subject="pub", claims={ws: "publisher"})
+        past_naive = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=1)).replace(tzinfo=None).isoformat()
+        r = await c.post(f"/api/v1/agents/{aid}/tokens", headers=pub,
+                         json={"name": "naive", "expires_at": past_naive})
+        assert r.status_code == 400, r.text
+        assert r.json()["error"]["code"] == "input.invalid"
+
+
+async def test_published_plane_honors_rate_limit_disabled(monkeypatch):
+    """With AC_RATE_LIMIT_ENABLED=false the published caller plane must NOT consult the limiter (parity with the
+    console `rate_limit` dep). Regression for the resolve_caller rate-limit gate."""
+    from api import ratelimit
+    from api.settings import get_settings
+
+    monkeypatch.setenv("AC_RATE_LIMIT_ENABLED", "false")
+    get_settings.cache_clear()
+    calls = {"n": 0}
+    orig = ratelimit.check
+
+    async def _spy(*a, **k):
+        calls["n"] += 1
+        return await orig(*a, **k)
+
+    monkeypatch.setattr(ratelimit, "check", _spy)
+    _ok_gateway(monkeypatch)
+    ws, aid, _ = await _seed()
+    bearer = mk_bearer("ratedis")
+    await seed_api_token(ws, aid, secret=bearer)
+    try:
+        async with client() as c:
+            r = await c.post(f"/v1/agents/{aid}/invoke", headers=_auth(bearer),
+                             json={"inputs": {"message": "hi"}})
+        assert r.status_code == 200, r.text
+        assert calls["n"] == 0            # limiter not consulted on the published plane when globally disabled
+    finally:
+        get_settings.cache_clear()
+
+
+# NOTE: the caller_db SAVEPOINT fix (a failed last_used_at touch must not poison the request txn) is NOT unit-
+# pinned here. Its genuine failure mode is a server-side abort mid-UPDATE (lock/statement timeout); a bad-bind
+# input errors client-side without poisoning the txn, so it can't reproduce the bug, and forcing a real
+# server-side abort of that benign UPDATE needs invasive session mocking. The fix is behavior-preserving (the
+# 648 regression stays green) and verified by inspection.
+
+
 # ================================ api_tokens RLS (SC-008 family) ==================================
 async def test_api_tokens_rls_cross_tenant_isolated():
     ws_a = await seed_workspace()

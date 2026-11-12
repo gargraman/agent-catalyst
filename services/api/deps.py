@@ -129,8 +129,12 @@ async def caller_db(caller=Depends(require_caller)) -> AsyncIterator[AsyncSessio
     is FastAPI-cached, so the route can also inject `caller` without a second resolution/rate-limit hit."""
     async with tenant_session(caller.workspace_id) as session:
         try:                                               # best-effort telemetry; must never break auth/invoke
-            await session.execute(text("UPDATE api_tokens SET last_used_at=now() WHERE id=:i"),
-                                  {"i": caller.token_id})
+            # SAVEPOINT: a failed touch rolls back ONLY the nested txn, leaving the outer transaction usable —
+            # a bare execute+swallow would poison the whole transaction (Postgres aborts it) and break the
+            # subsequent snapshot load / run persistence on this same session.
+            async with session.begin_nested():
+                await session.execute(text("UPDATE api_tokens SET last_used_at=now() WHERE id=:i"),
+                                      {"i": caller.token_id})
         except Exception:                                  # noqa: BLE001
             pass
         yield session
