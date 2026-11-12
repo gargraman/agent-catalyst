@@ -39,6 +39,11 @@ ac_rate_limit_degraded_total = Counter(
     "Limiter checks that failed open because the Redis backend was unavailable (alert signal)",
     registry=REGISTRY,
 )
+ac_egress_blocked_total = Counter(
+    "ac_egress_blocked_total",
+    "Outbound tool egress attempts refused by the SSRF/egress guard, by coarse reason (feature 017, F19)",
+    ["reason"], registry=REGISTRY,
+)
 
 
 def record_run(status: str, source: str) -> None:
@@ -71,6 +76,16 @@ def record_rate_limit_degraded() -> None:
         ac_rate_limit_degraded_total.inc()
     except Exception as e:  # noqa: BLE001
         _log.debug("ac_rate_limit_degraded_total increment failed: %s", e)
+
+
+def record_egress_blocked(reason: str) -> None:
+    """Count one egress attempt refused by the SSRF guard, by coarse reason (FR-009 diagnostics). The label is
+    a fixed coarse category (never a host/IP/secret — SC-003/P5). Best-effort — never raises (FR-027 must not
+    let a telemetry failure turn a block into an allow)."""
+    try:
+        ac_egress_blocked_total.labels(reason=reason or "unknown").inc()
+    except Exception as e:  # noqa: BLE001 — telemetry must never break the guard's fail-closed decision
+        _log.debug("ac_egress_blocked_total increment failed: %s", e)
 
 
 def render() -> tuple[bytes, str]:

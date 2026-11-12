@@ -12,9 +12,10 @@ request (09 §7 / 00L §4).
 from __future__ import annotations
 
 from functools import lru_cache
+from typing import Annotated
 
 from pydantic import Field, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 _DEV_ASYNC = "postgresql+asyncpg://ac:ac_dev_pw@localhost:5433/agent_catalyst"
 _DEV_SYNC = "postgresql+psycopg://ac:ac_dev_pw@localhost:5433/agent_catalyst"
@@ -55,6 +56,35 @@ class Settings(BaseSettings):
     def rate_limit_for(self, route_class: str) -> tuple[int, int]:
         """(window_s, limit) for a route_class, falling back to the `default` bucket (FR-003)."""
         return self.rate_limits.get(route_class) or self.rate_limits["default"]
+
+    # --- Egress / SSRF guard (feature 017 / F19) -------------------------------------------------
+    # The baseline block-set (private/loopback/link-local/ULA/multicast/reserved/cloud-metadata, IPv4+IPv6)
+    # is ALWAYS on and cannot be disabled — it is a security control, so (like the deny-set/spend controls,
+    # not the availability-oriented limiter) it does NOT key off any enable flag and fails closed (P3/FR-027).
+    # This slot is ADDITIVE-ONLY: extra operator-defined CIDRs to deny on top of the baseline (e.g. a corp
+    # supernet). Malformed entries are rejected at load (fail-closed config), never deep in a request.
+    # NoDecode: take the env value as a raw CSV string (not JSON) so `_split_cidrs` parses it — see below.
+    egress_extra_deny_cidrs: Annotated[list[str], NoDecode] = Field(
+        default_factory=list, alias="AC_EGRESS_EXTRA_DENY_CIDRS")
+
+    @field_validator("egress_extra_deny_cidrs", mode="before")
+    @classmethod
+    def _split_cidrs(cls, v):
+        # Accept a CSV string (env) or a list (code); normalize to a list of trimmed, non-empty entries.
+        if isinstance(v, str):
+            return [p.strip() for p in v.split(",") if p.strip()]
+        return v
+
+    @field_validator("egress_extra_deny_cidrs")
+    @classmethod
+    def _valid_cidrs(cls, v: list[str]) -> list[str]:
+        import ipaddress
+        for c in v:
+            try:
+                ipaddress.ip_network(c, strict=False)
+            except ValueError as exc:
+                raise ValueError(f"AC_EGRESS_EXTRA_DENY_CIDRS entry is not a valid CIDR/IP: {c!r}") from exc
+        return v
 
     # --- Secret custody (feature 014) -----------------------------------------------------------
     # Pluggable secrets backend selector, resolved by api.secrets.registry: "local" | "aws".

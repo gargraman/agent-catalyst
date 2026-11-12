@@ -62,6 +62,17 @@ class RateLimited(AppError):
     http_status, code = 429, "rate.limited"
 
 
+class EgressBlocked(AppError):
+    """SSRF / egress guard refusal (feature 017, F19): an outbound HTTP tool call was refused because its
+    target resolved to a private/loopback/link-local/multicast/metadata address, was not on the per-tool
+    domain allow-list, redirected to an internal host, or re-resolved to a blocked IP (DNS rebind).
+
+    Fail-closed (FR-027). The client-visible envelope carries ONLY a coarse `reason` code (FR-009) — never
+    the resolved IP, the full target URL, or any secret. 502: this is an outbound/upstream-leg refusal (the
+    platform declined to dial the requested destination), distinct from caller authz (403) and spend (402)."""
+    http_status, code = 502, "egress.blocked"
+
+
 # --- 409 family: same status, distinct codes ---
 class ConflictError(AppError):
     http_status, code = 409, "conflict"
