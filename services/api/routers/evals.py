@@ -32,7 +32,7 @@ router = APIRouter(prefix="/api/v1/agents", tags=["evals"])
 
 
 @router.post("/{agent_id}/eval-runs",
-             dependencies=[Depends(require_permission("eval.run")), Depends(enforce_spend_cap)])
+             dependencies=[Depends(require_permission("eval.run")), Depends(rate_limit("eval")), Depends(enforce_spend_cap)])
 async def create_eval_run(
     agent_id: str,
     body: EvalRunIn,
@@ -41,7 +41,6 @@ async def create_eval_run(
     session: AsyncSession = Depends(tenant_db),
     ap: PolicyPrincipal = Depends(access_principal),   # feature 013: access-policy caller view
     corr: str = Depends(correlation_id),      # F13: inbound correlation id (else generated)
-    _rl: None = Depends(rate_limit),
 ) -> EvalRunOut:
     response.headers["X-Correlation-Id"] = corr   # echo resolved id
     # feature 013: eval-run is a USE of the agent (it invokes it) — deny fail-closed BEFORE loading the version
@@ -114,14 +113,13 @@ async def create_eval_run(
     )
 
 
-@router.post("/{agent_id}/publish", dependencies=[Depends(require_permission("agent.publish"))])
+@router.post("/{agent_id}/publish", dependencies=[Depends(require_permission("agent.publish")), Depends(rate_limit("default"))])
 async def publish_version(
     agent_id: str,
     body: PublishIn,
     ws: str = Depends(resolve_workspace),
     session: AsyncSession = Depends(tenant_db),
     ap: PolicyPrincipal = Depends(access_principal),
-    _rl: None = Depends(rate_limit),
 ) -> PublishOut:
     try:
         aid = uuid.UUID(agent_id)

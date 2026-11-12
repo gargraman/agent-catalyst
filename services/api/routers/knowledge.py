@@ -52,12 +52,11 @@ async def _load(session: AsyncSession, kb_id: str, *, for_update: bool = False) 
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
-@router.post("/knowledge-bases", status_code=201, dependencies=[Depends(require_permission("knowledge.manage"))])
+@router.post("/knowledge-bases", status_code=201, dependencies=[Depends(require_permission("knowledge.manage")), Depends(rate_limit("default"))])
 async def create_kb(body: KnowledgeBaseCreate, response: Response, ws: str = Depends(resolve_workspace),
                     session: AsyncSession = Depends(tenant_db),
                     principal: Principal = Depends(session_principal),
-                    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
-                    _rl: None = Depends(rate_limit)) -> KnowledgeBaseOut:
+                    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key")) -> KnowledgeBaseOut:
     access_policy = policy_for_store(body.access_policy)      # feature 013: validate → input.invalid; default workspace
     access_policy = stamp_private_owner(access_policy, principal.subject)   # FR-012: private → stamp creator as owner
     async with idempotency_guard(ws, idempotency_key):
@@ -111,13 +110,12 @@ async def get_kb(kb_id: str, response: Response, ws: str = Depends(resolve_works
     return _kb_out(k)
 
 
-@router.patch("/knowledge-bases/{kb_id}", dependencies=[Depends(require_permission("knowledge.manage"))])
+@router.patch("/knowledge-bases/{kb_id}", dependencies=[Depends(require_permission("knowledge.manage")), Depends(rate_limit("default"))])
 async def patch_kb(kb_id: str, body: KnowledgeBasePatch, response: Response,
                    ws: str = Depends(resolve_workspace), session: AsyncSession = Depends(tenant_db),
                    principal: Principal = Depends(session_principal),
                    ap: PolicyPrincipal = Depends(access_principal),
-                   if_match: str | None = Header(default=None, alias="If-Match"),
-                   _rl: None = Depends(rate_limit)) -> KnowledgeBaseOut:
+                   if_match: str | None = Header(default=None, alias="If-Match")) -> KnowledgeBaseOut:
     if not if_match:
         raise InputInvalid("If-Match header is required for edits", detail={"header": "If-Match"})
     try:
@@ -149,11 +147,10 @@ async def patch_kb(kb_id: str, body: KnowledgeBasePatch, response: Response,
     return _kb_out(k)
 
 
-@router.post("/knowledge-bases/{kb_id}/archive", dependencies=[Depends(require_permission("knowledge.manage"))])
+@router.post("/knowledge-bases/{kb_id}/archive", dependencies=[Depends(require_permission("knowledge.manage")), Depends(rate_limit("default"))])
 async def archive_kb(kb_id: str, ws: str = Depends(resolve_workspace),
                      session: AsyncSession = Depends(tenant_db),
-                     ap: PolicyPrincipal = Depends(access_principal),
-                     _rl: None = Depends(rate_limit)) -> KnowledgeBaseOut:
+                     ap: PolicyPrincipal = Depends(access_principal)) -> KnowledgeBaseOut:
     k = await _load(session, kb_id)
     if k is None:
         raise NotFound("knowledge base not found", detail={"kb_id": kb_id})
@@ -163,11 +160,10 @@ async def archive_kb(kb_id: str, ws: str = Depends(resolve_workspace),
     return _kb_out(k)
 
 
-@router.post("/knowledge-bases/{kb_id}/restore", dependencies=[Depends(require_permission("knowledge.manage"))])
+@router.post("/knowledge-bases/{kb_id}/restore", dependencies=[Depends(require_permission("knowledge.manage")), Depends(rate_limit("default"))])
 async def restore_kb(kb_id: str, ws: str = Depends(resolve_workspace),
                      session: AsyncSession = Depends(tenant_db),
-                     ap: PolicyPrincipal = Depends(access_principal),
-                     _rl: None = Depends(rate_limit)) -> KnowledgeBaseOut:
+                     ap: PolicyPrincipal = Depends(access_principal)) -> KnowledgeBaseOut:
     k = await _load(session, kb_id)
     if k is None:
         raise NotFound("knowledge base not found", detail={"kb_id": kb_id})

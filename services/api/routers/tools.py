@@ -72,13 +72,12 @@ def _tool_out(t: Tool) -> ToolOut:
                    access_policy=policy_out(t.access_policy))
 
 
-@router.post("/tools", status_code=201, dependencies=[Depends(require_permission("tool.manage"))])
+@router.post("/tools", status_code=201, dependencies=[Depends(require_permission("tool.manage")), Depends(rate_limit("default"))])
 async def create_tool(
     body: ToolCreate, response: Response,
     ws: str = Depends(resolve_workspace), session: AsyncSession = Depends(tenant_db),
     principal: Principal = Depends(session_principal),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
-    _rl: None = Depends(rate_limit),
 ) -> ToolOut:
     access_policy = stamp_private_owner(policy_for_store(body.access_policy), principal.subject)   # feature 013 (+FR-012)
     async with idempotency_guard(ws, idempotency_key):
@@ -144,13 +143,13 @@ def _auth_surface(cfg: dict) -> tuple:
     return (cfg.get("authMode"), cfg.get("oauthScopes"))
 
 
-@router.patch("/tools/{tool_id}", dependencies=[Depends(require_permission("tool.manage"))])
+@router.patch("/tools/{tool_id}", dependencies=[Depends(require_permission("tool.manage")), Depends(rate_limit("default"))])
 async def patch_tool(
     tool_id: str, body: ToolPatch, response: Response,
     ws: str = Depends(resolve_workspace), session: AsyncSession = Depends(tenant_db),
     principal: Principal = Depends(session_principal),
     ap: PolicyPrincipal = Depends(access_principal),
-    if_match: str | None = Header(default=None, alias="If-Match"), _rl: None = Depends(rate_limit),
+    if_match: str | None = Header(default=None, alias="If-Match"),
 ) -> ToolOut:
     etag_val = _require_etag(if_match, "tool")
     t = await _load_tool(session, tool_id, for_update=True)
@@ -179,11 +178,10 @@ async def patch_tool(
     return _tool_out(t)
 
 
-@router.post("/tools/{tool_id}/archive", dependencies=[Depends(require_permission("tool.manage"))])
+@router.post("/tools/{tool_id}/archive", dependencies=[Depends(require_permission("tool.manage")), Depends(rate_limit("default"))])
 async def archive_tool(tool_id: str, ws: str = Depends(resolve_workspace),
                        session: AsyncSession = Depends(tenant_db),
-                       ap: PolicyPrincipal = Depends(access_principal),
-                       _rl: None = Depends(rate_limit)) -> ToolOut:
+                       ap: PolicyPrincipal = Depends(access_principal)) -> ToolOut:
     t = await _load_tool(session, tool_id)
     if t is None:
         raise NotFound("tool not found", detail={"tool_id": tool_id})
@@ -193,11 +191,10 @@ async def archive_tool(tool_id: str, ws: str = Depends(resolve_workspace),
     return _tool_out(t)
 
 
-@router.post("/tools/{tool_id}/restore", dependencies=[Depends(require_permission("tool.manage"))])
+@router.post("/tools/{tool_id}/restore", dependencies=[Depends(require_permission("tool.manage")), Depends(rate_limit("default"))])
 async def restore_tool(tool_id: str, ws: str = Depends(resolve_workspace),
                        session: AsyncSession = Depends(tenant_db),
-                       ap: PolicyPrincipal = Depends(access_principal),
-                       _rl: None = Depends(rate_limit)) -> ToolOut:
+                       ap: PolicyPrincipal = Depends(access_principal)) -> ToolOut:
     t = await _load_tool(session, tool_id)
     if t is None:
         raise NotFound("tool not found", detail={"tool_id": tool_id})
@@ -234,13 +231,12 @@ async def _load_mcp(session: AsyncSession, server_id: str, *, for_update: bool =
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
-@router.post("/mcp-servers", status_code=201, dependencies=[Depends(require_permission("mcp.manage"))])
+@router.post("/mcp-servers", status_code=201, dependencies=[Depends(require_permission("mcp.manage")), Depends(rate_limit("default"))])
 async def create_mcp_server(
     body: McpServerCreate, response: Response, ws: str = Depends(resolve_workspace),
     session: AsyncSession = Depends(tenant_db),
     principal: Principal = Depends(session_principal),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
-    _rl: None = Depends(rate_limit),
 ) -> McpServerOut:
     access_policy = stamp_private_owner(policy_for_store(body.access_policy), principal.subject)   # feature 013 (+FR-012)
     async with idempotency_guard(ws, idempotency_key):
@@ -291,13 +287,12 @@ async def get_mcp_server(server_id: str, response: Response, ws: str = Depends(r
     return _mcp_out(m, ap)
 
 
-@router.patch("/mcp-servers/{server_id}", dependencies=[Depends(require_permission("mcp.manage"))])
+@router.patch("/mcp-servers/{server_id}", dependencies=[Depends(require_permission("mcp.manage")), Depends(rate_limit("default"))])
 async def patch_mcp_server(server_id: str, body: McpServerPatch, response: Response,
                            ws: str = Depends(resolve_workspace), session: AsyncSession = Depends(tenant_db),
                            principal: Principal = Depends(session_principal),
                            ap: PolicyPrincipal = Depends(access_principal),
-                           if_match: str | None = Header(default=None, alias="If-Match"),
-                           _rl: None = Depends(rate_limit)) -> McpServerOut:
+                           if_match: str | None = Header(default=None, alias="If-Match")) -> McpServerOut:
     etag_val = _require_etag(if_match, "mcp server")       # optimistic concurrency, like tools/skills
     m = await _load_mcp(session, server_id, for_update=True)
     if m is None:
@@ -318,11 +313,10 @@ async def patch_mcp_server(server_id: str, body: McpServerPatch, response: Respo
     return _mcp_out(m)
 
 
-@router.post("/mcp-servers/{server_id}/archive", dependencies=[Depends(require_permission("mcp.manage"))])
+@router.post("/mcp-servers/{server_id}/archive", dependencies=[Depends(require_permission("mcp.manage")), Depends(rate_limit("default"))])
 async def archive_mcp_server(server_id: str, ws: str = Depends(resolve_workspace),
                              session: AsyncSession = Depends(tenant_db),
-                             ap: PolicyPrincipal = Depends(access_principal),
-                             _rl: None = Depends(rate_limit)) -> McpServerOut:
+                             ap: PolicyPrincipal = Depends(access_principal)) -> McpServerOut:
     m = await _load_mcp(session, server_id)
     if m is None:
         raise NotFound("mcp server not found", detail={"server_id": server_id})
@@ -333,12 +327,11 @@ async def archive_mcp_server(server_id: str, ws: str = Depends(resolve_workspace
     return _mcp_out(m)
 
 
-@router.post("/mcp-servers/{server_id}/tools", status_code=201, dependencies=[Depends(require_permission("mcp.manage"))])
+@router.post("/mcp-servers/{server_id}/tools", status_code=201, dependencies=[Depends(require_permission("mcp.manage")), Depends(rate_limit("default"))])
 async def add_mcp_tool(server_id: str, body: McpToolCreate, response: Response,
                        ws: str = Depends(resolve_workspace), session: AsyncSession = Depends(tenant_db),
                        principal: Principal = Depends(session_principal),
-                       ap: PolicyPrincipal = Depends(access_principal),
-                       _rl: None = Depends(rate_limit)) -> McpToolOut:
+                       ap: PolicyPrincipal = Depends(access_principal)) -> McpToolOut:
     m = await _load_mcp(session, server_id)
     if m is None:
         raise NotFound("mcp server not found", detail={"server_id": server_id})
@@ -361,13 +354,12 @@ def _mcp_tool_surface(mt: McpTool) -> tuple:
     return (mt.enabled, mt.risk_tier)
 
 
-@router.patch("/mcp-tools/{tool_id}", dependencies=[Depends(require_permission("mcp.manage"))])
+@router.patch("/mcp-tools/{tool_id}", dependencies=[Depends(require_permission("mcp.manage")), Depends(rate_limit("default"))])
 async def patch_mcp_tool(tool_id: str, body: McpToolPatch, response: Response,
                          ws: str = Depends(resolve_workspace), session: AsyncSession = Depends(tenant_db),
                          principal: Principal = Depends(session_principal),
                          ap: PolicyPrincipal = Depends(access_principal),
-                         if_match: str | None = Header(default=None, alias="If-Match"),
-                         _rl: None = Depends(rate_limit)) -> McpToolOut:
+                         if_match: str | None = Header(default=None, alias="If-Match")) -> McpToolOut:
     etag_val = _require_etag(if_match, "mcp tool")          # optimistic concurrency
     tid = _as_uuid(tool_id)
     mt = None if tid is None else (await session.execute(

@@ -55,9 +55,9 @@ async def list_members(ws: str = Depends(resolve_workspace), session: AsyncSessi
     return Page[MemberOut](items=[_member_out(m) for m in rows], next_cursor=next_cursor)
 
 
-@router.post("", status_code=201, dependencies=[Depends(require_permission("member.manage"))])
+@router.post("", status_code=201, dependencies=[Depends(require_permission("member.manage")), Depends(rate_limit("default"))])
 async def add_member(body: MemberCreate, ws: str = Depends(resolve_workspace),
-                     session: AsyncSession = Depends(tenant_db), _rl: None = Depends(rate_limit)) -> MemberOut:
+                     session: AsyncSession = Depends(tenant_db)) -> MemberOut:
     m = Member(workspace_id=uuid.UUID(ws), subject=body.subject, display_name=body.display_name,
                email=body.email, console_role=body.console_role, teams=list(body.teams))
     session.add(m)
@@ -69,9 +69,9 @@ async def add_member(body: MemberCreate, ws: str = Depends(resolve_workspace),
     return _member_out(m)
 
 
-@router.patch("/{member_id}", dependencies=[Depends(require_permission("member.manage"))])
+@router.patch("/{member_id}", dependencies=[Depends(require_permission("member.manage")), Depends(rate_limit("default"))])
 async def patch_member(member_id: str, body: MemberPatch, ws: str = Depends(resolve_workspace),
-                       session: AsyncSession = Depends(tenant_db), _rl: None = Depends(rate_limit)) -> MemberOut:
+                       session: AsyncSession = Depends(tenant_db)) -> MemberOut:
     m = await _load(session, member_id)
     if m is None:
         raise NotFound("member not found", detail={"member_id": member_id})
@@ -83,9 +83,9 @@ async def patch_member(member_id: str, body: MemberPatch, ws: str = Depends(reso
     return _member_out(m)
 
 
-@router.delete("/{member_id}", status_code=204, dependencies=[Depends(require_permission("member.manage"))])
+@router.delete("/{member_id}", status_code=204, dependencies=[Depends(require_permission("member.manage")), Depends(rate_limit("default"))])
 async def remove_member(member_id: str, response: Response, ws: str = Depends(resolve_workspace),
-                        session: AsyncSession = Depends(tenant_db), _rl: None = Depends(rate_limit)) -> Response:
+                        session: AsyncSession = Depends(tenant_db)) -> Response:
     m = await _load(session, member_id)
     if m is None:
         raise NotFound("member not found", detail={"member_id": member_id})

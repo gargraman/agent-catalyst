@@ -91,7 +91,7 @@ def _load_profile_snapshot(provider: str, model: str) -> dict:
                        detail={"provider": provider, "model": model})
 
 
-@router.post("", status_code=201, dependencies=[Depends(require_permission("agent.create"))])
+@router.post("", status_code=201, dependencies=[Depends(require_permission("agent.create")), Depends(rate_limit("default"))])
 async def create_agent(
     body: AgentCreate,
     response: Response,
@@ -99,7 +99,6 @@ async def create_agent(
     session: AsyncSession = Depends(tenant_db),
     principal: Principal = Depends(session_principal),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
-    _rl: None = Depends(rate_limit),
 ) -> AgentOut:
     if "input_schema" not in (body.io_contract or {}):
         raise InputInvalid("io_contract must contain an input_schema object",
@@ -180,7 +179,7 @@ async def get_agent(
     return _agent_out(agent)
 
 
-@router.patch("/{agent_id}", dependencies=[Depends(require_permission("agent.edit"))])
+@router.patch("/{agent_id}", dependencies=[Depends(require_permission("agent.edit")), Depends(rate_limit("default"))])
 async def patch_agent(
     agent_id: str,
     body: AgentPatch,
@@ -190,7 +189,6 @@ async def patch_agent(
     principal: Principal = Depends(session_principal),
     ap: PolicyPrincipal = Depends(access_principal),
     if_match: str | None = Header(default=None, alias="If-Match"),
-    _rl: None = Depends(rate_limit),
 ) -> AgentOut:
     if not if_match:
         raise InputInvalid("If-Match header is required for edits", detail={"header": "If-Match"})
@@ -239,14 +237,13 @@ async def patch_agent(
     return _agent_out(agent)
 
 
-@router.post("/{agent_id}/versions", status_code=201, dependencies=[Depends(require_permission("agent.edit"))])
+@router.post("/{agent_id}/versions", status_code=201, dependencies=[Depends(require_permission("agent.edit")), Depends(rate_limit("default"))])
 async def create_version(
     agent_id: str,
     ws: str = Depends(resolve_workspace),
     session: AsyncSession = Depends(tenant_db),
     ap: PolicyPrincipal = Depends(access_principal),
     label: str | None = None,
-    _rl: None = Depends(rate_limit),
 ) -> VersionOut:
     agent = await _load_agent(session, agent_id)
     if agent is None or not agent.versions:

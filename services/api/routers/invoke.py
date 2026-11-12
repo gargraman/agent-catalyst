@@ -59,7 +59,12 @@ async def _load_version(session: AsyncSession, agent_id: str, version_id: str | 
 
 
 @router.post("/{agent_id}/invoke",
-             dependencies=[Depends(require_permission("playground.use")), Depends(enforce_spend_cap)])
+             # Order is load-bearing (feature 016): authz (403) → rate limit (429) → spend cap (402) → handler.
+             # Decorator deps resolve before param deps, so the limiter sheds an over-limit caller BEFORE the
+             # spend-cap DB read runs — abuse doesn't amplify into ledger queries (contract rate-limit.md).
+             dependencies=[Depends(require_permission("playground.use")),
+                           Depends(rate_limit("invoke")),
+                           Depends(enforce_spend_cap)])
 async def invoke_agent(
     agent_id: str,
     body: InvokeIn,
@@ -67,7 +72,6 @@ async def invoke_agent(
     session: AsyncSession = Depends(tenant_db),
     ap: PolicyPrincipal = Depends(access_principal),   # feature 013: access-policy caller view
     corr: str = Depends(correlation_id),      # F13: inbound traceparent / X-Correlation-Id, else generated
-    _rl: None = Depends(rate_limit),
 ):
     # feature 013: deny USE fail-closed BEFORE loading the version / opening the stream — no Run row, no
     # provider call. A denied invoke is a 404 indistinguishable from an absent agent (P5 no-leak).

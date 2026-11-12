@@ -59,13 +59,12 @@ async def _load(session: AsyncSession, skill_id: str, *, for_update: bool = Fals
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
-@router.post("", status_code=201, dependencies=[Depends(require_permission("skill.manage"))])
+@router.post("", status_code=201, dependencies=[Depends(require_permission("skill.manage")), Depends(rate_limit("default"))])
 async def create_skill(
     body: SkillCreate, response: Response, ws: str = Depends(resolve_workspace),
     session: AsyncSession = Depends(tenant_db),
     principal: Principal = Depends(session_principal),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
-    _rl: None = Depends(rate_limit),
 ) -> SkillOut:
     access_policy = policy_for_store(body.access_policy)      # feature 013: validate → input.invalid; default workspace
     access_policy = stamp_private_owner(access_policy, principal.subject)   # FR-012: private → stamp creator as owner
@@ -121,13 +120,13 @@ async def get_skill(skill_id: str, response: Response, ws: str = Depends(resolve
     return _skill_out(s)
 
 
-@router.patch("/{skill_id}", dependencies=[Depends(require_permission("skill.manage"))])
+@router.patch("/{skill_id}", dependencies=[Depends(require_permission("skill.manage")), Depends(rate_limit("default"))])
 async def patch_skill(
     skill_id: str, body: SkillPatch, response: Response, ws: str = Depends(resolve_workspace),
     session: AsyncSession = Depends(tenant_db),
     principal: Principal = Depends(session_principal),
     ap: PolicyPrincipal = Depends(access_principal),
-    if_match: str | None = Header(default=None, alias="If-Match"), _rl: None = Depends(rate_limit),
+    if_match: str | None = Header(default=None, alias="If-Match"),
 ) -> SkillOut:
     if not if_match:
         raise InputInvalid("If-Match header is required for edits", detail={"header": "If-Match"})
@@ -170,12 +169,11 @@ async def patch_skill(
     return _skill_out(s)
 
 
-@router.post("/{skill_id}/publish", dependencies=[Depends(require_permission("skill.manage"))])
+@router.post("/{skill_id}/publish", dependencies=[Depends(require_permission("skill.manage")), Depends(rate_limit("default"))])
 async def publish_skill(skill_id: str, ws: str = Depends(resolve_workspace),
                         session: AsyncSession = Depends(tenant_db),
                         principal: Principal = Depends(session_principal),
-                        ap: PolicyPrincipal = Depends(access_principal),
-                        _rl: None = Depends(rate_limit)) -> SkillOut:
+                        ap: PolicyPrincipal = Depends(access_principal)) -> SkillOut:
     s = await _load(session, skill_id)
     if s is None:
         raise NotFound("skill not found", detail={"skill_id": skill_id})
@@ -191,11 +189,10 @@ async def publish_skill(skill_id: str, ws: str = Depends(resolve_workspace),
     return _skill_out(s)
 
 
-@router.post("/{skill_id}/archive", dependencies=[Depends(require_permission("skill.manage"))])
+@router.post("/{skill_id}/archive", dependencies=[Depends(require_permission("skill.manage")), Depends(rate_limit("default"))])
 async def archive_skill(skill_id: str, ws: str = Depends(resolve_workspace),
                         session: AsyncSession = Depends(tenant_db),
-                        ap: PolicyPrincipal = Depends(access_principal),
-                        _rl: None = Depends(rate_limit)) -> SkillOut:
+                        ap: PolicyPrincipal = Depends(access_principal)) -> SkillOut:
     s = await _load(session, skill_id)
     if s is None:
         raise NotFound("skill not found", detail={"skill_id": skill_id})
@@ -205,11 +202,10 @@ async def archive_skill(skill_id: str, ws: str = Depends(resolve_workspace),
     return _skill_out(s)
 
 
-@router.post("/{skill_id}/restore", dependencies=[Depends(require_permission("skill.manage"))])
+@router.post("/{skill_id}/restore", dependencies=[Depends(require_permission("skill.manage")), Depends(rate_limit("default"))])
 async def restore_skill(skill_id: str, ws: str = Depends(resolve_workspace),
                         session: AsyncSession = Depends(tenant_db),
-                        ap: PolicyPrincipal = Depends(access_principal),
-                        _rl: None = Depends(rate_limit)) -> SkillOut:
+                        ap: PolicyPrincipal = Depends(access_principal)) -> SkillOut:
     s = await _load(session, skill_id)
     if s is None:
         raise NotFound("skill not found", detail={"skill_id": skill_id})

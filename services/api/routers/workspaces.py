@@ -68,11 +68,10 @@ async def get_settings(response: Response, ws: str = Depends(resolve_workspace),
     return _settings_out(s)
 
 
-@router.patch("/settings", dependencies=[Depends(require_permission("settings.manage"))])
+@router.patch("/settings", dependencies=[Depends(require_permission("settings.manage")), Depends(rate_limit("default"))])
 async def patch_settings(body: WorkspaceSettingsPatch, response: Response,
                          ws: str = Depends(resolve_workspace), session: AsyncSession = Depends(tenant_db),
-                         if_match: str | None = Header(default=None, alias="If-Match"),
-                         _rl: None = Depends(rate_limit)) -> WorkspaceSettingsOut:
+                         if_match: str | None = Header(default=None, alias="If-Match")) -> WorkspaceSettingsOut:
     if not if_match:
         raise InputInvalid("If-Match header is required for edits", detail={"header": "If-Match"})
     try:
@@ -112,9 +111,9 @@ def _apply(s: WorkspaceSettings, body: WorkspaceSettingsPatch) -> None:
         s.eval_policy = body.eval_policy
 
 
-@router.patch("", dependencies=[Depends(require_permission("settings.manage"))])
+@router.patch("", dependencies=[Depends(require_permission("settings.manage")), Depends(rate_limit("default"))])
 async def rename_workspace(body: WorkspacePatch, ws: str = Depends(resolve_workspace),
-                           session: AsyncSession = Depends(tenant_db), _rl: None = Depends(rate_limit)) -> WorkspaceOut:
+                           session: AsyncSession = Depends(tenant_db)) -> WorkspaceOut:
     # Scoped to the active (authorized) workspace only; the workspaces root has no RLS so we match by id explicitly.
     w = await session.get(Workspace, uuid.UUID(ws))
     if w is None:

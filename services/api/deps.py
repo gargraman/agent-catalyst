@@ -9,22 +9,33 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 
-from fastapi import Depends, Header, Query
+from fastapi import Depends, Header, Query, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
-from api import membership, spend
+from api import membership, metrics, ratelimit, spend
 from api.access_policy import PolicyPrincipal, can_manage, can_use, parse_policy
 from api.db import tenant_session
-from api.errors import AccessDenied, AppError, BudgetExceeded, IdempotencyInProgress, InputInvalid, NotFound
+from api.errors import (
+    AccessDenied,
+    AppError,
+    BudgetExceeded,
+    IdempotencyInProgress,
+    InputInvalid,
+    NotFound,
+    RateLimited,
+)
 from api.permissions import has_permission
+from api.settings import get_settings
 
 _log = logging.getLogger("api.spend")
 _deny_log = logging.getLogger("api.access_policy")
+_rl_log = logging.getLogger("api.ratelimit")
 
 # Provider credential for the runtime RunContext. Env-sourced, dev default; invoke is mocked in this slice so
 # no real key is used. Vault custody is deferred (P1/M5). Never logged or surfaced (P5).
@@ -136,9 +147,72 @@ async def enforce_spend_cap(
     return None
 
 
-async def rate_limit() -> None:
-    """Rate-limit seam (F5). No-op allow in this slice; thresholds (429 rate.limited) are deferred (M6)."""
-    return None
+# Single source of truth for the limiter's header names — deny headers = success trio + Retry-After.
+def _rl_success_headers(limit: int, d: ratelimit.Decision) -> dict[str, str]:
+    """The `X-RateLimit-*` trio sent on every gated response."""
+    return {
+        "X-RateLimit-Limit": str(limit),
+        "X-RateLimit-Remaining": str(d.remaining),
+        "X-RateLimit-Reset": str(d.reset_epoch),
+    }
+
+
+def _rl_deny_headers(limit: int, d: ratelimit.Decision) -> dict[str, str]:
+    """The success trio plus `Retry-After`, carried on the 429 envelope."""
+    return {**_rl_success_headers(limit, d), "Retry-After": str(d.retry_after)}
+
+
+def _rl_set(response: Response, limit: int, d: ratelimit.Decision) -> None:
+    """Attach the success `X-RateLimit-*` headers to the response (no Retry-After on allow)."""
+    for k, v in _rl_success_headers(limit, d).items():
+        response.headers[k] = v
+
+
+# Fail-open alert: the metric is the alert signal (per request); the WARNING log is throttled so a sustained
+# Redis outage does not emit one line per request (code-review: log flood). Process-local, best-effort.
+_rl_degraded_last_log = 0.0
+_RL_DEGRADED_LOG_INTERVAL_S = 30.0
+
+
+def rate_limit(route_class: str):
+    """Per-identity sliding-window rate limit (feature 016 / F5). Returns a dependency for `route_class`
+    (`invoke` | `playground` | `eval` | `ingest` | `default`); window/limit come from `settings.rate_limit_for`
+    (fallback-safe — an unlisted class resolves to `default`, never a KeyError). Keyed per *principal* in this
+    slice (`rl:prin:{subject}:{route_class}` — no token/secret in the key, P5); per-token invoke keying lands
+    in 018 via the same engine. Wire AFTER `require_permission` (403 first) and BEFORE `enforce_spend_cap`/the
+    handler (429 before any provider/ingestion work). On deny → 429 `rate.limited` with headers; on a Redis
+    outage → **fail open + alert** (availability control, FR-024a); on allow → success `X-RateLimit-*` headers.
+    NOTE: success headers are set on the injected `Response`, which FastAPI only merges for handlers that return a
+    serializable value — endpoints that return a `Response`/`StreamingResponse` directly (invoke, 204 deletes) do
+    NOT carry the success headers. The 429 deny path is unaffected (headers ride the `RateLimited` error envelope)."""
+    async def _rl(
+        response: Response,
+        principal: Principal = Depends(session_principal),
+    ) -> None:
+        settings = get_settings()
+        if not settings.rate_limit_enabled:
+            return None
+        window_s, limit = settings.rate_limit_for(route_class)
+        key = f"rl:prin:{principal.subject}:{route_class}"
+        decision = await ratelimit.check(key, limit, window_s)
+
+        if decision.degraded:                                  # Redis down → fail open + alert (FR-024a)
+            metrics.record_rate_limit_degraded()               # per-request alert signal
+            global _rl_degraded_last_log                        # WARNING throttled (avoid per-request flood)
+            now = time.monotonic()
+            if now - _rl_degraded_last_log >= _RL_DEGRADED_LOG_INTERVAL_S:
+                _rl_degraded_last_log = now
+                _rl_log.warning("rate limiter degraded (fail-open): backend unavailable route_class=%s", route_class)
+            _rl_set(response, limit, decision)
+            return None
+        if not decision.allowed:                               # over limit → 429 before any work
+            metrics.record_rate_limited(route_class)
+            raise RateLimited(f"rate limit exceeded; retry after {decision.retry_after}s",
+                              headers=_rl_deny_headers(limit, decision))
+        _rl_set(response, limit, decision)                     # under limit → success headers
+        return None
+
+    return _rl
 
 
 # ---- access-policy enforcement spine (feature 013, P3 deterministic + P5 no-leak) ----------------

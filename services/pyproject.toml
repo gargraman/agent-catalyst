@@ -23,7 +23,7 @@ dependencies = [
 # and those are re-proven against the live wire only at M2 — an unbounded floor could silently reshape them
 # (wrong usage → wrong cost). Tested against 1.106.6; widen deliberately after re-verifying the mapping.
 api = ["fastapi", "uvicorn", "sqlalchemy[asyncio]>=2.0", "asyncpg", "psycopg[binary]>=3", "alembic", "redis", "litellm~=1.106", "prometheus-client>=0.20,<1", "pyjwt[crypto]>=2.8,<3", "boto3>=1.34"]
-test = ["pytest>=8", "pytest-asyncio"]
+test = ["pytest>=8", "pytest-asyncio", "fakeredis>=2.21"]
 
 # Editable/wheel package discovery. setuptools flat-layout auto-discovery fails on this tree
 # (multiple top-level packages: api, runtime, migrations), so declare the real source packages

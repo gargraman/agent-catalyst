@@ -18,13 +18,12 @@ from api.schemas.provider_keys import ProviderKeyCreate, ProviderKeyOut, Provide
 router = APIRouter(prefix="/api/v1/provider-keys", tags=["provider-keys"])
 
 
-@router.post("", status_code=201, dependencies=[Depends(require_permission("key.manage"))])
+@router.post("", status_code=201, dependencies=[Depends(require_permission("key.manage")), Depends(rate_limit("default"))])
 async def capture_key(
     body: ProviderKeyCreate,
     ws: str = Depends(resolve_workspace),
     session: AsyncSession = Depends(tenant_db),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
-    _rl: None = Depends(rate_limit),
 ) -> ProviderKeyOut:
     async with idempotency_guard(ws, idempotency_key):
         return await capture_provider_key(session, ws, body)
@@ -38,22 +37,20 @@ async def list_keys(
     return await list_provider_keys(session, ws)
 
 
-@router.post("/{key_id}/rotate", dependencies=[Depends(require_permission("key.manage"))])
+@router.post("/{key_id}/rotate", dependencies=[Depends(require_permission("key.manage")), Depends(rate_limit("default"))])
 async def rotate_key(
     key_id: str,
     body: ProviderKeyRotate,
     ws: str = Depends(resolve_workspace),
     session: AsyncSession = Depends(tenant_db),
-    _rl: None = Depends(rate_limit),
 ) -> ProviderKeyOut:
     return await rotate_provider_key(session, ws, key_id, body)
 
 
-@router.post("/{key_id}/revoke", dependencies=[Depends(require_permission("key.manage"))])
+@router.post("/{key_id}/revoke", dependencies=[Depends(require_permission("key.manage")), Depends(rate_limit("default"))])
 async def revoke_key(
     key_id: str,
     ws: str = Depends(resolve_workspace),
     session: AsyncSession = Depends(tenant_db),
-    _rl: None = Depends(rate_limit),
 ) -> ProviderKeyOut:
     return await revoke_provider_key(session, ws, key_id)

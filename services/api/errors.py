@@ -17,10 +17,13 @@ class AppError(Exception):
     http_status: int = 500
     code: str = "internal"
 
-    def __init__(self, message: str, *, detail: dict | None = None) -> None:
+    def __init__(self, message: str, *, detail: dict | None = None, headers: dict | None = None) -> None:
         super().__init__(message)
         self.message = message
         self.detail = detail
+        # Optional response headers carried on the error (e.g. 429 Retry-After / X-RateLimit-* — feature 016).
+        # Back-compatible: defaults to None, so every existing raise site is unaffected.
+        self.headers = headers
 
     def envelope(self) -> dict:
         """Return the 08 error envelope: ``{"error": {"code", "message", "detail"?}}``."""
@@ -120,4 +123,4 @@ def app_error_handler(request, exc: AppError):  # pragma: no cover — wired in 
         from api import metrics
         metrics.record_refusal(exc.code)   # F12 refusal counter (best-effort — record_refusal swallows)
 
-    return JSONResponse(status_code=exc.http_status, content=exc.envelope())
+    return JSONResponse(status_code=exc.http_status, content=exc.envelope(), headers=exc.headers)

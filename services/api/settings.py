@@ -34,6 +34,28 @@ class Settings(BaseSettings):
     # Optional slots consumed by later phases (worker) — unset until wired.
     redis_url: str | None = Field(default=None, alias="AC_REDIS_URL")
 
+    # --- Rate limiting (feature 016 / F5) --------------------------------------------------------
+    # Master switch. When off (or AC_REDIS_URL unset), the limiter no-op-allows — parity with the pre-016
+    # seam (spec Assumptions). Security controls (deny-set/spend, 018/021) do NOT key off this flag.
+    rate_limit_enabled: bool = Field(default=True, alias="AC_RATE_LIMIT_ENABLED")
+    # Reviewable per-surface limits table: route_class → (window_s, limit), conservative defaults tunable
+    # against pilot traffic (FR-003; the testable gate is "limits exist and fire before expensive work", not a
+    # specific number). `default` is the fallback for any route_class not listed. Keys mirror the route-class
+    # mapping wired in deps/routers: invoke | playground | eval | ingest | default.
+    rate_limits: dict[str, tuple[int, int]] = Field(
+        default_factory=lambda: {
+            "invoke":     (60, 120),   # published invoke: 120 / 60s per principal
+            "playground": (60, 60),    # interactive console runs
+            "eval":       (60, 20),    # eval batch kick-offs (expensive)
+            "ingest":     (60, 20),    # knowledge source add/reingest (expensive)
+            "default":    (60, 300),   # all other CRUD reads/writes
+        }
+    )
+
+    def rate_limit_for(self, route_class: str) -> tuple[int, int]:
+        """(window_s, limit) for a route_class, falling back to the `default` bucket (FR-003)."""
+        return self.rate_limits.get(route_class) or self.rate_limits["default"]
+
     # --- Secret custody (feature 014) -----------------------------------------------------------
     # Pluggable secrets backend selector, resolved by api.secrets.registry: "local" | "aws".
     # `local` = in-process (unit tests + offline dev); `aws` = AWS Secrets Manager (boto3), pointed at
