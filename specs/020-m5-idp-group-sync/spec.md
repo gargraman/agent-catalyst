@@ -63,8 +63,10 @@ login and (where the IdP enumerates) on a scheduled refresh.
 
 ### Key Entities
 
-- **Workspace IdP binding** (`workspaces.idp_binding`, existing jsonb): per-workspace role/team → native group
-  ref (name/GUID/attr). Consumed, not changed.
+- **Workspace IdP binding** (`workspaces.idp_binding`, **jsonb — created in `0010`**): per-workspace role/team →
+  native group ref (name/GUID/attr). *Correction (2026-11-12): this column does NOT exist on disk today — the
+  `Workspace` row has only `group_prefix varchar(64)` (migration `0001`). 020 creates `idp_binding` (plan D1,
+  owner-ruled), so it is **added**, not "consumed unchanged" as the umbrella data-model stated.*
 - **Group-membership projection** (`group_members`, new): cache-only `(group_ref, subject, source, seen_at)`.
 - **Members store** (existing `members`): the sync's write target; reads (`role_for`/`teams_for`) unchanged.
 
@@ -75,5 +77,11 @@ login and (where the IdP enumerates) on a scheduled refresh.
 
 ## Assumptions
 
-- Create `0008_group_members` migration.
+- Create migration **`0010_idp_binding_and_group_members`** (not `0008` — `0008`/`0009` are taken): adds the
+  `workspaces.idp_binding jsonb` column (owner-ruled D1) **and** the `group_members` projection table
+  (workspace-scoped + RLS, owner-ruled D5).
+- On an **authoritative** sync (the provider reports the user's current groups), reconcile the members store to
+  match — including **revoking** a previously-granted role/team when the groups no longer map (owner-ruled D4).
+  A provider that returns `None` (can't enumerate — e.g. the claim-less Trellix-IAM token) is a no-op and never
+  revokes (owner-ruled D3).
 - Source: `docs/backend/18 §3–4`.
