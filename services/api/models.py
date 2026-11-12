@@ -332,6 +332,7 @@ class ApiToken(Base, WorkspaceScoped):
     last_used_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True))
     expires_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True))
     revoked_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True))
+    created_by: Mapped[str | None] = mapped_column(Text)   # minting principal's subject (0009) — offboarding sweep
 
 
 class Run(Base, WorkspaceScoped):

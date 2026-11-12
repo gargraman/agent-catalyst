@@ -103,6 +103,20 @@ class Settings(BaseSettings):
             raise ValueError("AC_DENYSET_TTL_S must be ≥ 3600 (deny-set must outlive the max token/session TTL)")
         return v
 
+    # Max caller-token lifetime (hardening). Caller tokens are long-lived SERVICE credentials, NOT human sessions,
+    # so this is deliberately decoupled from `denyset_ttl_s` (the 1h immediate-cut window): capping tokens to the
+    # deny-set TTL would make them useless. Revocation is durable (an UPDATE to `revoked_at` on both revoke paths),
+    # so the deny-set no longer needs to outlive the token — this bound is pure hygiene: no eternal credential, and
+    # a mint beyond it is rejected at the door (400). Default 90d. A mint with no expiry defaults to now + this.
+    max_token_lifetime_s: int = Field(default=7776000, alias="AC_MAX_TOKEN_LIFETIME_S")
+
+    @field_validator("max_token_lifetime_s")
+    @classmethod
+    def _max_token_lifetime_positive(cls, v: int) -> int:
+        if v <= 0:
+            raise ValueError("AC_MAX_TOKEN_LIFETIME_S must be a positive number of seconds")
+        return v
+
     # --- Secret custody (feature 014) -----------------------------------------------------------
     # Pluggable secrets backend selector, resolved by api.secrets.registry: "local" | "aws".
     # `local` = in-process (unit tests + offline dev); `aws` = AWS Secrets Manager (boto3), pointed at

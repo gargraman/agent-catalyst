@@ -161,7 +161,7 @@ async def seed_provider_key(workspace_id: str, provider: str = "openai", label: 
 
 async def seed_api_token(workspace_id: str, agent_id: str, secret: str, name: str = "seed-token",
                          teams: list[str] | None = None, created_at=None, expires_at=None,
-                         revoked_at=None) -> str:
+                         revoked_at=None, created_by=None) -> str:
     """Seed an api_tokens row directly (via tenant_session so RLS applies). Stores only sha256(secret)+prefix —
     the raw `secret` is the caller's bearer, never persisted (feature 018). Returns the token id. Pass
     `created_at` in the past (with a later-but-still-past `expires_at`) to model an already-expired token
@@ -171,7 +171,7 @@ async def seed_api_token(workspace_id: str, agent_id: str, secret: str, name: st
         t = ApiToken(workspace_id=uuid.UUID(workspace_id), agent_id=uuid.UUID(agent_id), name=name,
                      token_hash=hash_secret(secret), prefix=secret[:12],
                      scopes={"invoke": True, "teams": teams or []},
-                     expires_at=expires_at, revoked_at=revoked_at)
+                     expires_at=expires_at, revoked_at=revoked_at, created_by=created_by)
         if created_at is not None:
             t.created_at = created_at
         s.add(t)

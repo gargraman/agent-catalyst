@@ -298,6 +298,113 @@ async def test_published_plane_honors_rate_limit_disabled(monkeypatch):
 # 648 regression stays green) and verified by inspection.
 
 
+# ================================ revocation hardening (post-018 review: findings 1/5/6 + design) ===
+async def test_mint_sets_created_by_to_minting_subject():
+    """A minted token records the minting principal's subject (0009 created_by) so an offboarding sweep can find
+    it. Without it, revoke-user {subject} can never reach the user's caller tokens."""
+    ws, aid, _ = await _seed()
+    async with client() as c:
+        pub = dev_headers(workspace=ws, subject="minter-1", claims={ws: "publisher"})
+        r = await c.post(f"/api/v1/agents/{aid}/tokens", headers=pub, json={"name": "attributed"})
+        assert r.status_code == 201, r.text
+    async with tenant_session(ws) as s:
+        row = (await s.execute(select(ApiToken))).scalar_one()
+        assert row.created_by == "minter-1"
+
+
+async def test_mint_defaults_expiry_to_max_lifetime():
+    """A mint with no expires_at gets a bounded lifetime (now + max_token_lifetime_s) — no eternal credential."""
+    ws, aid, _ = await _seed()
+    async with client() as c:
+        pub = dev_headers(workspace=ws, subject="pub", claims={ws: "publisher"})
+        out = (await c.post(f"/api/v1/agents/{aid}/tokens", headers=pub, json={"name": "nolife"})).json()
+    assert out["expires_at"] is not None
+    assert dt.datetime.fromisoformat(out["expires_at"]) > dt.datetime.now(dt.timezone.utc)
+
+
+async def test_mint_rejects_lifetime_over_cap(monkeypatch):
+    """A mint whose expires_at exceeds the configured max lifetime is rejected at the door (400)."""
+    from api.settings import get_settings
+    monkeypatch.setenv("AC_MAX_TOKEN_LIFETIME_S", "3600")      # 1h cap for the test
+    get_settings.cache_clear()
+    try:
+        ws, aid, _ = await _seed()
+        async with client() as c:
+            pub = dev_headers(workspace=ws, subject="pub", claims={ws: "publisher"})
+            far = (dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=2)).isoformat()
+            r = await c.post(f"/api/v1/agents/{aid}/tokens", headers=pub,
+                             json={"name": "toolong", "expires_at": far})
+            assert r.status_code == 400, r.text
+            assert r.json()["error"]["code"] == "input.invalid"
+    finally:
+        get_settings.cache_clear()
+
+
+async def test_revoke_user_token_id_is_durable(fake_redis, monkeypatch):
+    """Finding 1: admin revoke-user {token_id} must set the durable revoked_at, not only the transient deny-set —
+    otherwise the token resurrects once the deny-set entry (TTL) expires."""
+    _ok_gateway(monkeypatch)
+    ws, aid, _ = await _seed()
+    bearer = mk_bearer("durable")
+    tid = await seed_api_token(ws, aid, secret=bearer)
+    async with client() as c:
+        adm = dev_headers(workspace=ws, subject="adm", claims={ws: "admin"})
+        assert (await c.post("/api/v1/org/revoke-user", headers=adm, json={"token_id": tid})).status_code == 204
+        await fake_redis.delete(f"deny:tok:{tid}")            # simulate the deny-set TTL expiring
+        after = await c.post(f"/v1/agents/{aid}/invoke", headers=_auth(bearer), json={"inputs": {"message": "hi"}})
+    assert after.status_code == 401                            # still rejected by the durable revoked_at tombstone
+
+
+async def test_revoke_user_token_id_cross_tenant_is_404(fake_redis, monkeypatch):
+    """Finding 5: revoke-user {token_id} must be RLS-scoped — a workspace-B admin cannot revoke a workspace-A
+    token by id (404, no cross-tenant effect)."""
+    _ok_gateway(monkeypatch)
+    ws_a = await seed_workspace()
+    aid_a = await seed_agent(ws_a)
+    await seed_version(ws_a, aid_a)
+    bearer = mk_bearer("tenantA")
+    tid_a = await seed_api_token(ws_a, aid_a, secret=bearer)
+    ws_b = await seed_workspace()
+    async with client() as c:
+        adm_b = dev_headers(workspace=ws_b, subject="adm-b", claims={ws_b: "admin"})
+        r = await c.post("/api/v1/org/revoke-user", headers=adm_b, json={"token_id": tid_a})
+        assert r.status_code == 404, r.text                   # cross-tenant token invisible → not found, not revoked
+        ok = await c.post(f"/v1/agents/{aid_a}/invoke", headers=_auth(bearer), json={"inputs": {"message": "hi"}})
+    assert ok.status_code == 200                               # the workspace-A token is unaffected
+
+
+async def test_revoke_user_subject_sweeps_that_users_caller_tokens(fake_redis, monkeypatch):
+    """Design: revoke-user {subject} durably revokes every caller token that subject minted in the workspace
+    (created_by sweep) — offboarding kills the user's service credentials, not only their console session."""
+    _ok_gateway(monkeypatch)
+    ws, aid, _ = await _seed()
+    v1, v2 = mk_bearer("victim1"), mk_bearer("victim2")
+    other = mk_bearer("other")
+    await seed_api_token(ws, aid, secret=v1, created_by="victim")
+    await seed_api_token(ws, aid, secret=v2, created_by="victim")
+    await seed_api_token(ws, aid, secret=other, created_by="someone-else")
+    async with client() as c:
+        adm = dev_headers(workspace=ws, subject="adm", claims={ws: "admin"})
+        assert (await c.post("/api/v1/org/revoke-user", headers=adm, json={"subject": "victim"})).status_code == 204
+        for b in (v1, v2):
+            r = await c.post(f"/v1/agents/{aid}/invoke", headers=_auth(b), json={"inputs": {"message": "hi"}})
+            assert r.status_code == 401, r.text               # the victim's tokens are revoked
+        ok = await c.post(f"/v1/agents/{aid}/invoke", headers=_auth(other), json={"inputs": {"message": "hi"}})
+    assert ok.status_code == 200                               # another user's token is untouched
+
+
+async def test_delete_token_arms_denyset_for_inflight_cut(fake_redis):
+    """Finding 6: the durable DELETE /tokens/{id} must also arm the deny-set so an in-flight stream is cut, not
+    only the next request."""
+    from api.auth import denyset
+    ws, aid, _ = await _seed()
+    tid = await seed_api_token(ws, aid, secret=mk_bearer("armdeny"))
+    async with client() as c:
+        pub = dev_headers(workspace=ws, subject="pub", claims={ws: "publisher"})
+        assert (await c.delete(f"/api/v1/tokens/{tid}", headers=pub)).status_code == 204
+    assert await denyset.is_denied(None, tid) is True          # deny-set armed → in-flight re-check will cut
+
+
 # ================================ api_tokens RLS (SC-008 family) ==================================
 async def test_api_tokens_rls_cross_tenant_isolated():
     ws_a = await seed_workspace()
