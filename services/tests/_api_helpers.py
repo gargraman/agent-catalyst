@@ -15,8 +15,8 @@ import httpx
 from api.db import tenant_session
 from api.main import app
 from api.models import (
-    Agent, AgentVersion, KnowledgeBase, Member, McpServer, McpTool, ProviderKey, RetrievalBinding, Run,
-    Skill, SkillBinding, Tool, ToolBinding, Workspace, WorkspaceSettings,
+    Agent, AgentVersion, ApiToken, KnowledgeBase, Member, McpServer, McpTool, ProviderKey, RetrievalBinding,
+    Run, Skill, SkillBinding, Tool, ToolBinding, Workspace, WorkspaceSettings,
 )
 from tests._invoke_helpers import PROFILE_SNAPSHOT
 
@@ -157,6 +157,26 @@ async def seed_provider_key(workspace_id: str, provider: str = "openai", label: 
         s.add(k)
         await s.flush()
         return str(k.id)
+
+
+async def seed_api_token(workspace_id: str, agent_id: str, secret: str, name: str = "seed-token",
+                         teams: list[str] | None = None, created_at=None, expires_at=None,
+                         revoked_at=None) -> str:
+    """Seed an api_tokens row directly (via tenant_session so RLS applies). Stores only sha256(secret)+prefix —
+    the raw `secret` is the caller's bearer, never persisted (feature 018). Returns the token id. Pass
+    `created_at` in the past (with a later-but-still-past `expires_at`) to model an already-expired token
+    without violating the CHECK (expires_at > created_at)."""
+    from api.publish.token_auth import hash_secret
+    async with tenant_session(workspace_id) as s:
+        t = ApiToken(workspace_id=uuid.UUID(workspace_id), agent_id=uuid.UUID(agent_id), name=name,
+                     token_hash=hash_secret(secret), prefix=secret[:12],
+                     scopes={"invoke": True, "teams": teams or []},
+                     expires_at=expires_at, revoked_at=revoked_at)
+        if created_at is not None:
+            t.created_at = created_at
+        s.add(t)
+        await s.flush()
+        return str(t.id)
 
 
 async def seed_limits(workspace_id: str, monthly_spend_usd) -> None:

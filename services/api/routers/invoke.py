@@ -1,11 +1,17 @@
-"""SSE invoke router (M4, feature 005, US1).
+"""SSE invoke router (M4, feature 005; published plane added feature 018).
 
 Wraps the SAME `runtime.invoke` (P6) — resolves the frozen version snapshot (tenant-scoped), then streams its
 normalized events re-encoded as SSE. No pipeline logic here. The snapshot is materialized BEFORE streaming so
 the generator holds only the pure dataclass (not the request DB session). Fully mocked at the gateway in tests.
+
+TWO planes share ONE body (`_run_invoke`) so they can never diverge (08 §244-250): the console/playground plane
+(`/api/v1/...`, session auth, `source="playground"`) and the published plane (`/v1/...`, caller-token auth,
+`source="published"`). The ONLY differences are the auth dependency and the run source; both call the same
+`runtime.invoke`. An admin revocation is honored mid-stream via a throttled deny-set re-check (feature 018, D3).
 """
 from __future__ import annotations
 
+import time
 import uuid
 
 from fastapi import APIRouter, Depends
@@ -16,19 +22,22 @@ from sqlalchemy.orm import selectinload
 
 from api import sse
 from api.access_policy import PolicyPrincipal
+from api.auth import denyset
 from api.correlation import correlation_id
-from api.deps import (access_principal, enforce_spend_cap, ensure_use, require_permission,
-                      rate_limit, resolve_workspace, tenant_db)
+from api.deps import (access_principal, assert_within_spend_cap, caller_db, enforce_spend_cap, ensure_use,
+                      rate_limit, require_caller, require_permission, resolve_workspace, tenant_db)
 from api.provider_keys import resolve_provider_key
 from api.run_sink import persist_run_record
 from api.errors import NotFound
 from api.models import Agent, AgentVersion, RetrievalBinding
 from api.schemas.invoke import InvokeIn
+from api.settings import get_settings
 from runtime.context import RunContext
 from runtime.invoke import invoke as runtime_invoke
 from runtime.providers.ir import EventType
 
-router = APIRouter(prefix="/api/v1/agents", tags=["invoke"])
+router = APIRouter(prefix="/api/v1/agents", tags=["invoke"])                  # console/playground plane (session)
+published_router = APIRouter(prefix="/v1/agents", tags=["invoke"])            # published plane (caller token, 018)
 
 
 async def _load_version(session: AsyncSession, agent_id: str, version_id: str | None) -> AgentVersion | None:
@@ -58,10 +67,82 @@ async def _load_version(session: AsyncSession, agent_id: str, version_id: str | 
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
+async def _run_invoke(*, session: AsyncSession, ws: str, ap: PolicyPrincipal, agent_id: str, body: InvokeIn,
+                      corr: str, source: str, deny_subject: str | None = None,
+                      deny_token_id: str | None = None) -> StreamingResponse:
+    """Shared invoke body for BOTH planes (P6 — same runtime.invoke). Access-gate → load snapshot → resolve key
+    → stream, re-checking the deny-set between frames so an in-flight revoke is cut (feature 018, FR-012/D3)."""
+    # feature 013: deny USE fail-closed BEFORE loading the version / opening the stream — no Run row, no provider
+    # call. A denied invoke is a 404 indistinguishable from an absent agent (P5 no-leak).
+    try:
+        aid = uuid.UUID(agent_id)
+    except ValueError:
+        raise NotFound("agent not found", detail={"agent_id": agent_id})
+    agent_policy = (await session.execute(
+        select(Agent.access_policy).where(Agent.id == aid))).scalar_one_or_none()
+    if agent_policy is None:
+        raise NotFound("agent not found", detail={"agent_id": agent_id})
+    ensure_use(agent_policy, ap, not_found=NotFound("agent not found", detail={"agent_id": agent_id}))
+
+    version = await _load_version(session, agent_id, body.version_id)
+    if version is None:
+        raise NotFound("agent version not found", detail={"agent_id": agent_id, "version_id": body.version_id})
+    snapshot = version.to_snapshot()          # pure frozen dataclass — safe to use after the session closes
+
+    # feature 014: resolve the workspace's active provider key just-in-time; fail closed (503) BEFORE streaming.
+    provider = (snapshot.model_config or {}).get("provider", "")
+    api_key = await resolve_provider_key(session, ws, provider)
+
+    runs: list = []
+    run_id = uuid.uuid4().hex
+    ctx = RunContext(workspace_id=ws, source=source, api_key=api_key,
+                     record_run=runs.append, correlation_id=corr, run_id=run_id, deadline_s=30.0)
+
+    recheck_s = get_settings().denyset_stream_recheck_s
+    has_deny_target = deny_subject is not None or deny_token_id is not None
+
+    async def _revoked_midstream(last: list[float]) -> bool:
+        """Throttled deny-set re-check (feature 018, D3): at most every `recheck_s` seconds (0 ⇒ every frame).
+        Fail closed — a deny-set outage mid-stream cuts the stream rather than letting it complete unchecked."""
+        if not has_deny_target:
+            return False
+        now = time.monotonic()
+        if recheck_s and (now - last[0]) < recheck_s:
+            return False
+        last[0] = now
+        try:
+            return await denyset.is_denied(deny_subject, deny_token_id)
+        except Exception:                      # noqa: BLE001 — deny-set unreachable mid-stream → cut (fail closed)
+            return True
+
+    async def _event_stream():
+        yield sse.frame("run_start", {"run_id": run_id, "version": snapshot.version_id,
+                                      "model": (snapshot.model_config or {}).get("model", "")})
+        last_check = [0.0]
+        error_emitted = False
+        async for ev in runtime_invoke(snapshot, body.inputs, ctx):
+            if await _revoked_midstream(last_check):       # admin revoked the caller mid-stream → cut (FR-012)
+                yield sse.error_frame("auth.required", "caller access revoked")
+                return
+            if ev.type is EventType.ERROR:
+                error_emitted = True
+            encoded = sse.encode_event(ev)
+            if encoded is not None:
+                yield encoded
+        run = runs[-1] if runs else None
+        if run is not None:
+            await persist_run_record(session, ws, run)   # durable run record on the request session (FR-013, P8)
+        if run is not None and run.error and not error_emitted:
+            yield sse.error_frame(run.error.get("type", "error"), run.error.get("message", ""))
+        status = run.outcome.value if run is not None else "unknown"
+        yield sse.frame("done", {"run_id": run.run_id if run is not None else "", "status": status})
+
+    return StreamingResponse(_event_stream(), media_type="text/event-stream",
+                             headers={"X-Correlation-Id": corr})   # echo resolved id (F13)
+
+
 @router.post("/{agent_id}/invoke",
              # Order is load-bearing (feature 016): authz (403) → rate limit (429) → spend cap (402) → handler.
-             # Decorator deps resolve before param deps, so the limiter sheds an over-limit caller BEFORE the
-             # spend-cap DB read runs — abuse doesn't amplify into ledger queries (contract rate-limit.md).
              dependencies=[Depends(require_permission("playground.use")),
                            Depends(rate_limit("invoke")),
                            Depends(enforce_spend_cap)])
@@ -73,56 +154,27 @@ async def invoke_agent(
     ap: PolicyPrincipal = Depends(access_principal),   # feature 013: access-policy caller view
     corr: str = Depends(correlation_id),      # F13: inbound traceparent / X-Correlation-Id, else generated
 ):
-    # feature 013: deny USE fail-closed BEFORE loading the version / opening the stream — no Run row, no
-    # provider call. A denied invoke is a 404 indistinguishable from an absent agent (P5 no-leak).
-    try:
-        aid = uuid.UUID(agent_id)
-    except ValueError:
+    """Console/playground plane — session auth, `run_source="playground"`. An admin revocation of this subject
+    is cut mid-stream via the deny-set re-check (the same subject `session_principal` already checks per request)."""
+    return await _run_invoke(session=session, ws=ws, ap=ap, agent_id=agent_id, body=body, corr=corr,
+                             source="playground", deny_subject=ap.subject)
+
+
+@published_router.post("/{agent_id}/invoke")
+async def published_invoke(
+    agent_id: str,
+    body: InvokeIn,
+    caller=Depends(require_caller),                     # 018: caller-token auth (401/429 fail-closed); FastAPI-cached
+    session: AsyncSession = Depends(caller_db),         # RLS session for the token's workspace (reuses `caller`)
+    corr: str = Depends(correlation_id),
+):
+    """Published plane — caller-token auth (role `executer`), `run_source="published"`, tenant pinned by the token.
+    Authorization is the per-resource access policy (keyed on the token's teams), NOT console RBAC."""
+    # The token is bound to exactly one agent (data-model §api_tokens) — reject a mismatched path agent as absent.
+    if agent_id != caller.agent_id:
         raise NotFound("agent not found", detail={"agent_id": agent_id})
-    # Read ONLY the access_policy column for the gate (not the whole row) — _load_version loads the agent's
-    # version next. NOT NULL column → None ⇒ absent row (same light-select pattern as patch_agent).
-    agent_policy = (await session.execute(
-        select(Agent.access_policy).where(Agent.id == aid))).scalar_one_or_none()
-    if agent_policy is None:
-        raise NotFound("agent not found", detail={"agent_id": agent_id})
-    ensure_use(agent_policy, ap,
-               not_found=NotFound("agent not found", detail={"agent_id": agent_id}))
-
-    version = await _load_version(session, agent_id, body.version_id)
-    if version is None:
-        raise NotFound("agent version not found", detail={"agent_id": agent_id, "version_id": body.version_id})
-    snapshot = version.to_snapshot()          # pure frozen dataclass — safe to use after the session closes
-
-    # feature 014: resolve the workspace's active provider key for THIS agent's provider from custody, just-in-
-    # time, and fail closed (503 config_error) BEFORE opening the stream / calling the gateway if none resolves.
-    provider = (snapshot.model_config or {}).get("provider", "")
-    api_key = await resolve_provider_key(session, ws, provider)
-
-    runs: list = []
-    # Mint the run id here so the run_start frame and the final run (done frame) name the SAME id; correlation
-    # is a separate concept carried via ctx.correlation_id + the X-Correlation-Id header (code-review fix).
-    run_id = uuid.uuid4().hex
-    ctx = RunContext(workspace_id=ws, source="playground", api_key=api_key,
-                     record_run=runs.append, correlation_id=corr, run_id=run_id, deadline_s=30.0)
-
-    async def _event_stream():
-        yield sse.frame("run_start", {"run_id": run_id, "version": snapshot.version_id,
-                                      "model": (snapshot.model_config or {}).get("model", "")})
-        error_emitted = False
-        async for ev in runtime_invoke(snapshot, body.inputs, ctx):
-            if ev.type is EventType.ERROR:
-                error_emitted = True
-            encoded = sse.encode_event(ev)
-            if encoded is not None:
-                yield encoded
-        run = runs[-1] if runs else None
-        if run is not None:
-            await persist_run_record(session, ws, run)   # durable run record on the request session (FR-013, P8)
-        # Surface a pre-call rejection (invalid_input/context_overflow/config_error) that produced no ERROR event.
-        if run is not None and run.error and not error_emitted:
-            yield sse.error_frame(run.error.get("type", "error"), run.error.get("message", ""))
-        status = run.outcome.value if run is not None else "unknown"
-        yield sse.frame("done", {"run_id": run.run_id if run is not None else "", "status": status})
-
-    return StreamingResponse(_event_stream(), media_type="text/event-stream",
-                             headers={"X-Correlation-Id": corr})   # echo resolved id (F13)
+    await assert_within_spend_cap(session, caller.workspace_id)     # same spend gate as console (no plane bypass)
+    ap = PolicyPrincipal(role="executer", teams=tuple(caller.teams), subject=None)
+    return await _run_invoke(session=session, ws=caller.workspace_id, ap=ap, agent_id=agent_id, body=body,
+                             corr=corr, source="published", deny_subject=caller.subject,
+                             deny_token_id=caller.token_id)

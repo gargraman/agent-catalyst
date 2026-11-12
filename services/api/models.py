@@ -312,6 +312,28 @@ class ProviderKey(Base, WorkspaceScoped):
     rotated_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class ApiToken(Base, WorkspaceScoped):
+    """Caller token for the published-invoke plane (feature 018; data-model.md §api_tokens).
+
+    Holds NO raw secret — only a non-reversible `token_hash` (sha256 of the one-time secret) and a short
+    display `prefix`. Workspace+agent bound (invoke is pinned to this workspace/endpoint). `scopes.teams` is
+    the caller's team source for the per-resource access policy. Revoke is an UPDATE to `revoked_at` (durable,
+    checked every call); optional `expires_at` gives a natural lifetime. Immediate revocation (killing an
+    active session mid-flight) is the transient Redis deny-set — this row is the authoritative record.
+    """
+    __tablename__ = "api_tokens"
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, server_default=func.gen_random_uuid())
+    agent_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("agents.id"))   # one token → one published endpoint
+    name: Mapped[str] = mapped_column(Text)
+    token_hash: Mapped[str] = mapped_column(Text, unique=True)             # sha256(secret); NEVER the raw secret
+    prefix: Mapped[str] = mapped_column(Text)                             # short display prefix, safe to show
+    scopes: Mapped[dict] = mapped_column(JSONB, default=dict)             # {"invoke": true, "teams": [...]}
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    last_used_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True))
+    expires_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class Run(Base, WorkspaceScoped):
     """Durable run record — identity + metrics ONLY, no raw content (data.ts Run; FR-013/SC-009)."""
     __tablename__ = "runs"

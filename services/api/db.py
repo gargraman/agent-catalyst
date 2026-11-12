@@ -46,6 +46,23 @@ def _app_sessions() -> async_sessionmaker:
 
 
 @asynccontextmanager
+async def auth_lookup_session() -> AsyncIterator[AsyncSession]:
+    """Yield an UNSCOPED ``ac_app`` session for caller-token auth resolution ONLY (feature 018).
+
+    Caller-token auth is inherently cross-tenant: the bearer carries no workspace, so the workspace must be
+    DERIVED from the matching row before any tenant scope can be set (chicken-and-egg). This session has no
+    ``app.workspace_id`` GUC — every RLS-protected table therefore returns ZERO rows through it (fail-closed).
+    It is used solely to call the ``api_token_resolve(hash)`` SECURITY DEFINER function (migration 0008), which
+    bypasses RLS as its owner but only ever returns the single row matching a globally-unique token_hash. The
+    app role still never bypasses RLS directly. Do NOT use this session for tenant reads/writes — use
+    ``tenant_session`` for those.
+    """
+    async with _app_sessions()() as session:
+        async with session.begin():
+            yield session
+
+
+@asynccontextmanager
 async def tenant_session(workspace_id: str | UUID) -> AsyncIterator[AsyncSession]:
     """Yield an AsyncSession bound to exactly one workspace for one transaction.
 

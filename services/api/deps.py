@@ -15,6 +15,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 
 from fastapi import Depends, Header, Query, Response
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
@@ -58,11 +59,23 @@ async def session_principal(request: Request) -> Principal:
     (`AC_AUTH_PROVIDER`): `trellix-iam` verifies a real bearer JWT; `dev` trusts the `X-Dev-Principal` header
     (test/dev only, disabled under `AC_ENV=prod`). Any auth failure → 401 (fail-closed, FR-010). The provider
     import is lazy to avoid an import cycle (deps ← auth providers)."""
+    from api.auth import denyset
+    from api.auth.base import AuthError
     from api.auth.registry import get_active_provider
     from api.settings import get_settings
 
     provider = get_active_provider(get_settings())
-    return await provider.verify(request)
+    principal = await provider.verify(request)
+    # Immediate revocation (feature 018, FR-013): an admin force-logout adds the subject to the deny-set, so an
+    # ACTIVE console session is rejected on its NEXT request — not only on the next IdP login. The deny-set is a
+    # SECURITY control: a configured-but-unreachable Redis fails CLOSED (D2/FR-024b), unlike the 016 limiter.
+    try:
+        revoked = await denyset.is_denied(principal.subject, None)
+    except Exception as e:  # noqa: BLE001 — deny-set unreachable → fail closed (no secret in the reason, P5)
+        raise AuthError("authorization store unavailable") from e
+    if revoked:
+        raise AuthError("session revoked")
+    return principal
 
 
 async def _membership_role(ws: str, subject: str) -> str | None:
@@ -98,6 +111,31 @@ async def tenant_db(ws: str = Depends(resolve_workspace)) -> AsyncIterator[Async
         yield session
 
 
+# ---- published-invoke plane: caller-token auth (feature 018) -------------------------------------
+async def require_caller(request: Request):
+    """Authenticate a published-invoke caller by its bearer caller-token → `CallerCtx` (role `executer`, tenant
+    pinned by the token). Fails closed (401/429) per `publish.token_auth.resolve_caller`. The auth lookup runs on
+    an UNSCOPED session (`auth_lookup_session`) because the workspace is DERIVED from the token, not supplied."""
+    from api.db import auth_lookup_session
+    from api.publish.token_auth import resolve_caller
+
+    async with auth_lookup_session() as s:
+        return await resolve_caller(request, s)
+
+
+async def caller_db(caller=Depends(require_caller)) -> AsyncIterator[AsyncSession]:
+    """Yield the RLS-scoped session for the caller-token's workspace (so the streaming generator holds an open
+    session, like `tenant_db`). Best-effort `last_used_at` touch here (never fails the request). `require_caller`
+    is FastAPI-cached, so the route can also inject `caller` without a second resolution/rate-limit hit."""
+    async with tenant_session(caller.workspace_id) as session:
+        try:                                               # best-effort telemetry; must never break auth/invoke
+            await session.execute(text("UPDATE api_tokens SET last_used_at=now() WHERE id=:i"),
+                                  {"i": caller.token_id})
+        except Exception:                                  # noqa: BLE001
+            pass
+        yield session
+
+
 def require_permission(permission: str):
     """RBAC gate (feature 008, M5/P3). Returns a dependency that authorizes the caller's workspace ROLE
     against `permission` — deny fail-closed with 403 access.denied. Resolves principal + workspace (header-only,
@@ -122,13 +160,18 @@ async def enforce_spend_cap(
     ws: str = Depends(resolve_workspace),
     session: AsyncSession = Depends(tenant_db),
 ) -> None:
+    """Console-plane dependency wrapper around `assert_within_spend_cap` (feature 009). Attached AFTER
+    `require_permission(...)` so authz (403) resolves first (FR-006); shares the request's RLS session."""
+    await assert_within_spend_cap(session, ws)
+
+
+async def assert_within_spend_cap(session: AsyncSession, ws: str) -> None:
     """Durable monthly spend cap (feature 009, M6 / F7, P3). Refuse a paid invocation when the workspace's
     month-to-date spend (summed from the durable `runs.cost_usd` ledger — eviction-proof) is at/over its
-    monthly cap, BEFORE the provider is called / the stream opens. Attached AFTER `require_permission(...)`
-    so authz (403) resolves first (FR-006); shares the request's RLS session with the handler (no second
-    connection). A refusal writes no Run row — it is surfaced via the 402 + this log line (FR-011). A
-    spend-computation error is NOT swallowed: it propagates, failing the request closed before any paid
-    call (FR-009)."""
+    monthly cap, BEFORE the provider is called / the stream opens. Reusable by BOTH invoke planes (console +
+    published, feature 018) so neither can bypass the cap — the "one gate set" invariant. A refusal writes no
+    Run row — surfaced via the 402 + log line (FR-011). A spend-computation error is NOT swallowed: it
+    propagates, failing the request closed before any paid call (FR-009)."""
     try:
         spent = await spend.month_to_date_spend(session, ws)
         cap = await spend.active_cap_usd(session, ws)

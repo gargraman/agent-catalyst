@@ -86,6 +86,23 @@ class Settings(BaseSettings):
                 raise ValueError(f"AC_EGRESS_EXTRA_DENY_CIDRS entry is not a valid CIDR/IP: {c!r}") from exc
         return v
 
+    # --- Caller-token deny-set (feature 018) ----------------------------------------------------
+    # Immediate-revocation deny-set TTL: must be ≥ the max access-token/session lifetime (≥ 1h) so a revoked
+    # subject can't outlive the set (FR-014). The deny-set is a SECURITY control — unlike the 016 limiter it
+    # fails CLOSED on a configured-Redis outage (FR-024b); it does NOT key off rate_limit_enabled.
+    denyset_ttl_s: int = Field(default=3600, alias="AC_DENYSET_TTL_S")
+    # In-flight streaming invoke re-checks the deny-set at this cadence so a mid-stream revoke is cut (FR-012).
+    # Per-frame checks would be one Redis round-trip per token-delta (too chatty); the worst-case leak window is
+    # this interval. 0 disables the mid-stream re-check (initial-gate only).
+    denyset_stream_recheck_s: float = Field(default=2.0, alias="AC_DENYSET_STREAM_RECHECK_S")
+
+    @field_validator("denyset_ttl_s")
+    @classmethod
+    def _denyset_ttl_floor(cls, v: int) -> int:
+        if v < 3600:                                          # FR-014: ≥ max token/session lifetime (1h)
+            raise ValueError("AC_DENYSET_TTL_S must be ≥ 3600 (deny-set must outlive the max token/session TTL)")
+        return v
+
     # --- Secret custody (feature 014) -----------------------------------------------------------
     # Pluggable secrets backend selector, resolved by api.secrets.registry: "local" | "aws".
     # `local` = in-process (unit tests + offline dev); `aws` = AWS Secrets Manager (boto3), pointed at

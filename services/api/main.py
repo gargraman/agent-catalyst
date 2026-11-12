@@ -13,7 +13,7 @@ from sqlalchemy import text
 from api import db, metrics
 from api.errors import AppError, app_error_handler
 from api.routers import (
-    agents, evals, invoke, knowledge, members, provider_keys, runs, skills, tools, workspaces,
+    agents, evals, invoke, knowledge, members, provider_keys, runs, skills, tokens, tools, workspaces,
 )
 
 
@@ -25,6 +25,8 @@ def create_app() -> FastAPI:
 
     app.include_router(agents.router)
     app.include_router(invoke.router)
+    app.include_router(invoke.published_router)   # feature 018: published caller-token invoke plane (/v1)
+    app.include_router(tokens.router)             # feature 018: caller-token mint/list/revoke + admin revoke-user
     app.include_router(evals.router)
     app.include_router(tools.router)
     app.include_router(skills.router)
