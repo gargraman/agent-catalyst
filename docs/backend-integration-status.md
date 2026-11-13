@@ -1,7 +1,7 @@
 # Backend Integration Status (mock ↔ real)
 
 **Last reconciled against:** feature 021 (M5 Redis-SPOF degraded mode + PgBouncer txn-mode — **M5 capstone, milestone CLOSED**), branch `feat/backend-m0-foundation` · **Date:** 2026-11-13
-(history: 006 M4-remainder → 007 trust boundary → 008 RBAC enforcement → 009 spend cap → 010 observability → 012 IdP authN → 013 access policy → 014 provider-key custody → 016 rate limiting → 017 SSRF egress guard (built unwired) → 018 caller-token mint + deny-set + published invoke plane → 019 OIDC console login + session + CSRF → 020 IdP group→members-store sync → 021 Redis degraded-mode + PgBouncer txn-mode (M5 capstone))
+(history: 006 M4-remainder → 007 trust boundary → 008 RBAC enforcement → 009 spend cap → 010 observability → 012 IdP authN → 013 access policy → 014 provider-key custody → 016 rate limiting → 017 SSRF egress guard (built unwired) → 018 caller-token mint + deny-set + published invoke plane → 019 OIDC console login + session + CSRF → 020 IdP group→members-store sync → 021 Redis degraded-mode + PgBouncer txn-mode (M5 capstone) → 022 local dev stack [infra: LocalStack S3 object storage + one-command compose bring-up + integration tests; **no new FE seam**])
 **Total `@backend` seams** (`grep -rn "@backend" frontend/src | wc -l`): **257**
 
 This tracker records the honest state of the mock→real migration on **two independent axes**:

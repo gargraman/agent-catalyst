@@ -111,7 +111,7 @@ flowchart LR
 | **Prometheus** | numeric time-series (rates, histograms, gauges) | real-time ops dashboards + alerting | 15–30d; long-term via remote-write if needed |
 
 > **Langfuse v3 brings its own ClickHouse.** v3 runs on ClickHouse internally (bringing its own ClickHouse
-> + Redis + S3 — and since we already run Redis & MinIO, the net-new infra is the **one `clickhouse`
+> + Redis + S3 — and since we already run Redis & S3 (LocalStack/AWS, feature 022), the net-new infra is the **one `clickhouse`
 > service**, `11 §1/§3`). That columnar backend is what lets us **delete the old 0.2 trace sampling** and
 > keep 100% of traces (`lld/10 §8`). We pin the Langfuse image by digest (`11 §2/§12`).
 

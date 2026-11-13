@@ -1,6 +1,7 @@
-# Dev-only compose stack for local TDD (M0+). M11 hardens this (healthchecks tuned,
-# Vault/MinIO/Langfuse+ClickHouse added, resource limits, prod overlay).
-# Postgres ships the pgvector extension via the pgvector image (01L: Postgres 16 + pgvector).
+# Dev-only compose stack for local TDD (M0+). Adds (feature 022) object storage via LocalStack S3 (same emulator
+# as secrets — prod uses real AWS S3) + a profiled, OFF-by-default observability PLACEHOLDER (ClickHouse/Langfuse
+# — not v3-ready; see §Observability below). M11 hardens this (resource limits, real Langfuse-v3 topology, prod
+# overlay). Postgres ships the pgvector extension via the pgvector image (01L: Postgres 16 + pgvector).
 name: agent-catalyst-dev
 
 services:
@@ -51,15 +52,19 @@ services:
       timeout: 3s
       retries: 20
 
-  # Local AWS emulator for secret custody (feature 014) — Secrets Manager (+ KMS at-rest). Stands in for the
-  # real AWS account locally so the SAME boto3 code path runs in dev. Dev-only; no real cloud, no real creds.
+  # Local AWS emulator: secret custody (feature 014 — Secrets Manager + KMS) AND object storage (feature 022 — S3).
+  # Stands in for the real AWS account locally so the SAME boto3 code path runs in dev; prod talks to real AWS
+  # (Secrets Manager + S3) via an IAM role, no endpoint override. Dev-only; no real cloud, no real creds. The S3
+  # buckets (ac-uploads, langfuse) are created by the mounted init hook once LocalStack is ready (idempotent).
   localstack:
     image: localstack/localstack:3
     ports:
-      - "4566:4566"                          # LocalStack edge (Secrets Manager, KMS)
+      - "4566:4566"                          # LocalStack edge (Secrets Manager, KMS, S3)
     environment:
-      SERVICES: secretsmanager,kms
+      SERVICES: secretsmanager,kms,s3
       DEBUG: "0"
+    volumes:
+      - ./localstack/init-s3.sh:/etc/localstack/init/ready.d/init-s3.sh:ro   # creates S3 buckets on ready
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:4566/_localstack/health || exit 1"]
       interval: 5s
@@ -102,8 +107,11 @@ services:
       AC_SECRETS_PROVIDER: aws
       AC_AWS_ENDPOINT_URL: http://localstack:4566
       AC_AWS_REGION: us-east-1
-      AWS_ACCESS_KEY_ID: test                # dev-only dummy creds for LocalStack — never a real key
+      AWS_ACCESS_KEY_ID: test                # dev-only dummy creds for LocalStack (Secrets Manager + S3) — never real
       AWS_SECRET_ACCESS_KEY: test
+      # Object storage (feature 022): S3 reuses the SAME LocalStack endpoint + AWS creds as secrets above — no new
+      # env needed locally. Wired as INFRASTRUCTURE only; no Settings field reads a bucket name yet. When the
+      # app-side S3 client lands, add AC_S3_BUCKET (e.g. ac-uploads) + boto3 client("s3", endpoint_url=AC_AWS_ENDPOINT_URL).
     depends_on:
       postgres:
         condition: service_healthy
@@ -119,5 +127,35 @@ services:
       timeout: 3s
       retries: 20
 
+  # --- Observability PLACEHOLDER (feature 022 §2) — profiled OFF; `docker compose up` IGNORES these. -----------
+  # ⚠️ NOT Langfuse-v3-ready. Real v3 is a multi-container topology (langfuse-web + langfuse-worker + a ClickHouse
+  # init/migration step + ENCRYPTION_KEY/SALT/NEXTAUTH_URL + a full LANGFUSE_S3_* block) and will REPLACE these
+  # stubs when observability is actually turned on. These exist only so the turn-on seam is visible and
+  # `docker compose --profile observability config` parses — they are NOT expected to come up green as-is.
+  clickhouse:
+    image: clickhouse/clickhouse-server      # PLACEHOLDER — pin at turn-on (docs/backend/11)
+    profiles: ["observability"]
+    environment:
+      CLICKHOUSE_USER: langfuse
+      CLICKHOUSE_PASSWORD: langfuse          # dev-only dummy
+    volumes:
+      - chdata:/var/lib/clickhouse
+
+  langfuse:
+    image: langfuse/langfuse:3               # PLACEHOLDER tag — real v3 pinned-by-digest at turn-on (docs/backend/11)
+    profiles: ["observability"]
+    environment:
+      # PLACEHOLDER env only — v3 additionally requires a `langfuse` Postgres DB, ENCRYPTION_KEY (32-byte hex),
+      # SALT, NEXTAUTH_URL, and the LANGFUSE_S3_* block (endpoint/creds/force-path-style → the `langfuse` bucket
+      # on LocalStack S3 locally / real AWS S3 in prod).
+      DATABASE_URL: postgresql://ac:ac_dev_pw@postgres:5432/langfuse
+      NEXTAUTH_SECRET: dev
+    depends_on:
+      - clickhouse
+      - localstack
+    ports:
+      - "3001:3000"
+
 volumes:
   pgdata:
+  chdata:

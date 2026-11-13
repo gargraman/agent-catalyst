@@ -46,7 +46,8 @@ variant used only on the P2 MCP/tool path; the first three are the always-on cor
 
 Shared stateful backing services (see `11-deployment.md`): Postgres+pgvector, Redis, **AWS Secrets Manager**
 (LocalStack locally — secret custody, feature 014; replaces Vault), Langfuse **v3**, ClickHouse (Langfuse's
-columnar trace store; + a Phase-2 derived `analytics` DB, 10 §2), MinIO.
+columnar trace store; + a Phase-2 derived `analytics` DB, 10 §2), AWS S3 (LocalStack locally — object
+storage, feature 022; replaces MinIO, which pulled its community images — see `scope.md` 2026-11-13).
 
 > **Why `api` serves both builder and published invoke:** same runtime, same auth primitives, half the
 > infra. Separate them into two Deployments later *only* for blast-radius isolation (a runaway public
@@ -224,7 +225,7 @@ class Settings(BaseSettings):
     aws_region: str = "us-east-1"
     secrets_prefix: str = "ac"                         # secret-name namespace root
     langfuse_host: AnyUrl
-    minio_endpoint: AnyUrl
+    aws_endpoint_url: AnyUrl | None                    # Secrets Manager + S3 (LocalStack in dev; unset → real AWS) — replaces minio_endpoint (feature 022)
 
     oidc_issuer: AnyUrl                               # Trellix IAM
     oidc_client_id: str

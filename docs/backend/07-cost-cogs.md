@@ -17,7 +17,7 @@ flowchart LR
   COGS --> INF["Infra<br/>fixed-ish"]
 ```
 
-**Legend —** Runtime: per-call input/output/reasoning tokens × traffic. Eval: judge calls × cases × suites × triggers. Embedding: ingestion (one-time/doc) + query embeds. Infra: Postgres/pgvector, Redis, workers, Langfuse, MinIO.
+**Legend —** Runtime: per-call input/output/reasoning tokens × traffic. Eval: judge calls × cases × suites × triggers. Embedding: ingestion (one-time/doc) + query embeds. Infra: Postgres/pgvector, Redis, workers, Langfuse, AWS S3 (object storage — feature 022, replaces MinIO).
 
 Two non-obvious truths this drives:
 1. **Eval cost is bursty and can exceed runtime cost** for a low-traffic agent with a large suite —
@@ -256,7 +256,7 @@ install (one org, ~40 agents), to be replaced with real quotes:
 | ClickHouse (Langfuse v3 trace backend; P2 `analytics` rollups) | trace columns + P2 rollup tables | scales with trace volume; net-new with v3 (`11 §1`); shares one cluster until a `CLICKHOUSE_URL` split |
 | Redis | cache + queue + budget counters | small |
 | AWS Secrets Manager (managed; LocalStack in dev — feature 014, replaces self-hosted Vault) | secrets | usage-based, small |
-| MinIO | uploaded docs | small, storage-bound |
+| AWS S3 (LocalStack in dev — feature 022, replaces MinIO) | uploaded docs | small, storage-bound |
 | `api` + `worker` compute | request + eval/ingest concurrency | scales with load (00 §2, 11 §7) |
 
 > **The honest number is a formula, not a total** (matches the CxO cheat-sheet rule). Platform COGS ≈
@@ -266,8 +266,8 @@ install (one org, ~40 agents), to be replaced with real quotes:
 > separate capex/opex line that **must be sized against real quotes before the full build** — it is an
 > input to the build-vs-buy case, not an afterthought.
 
-**Ops burden is part of the cost.** Six self-hosted stateful services (Postgres, Redis, Langfuse, MinIO,
-**ClickHouse** — net-new with Langfuse v3, `11 §1` — + the worker fleet) **plus managed AWS Secrets Manager**
+**Ops burden is part of the cost.** Five self-hosted stateful services (Postgres, Redis, Langfuse,
+**ClickHouse** — net-new with Langfuse v3, `11 §1` — + the worker fleet) **plus managed AWS Secrets Manager + S3**
 (feature 014 — moves custody off a self-hosted Vault you'd otherwise run and drill) need an owning team,
 backups, and a secret-backup / KMS-key drill (11 §10). That staffing is a real COGS line the "lean, OSS, no
 per-call SaaS" framing must not hide.

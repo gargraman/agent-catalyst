@@ -15,8 +15,9 @@ docs/backend/ → modules, interfaces, DDL, schemas, cost, guardrails        (th
 ```
 
 Read `scope.md` → `spec.md` → this folder. Nothing here contradicts the locked stack
-(FastAPI + LangGraph + LiteLLM + Postgres/pgvector + Redis + AWS Secrets Manager/LocalStack + Langfuse + MinIO, portable
-containers; secret custody moved from Vault to a pluggable backend — feature 014, `scope.md` 2026-11-11); where it
+(FastAPI + LangGraph + LiteLLM + Postgres/pgvector + Redis + AWS Secrets Manager/LocalStack + Langfuse + AWS S3, portable
+containers; secret custody moved from Vault to a pluggable backend — feature 014, `scope.md` 2026-11-11 — and object
+storage from MinIO to AWS S3/LocalStack — feature 022, `scope.md` 2026-11-13); where it
 **extends or pushes back**, the delta is argued inline (see `00 §7`).
 
 ## Reading order

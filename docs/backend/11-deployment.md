@@ -28,6 +28,27 @@
 > - Scope: **provider keys only** are wired end-to-end; other cred families are designed for the same seam but
 >   not built.
 
+> ### ⚠️ AS BUILT (feature 022, 2026-11-13) — object storage is AWS S3 (LocalStack locally), NOT MinIO
+>
+> This doc describes **MinIO** as the object store (topology, service table, Langfuse-S3 reuse). That is
+> **superseded**: object storage is now **AWS S3** — emulated locally by **LocalStack S3** and backed by real
+> AWS S3 in prod (via an IAM role) — mirroring the 014 Vault→AWS Secrets Manager reversal. Wherever this doc
+> says "MinIO", read: **the object store (AWS S3 / LocalStack S3)**. Why: MinIO removed its community images
+> from Docker Hub (Sept 2026) and gated quay.io behind auth, so it is no longer freely pullable and its last
+> community build is frozen — see `docs/scope.md` 2026-11-13. Concrete deltas vs. the compose text below:
+> - The dev `localstack` service runs `SERVICES=secretsmanager,kms,s3`; a mounted `ready.d` hook
+>   (`deploy/localstack/init-s3.sh`) creates the `ac-uploads` and `langfuse` buckets. **No `minio` container.**
+> - Object storage is **infrastructure-only** so far — no app-side S3 client, no `Settings` field reads a bucket
+>   yet. S3 reuses the same `AC_AWS_ENDPOINT_URL` + dummy AWS creds as secrets (no new local env). The future
+>   client is plain `boto3.client("s3", endpoint_url=…)` — same seam as the secrets provider.
+> - **Langfuse + ClickHouse are a thin PLACEHOLDER**, guarded by `profiles: ["observability"]` and **OFF by
+>   default**. They are **NOT Langfuse-v3-ready** — real v3 is a multi-container topology (`langfuse-web` +
+>   `langfuse-worker` + a ClickHouse init step + `ENCRYPTION_KEY`/`SALT`/`NEXTAUTH_URL` + a full `LANGFUSE_S3_*`
+>   block pointing at the `langfuse` bucket) that will **replace** these stubs when observability is actually
+>   turned on. Their only acceptance bar today is that `docker compose --profile observability config` parses.
+> - Local workflow is a root **`Makefile`** (`make up` / `make test-integration` / `make observability-up`);
+>   integration tests are opt-in under `AC_RUN_LOCALSTACK=1`. See `specs/022-local-dev-stack/quickstart.md`.
+
 ## 1. Topology at a glance
 
 ```mermaid

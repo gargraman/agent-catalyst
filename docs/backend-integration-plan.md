@@ -16,7 +16,7 @@ and writes go through a client store (`frontend/src/lib/store.ts`) seeded from `
 auth/tenancy is a mock IdP profile — claim-based, IdP-agnostic (`auth.tsx` + `iam.ts` + `permissions.ts` + `access-policy.ts`),
 and the runtime token check is a deterministic decode (`runtime-access.ts`). This plan turns that into a
 real internal pilot: build the backend per `docs/spec.md` (Python/FastAPI + LangGraph + LiteLLM +
-Postgres/pgvector + Redis + AWS Secrets Manager (LocalStack locally; replaces Vault) + Langfuse + MinIO, portable containers), wire the existing UI to it,
+Postgres/pgvector + Redis + AWS Secrets Manager (LocalStack locally; replaces Vault) + Langfuse + AWS S3 (LocalStack locally; replaces MinIO — feature 022), portable containers), wire the existing UI to it,
 and run agents safely across workspaces in one corporate deployment. The frontend data types were
 authored to mirror backend entities, but mock-only flows still need real authorization, persistence,
 failure behavior, and operational semantics; matching shapes does not make integration a store swap.
@@ -63,7 +63,7 @@ flowchart TB
   subgraph Data[Stateful services]
     PG[(Postgres<br/>+ pgvector)]
     REDIS[(Redis<br/>queue / semaphores / cache)]
-    MINIO[(MinIO<br/>uploads / payloads)]
+    MINIO[(AWS S3<br/>uploads / payloads)]
     VAULT[(Vault<br/>per-workspace DEK)]
     LF[(Langfuse<br/>traces / cost)]
   end
@@ -218,8 +218,10 @@ mock — wiring is "point it at IAM + enforce server-side," not new UX). The onl
 ## Part 3 — Deployment
 
 **Containers:** `api`, `worker` (eval+ingest+mcp), `web` (Next.js standalone) + stateful deps
-Postgres(+pgvector), Redis, Vault, Langfuse, and **MinIO** (S3-compatible object store for uploads +
-large trace/eval payloads), all self-hosted OSS, no cloud-managed lock-in ("portable").
+Postgres(+pgvector), Redis, the secrets backend (AWS Secrets Manager / LocalStack — feature 014), Langfuse,
+and **AWS S3** (object store for uploads + large trace/eval payloads; LocalStack in dev — feature 022,
+replaces MinIO). The stateful core is self-hosted OSS; secret custody + object storage are AWS-managed
+(LocalStack-emulated in dev), the two reversals from the original "all self-hosted, no lock-in" stance.
 
 | Concern | Approach |
 |---|---|
@@ -293,7 +295,7 @@ Unglamorous, high-consequence items. Most are Med complexity but would hurt badl
   **zero-data-retention / inference-geo** where compliance requires. *(Med-High.)*
 - **Provider resilience.** Handle 429/5xx/refusal with retries + backoff, circuit breaker, and the
   versioned **fallback model**; record the fallback/substitution on the run. *(Med.)*
-- **Object storage + upload safety.** MinIO for uploads and large payloads; stream uploads, enforce
+- **Object storage + upload safety.** AWS S3 (LocalStack in dev — feature 022, replaces MinIO) for uploads and large payloads; stream uploads, enforce
   size/type limits, and **virus-scan** uploaded files. *(Low-Med.)*
 - **Eval data lifecycle.** Seed suites + **capture real production failures back into suites**
   (feedback loop) + periodic **judge calibration vs human labels**. This is what makes drift detection
