@@ -12,13 +12,17 @@ from fastapi import APIRouter, Response
 from fastapi.responses import RedirectResponse
 from starlette.requests import Request
 
+import logging
+
+from api import sync
 from api.auth import oidc_login
 from api.auth import session as sess
-from api.auth.registry import AuthConfigError
+from api.auth.registry import AuthConfigError, get_active_provider
 from api.errors import InputInvalid
 from api.settings import get_settings
 
 router = APIRouter(tags=["auth"])
+log = logging.getLogger("api.auth")
 
 
 def _cookie_kwargs(settings) -> dict:
@@ -54,6 +58,13 @@ async def callback(request: Request) -> RedirectResponse:
         )
     except oidc_login.LoginUpstreamError as exc:               # IdP unreachable → VISIBLE 503, no session (not fail-open)
         raise AuthConfigError("identity provider unavailable during login") from exc
+
+    # feature 020: best-effort IdP group → members-store sync on login (no-op for the claim-less pilot IdP, D3).
+    # run_login_sync swallows its own errors; guard the provider acquisition too so a sync hiccup never fails login.
+    try:
+        await sync.run_login_sync(subject, get_active_provider(settings))
+    except Exception:                                          # noqa: BLE001 — login must not fail on group-sync
+        log.warning("login group-sync dispatch failed (best-effort; login proceeds)", exc_info=True)
 
     cookie_value, csrf = sess.issue_session(subject, config.issuer, config.audience)
     resp = RedirectResponse(settings.oidc_post_login_path, status_code=302)

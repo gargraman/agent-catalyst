@@ -20,7 +20,7 @@ description: "Task list — 020 M5 IdP Group → Members-Store Sync + Notificati
 
 ## Phase 1: Setup
 
-- [ ] T001 Confirm the 019 `/auth/callback` hook exists (this feature attaches to it). If 019 is not yet merged, the sync writer + tests can still be built against a direct call to `sync_member_from_groups`; wiring into the callback (T0‑wire) lands once 019 is in. (No new dependency, no settings.)
+- [x] T001 Confirm the 019 `/auth/callback` hook exists (this feature attaches to it). If 019 is not yet merged, the sync writer + tests can still be built against a direct call to `sync_member_from_groups`; wiring into the callback (T0‑wire) lands once 019 is in. (No new dependency, no settings.)
 
 ---
 
@@ -28,10 +28,10 @@ description: "Task list — 020 M5 IdP Group → Members-Store Sync + Notificati
 
 **⚠️ Must complete before US1 can go Green. Schema + scaffolding.**
 
-- [ ] T002 Create `services/migrations/versions/0010_idp_binding_and_group_members.py` (down_revision `0009`): (a) `ALTER TABLE workspaces ADD COLUMN idp_binding jsonb NOT NULL DEFAULT '{}'` (D1); (b) `CREATE TABLE group_members (workspace_id uuid NOT NULL, group_ref text NOT NULL, subject text NOT NULL, source text NOT NULL, seen_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY (workspace_id, group_ref, subject))` + **WorkspaceScoped RLS mirroring `0005`/`0006`** (D5). `source` ∈ `{'login_seen','members_of'}`.
-- [ ] T003 Update `services/api/models.py`: add `idp_binding: Mapped[dict]` (JSONB, default `dict`) to `Workspace`; add the `GroupMember` ORM model on the **`WorkspaceScoped` base** (D5; cache-only).
-- [ ] T004 [P] Extend the provider seam in `services/api/auth/base.py`: add **optional** `groups_for(subject) -> list[str] | None` and `members_of(group_ref) -> list[str] | None` to the contract (Protocol members or a capability mixin; `hasattr`-detected). Do NOT touch `dev`/`trellix-iam`/`jwt` providers — they keep `verify` only (D2).
-- [ ] T005 [P] Create `services/api/sync.py` **stub**: `async def sync_member_from_groups(session, workspace_id, subject, groups)` and `async def refresh_group_projection(session, workspace_id)` signatures; docstring states "the only writer; no live per-request group→role path" (FR-021) and "`group_members` never grants access" (FR-023). Bodies raise `NotImplementedError`.
+- [x] T002 Create `services/migrations/versions/0010_idp_binding_and_group_members.py` (down_revision `0009`): (a) `ALTER TABLE workspaces ADD COLUMN idp_binding jsonb NOT NULL DEFAULT '{}'` (D1); (b) `CREATE TABLE group_members (workspace_id uuid NOT NULL, group_ref text NOT NULL, subject text NOT NULL, source text NOT NULL, seen_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY (workspace_id, group_ref, subject))` + **WorkspaceScoped RLS mirroring `0005`/`0006`** (D5). `source` ∈ `{'login_seen','members_of'}`.
+- [x] T003 Update `services/api/models.py`: add `idp_binding: Mapped[dict]` (JSONB, default `dict`) to `Workspace`; add the `GroupMember` ORM model on the **`WorkspaceScoped` base** (D5; cache-only).
+- [x] T004 [P] Extend the provider seam in `services/api/auth/base.py`: add **optional** `groups_for(subject) -> list[str] | None` and `members_of(group_ref) -> list[str] | None` to the contract (Protocol members or a capability mixin; `hasattr`-detected). Do NOT touch `dev`/`trellix-iam`/`jwt` providers — they keep `verify` only (D2).
+- [x] T005 [P] Create `services/api/sync.py` **stub**: `async def sync_member_from_groups(session, workspace_id, subject, groups)` and `async def refresh_group_projection(session, workspace_id)` signatures; docstring states "the only writer; no live per-request group→role path" (FR-021) and "`group_members` never grants access" (FR-023). Bodies raise `NotImplementedError`.
 
 **Checkpoint**: `0010` applies; `Workspace.idp_binding` + `GroupMember` import; `sync.py` imports; provider seam type-checks with existing providers unchanged.
 
@@ -45,27 +45,27 @@ description: "Task list — 020 M5 IdP Group → Members-Store Sync + Notificati
 
 ### Tests for User Story 1 (write FIRST, confirm they FAIL on behavior) ⚠️
 
-- [ ] T006 [US1] Add a tenant-session scaffold + a **fake enumerating adapter** (scripted `groups_for`/`members_of`) in `services/tests/test_idp_group_sync.py` (import real app/deps; no behavior assertions) so Red tests fail on behavior, not import.
-- [ ] T007 [US1] Red `test_sync_sets_role_team_from_name_mapping`: a role→group (Okta name) + team→group mapping in `idp_binding`; login with matching groups → `members.console_role`/`teams` upserted (FR-021, AS1).
-- [ ] T008 [US1] Red `test_sync_resolves_guid_and_attr_refs`: the same with an Entra object-GUID ref and a SAML attribute-value ref → resolves with **no** `ap-<prefix>-<role>` / name-prefix assumption (FR-021, AS4).
-- [ ] T009 [US1] Red `test_no_match_grants_nothing`: login whose groups match no mapping → no role/team written (fail-closed default, FR-022, AS2).
-- [ ] T010 [US1] Red `test_no_live_group_to_role_path`: assert the authZ reads still come only from the members store (`membership.role_for`/`teams_for`); no per-request group→role resolver exists (FR-021).
-- [ ] T011 [US1] Red `test_projection_login_seen_not_authz`: `group_members` upserted `source='login_seen'` on login; assert it is never consulted to grant access (FR-023, AS3).
-- [ ] T012 [US1] Red `test_scheduled_refresh_enumerates`: `refresh_group_projection` via a `members_of`-capable fake adapter upserts `source='members_of'` (FR-023, AS3).
-- [ ] T013 [US1] Red `test_claimless_provider_sync_is_noop`: a `trellix-iam`-style provider (`groups_for → None`) → the sync is a no-op and login still succeeds (D3).
-- [ ] T014 [US1] Red `test_group_shrink_revokes_but_none_is_noop` (D4 ruled = revoke): an **authoritative** login with a shrunk group set clears the previously-synced `console_role`/`teams` on the member row (keeps the row); a provider returning `None` leaves the member row **unchanged** (never revokes, D3).
-- [ ] T015 [US1] Red `test_sync_is_workspace_scoped`: the sync writes only within the tenant (RLS) session; a cross-tenant upsert is invisible/denied (P5).
+- [x] T006 [US1] Add a tenant-session scaffold + a **fake enumerating adapter** (scripted `groups_for`/`members_of`) in `services/tests/test_idp_group_sync.py` (import real app/deps; no behavior assertions) so Red tests fail on behavior, not import.
+- [x] T007 [US1] Red `test_sync_sets_role_team_from_name_mapping`: a role→group (Okta name) + team→group mapping in `idp_binding`; login with matching groups → `members.console_role`/`teams` upserted (FR-021, AS1).
+- [x] T008 [US1] Red `test_sync_resolves_guid_and_attr_refs`: the same with an Entra object-GUID ref and a SAML attribute-value ref → resolves with **no** `ap-<prefix>-<role>` / name-prefix assumption (FR-021, AS4).
+- [x] T009 [US1] Red `test_no_match_grants_nothing`: login whose groups match no mapping → no role/team written (fail-closed default, FR-022, AS2).
+- [x] T010 [US1] Red `test_no_live_group_to_role_path`: assert the authZ reads still come only from the members store (`membership.role_for`/`teams_for`); no per-request group→role resolver exists (FR-021).
+- [x] T011 [US1] Red `test_projection_login_seen_not_authz`: `group_members` upserted `source='login_seen'` on login; assert it is never consulted to grant access (FR-023, AS3).
+- [x] T012 [US1] Red `test_scheduled_refresh_enumerates`: `refresh_group_projection` via a `members_of`-capable fake adapter upserts `source='members_of'` (FR-023, AS3).
+- [x] T013 [US1] Red `test_claimless_provider_sync_is_noop`: a `trellix-iam`-style provider (`groups_for → None`) → the sync is a no-op and login still succeeds (D3).
+- [x] T014 [US1] Red `test_group_shrink_revokes_but_none_is_noop` (D4 ruled = revoke): an **authoritative** login with a shrunk group set clears the previously-synced `console_role`/`teams` on the member row (keeps the row); a provider returning `None` leaves the member row **unchanged** (never revokes, D3).
+- [x] T015 [US1] Red `test_sync_is_workspace_scoped`: the sync writes only within the tenant (RLS) session; a cross-tenant upsert is invisible/denied (P5).
 
 ### Implementation for US1 (make the above Green, dependency order)
 
-- [ ] T016 [US1] Implement `sync_member_from_groups` in `services/api/sync.py`: if `groups is None` → return (no-op, never revoke — D3). Else (authoritative) resolve `groups` through `workspaces.idp_binding` (roles + teams; name/GUID/attr) → `INSERT ... ON CONFLICT (workspace_id, subject) DO UPDATE` on `members.console_role`+`teams`, **reconciling to the resolved set — clear the synced role/team when the mapping shrinks/empties but a member row exists (D4 revoke)**; first-time no-match → write nothing (FR-022). Runs under the tenant session. Depends on T002, T003.
-- [ ] T017 [US1] Implement the `group_members` projection upsert in `sync.py` (`source='login_seen'` on login; `source='members_of'` in `refresh_group_projection`); cache-only, never read for authZ (FR-023). Depends on T002, T003.
-- [ ] T018 [US1] Implement `refresh_group_projection`: iterate `idp_binding` group refs, call `members_of(group_ref)` where the active provider supports it (capability-detected, D2), upsert the projection; `None` → skip. Ships as a callable (no scheduler infra yet, D5). Depends on T004, T017.
-- [ ] T019 [US1] Wire the sync into 019's `services/api/routers/auth.py` `/auth/callback`: after `issue_session`, call `groups_for(subject)` on the active provider (if capable) → `sync_member_from_groups` per mapped workspace → upsert `group_members` (`source='login_seen'`). Best-effort: a sync failure logs and does not break login (authZ reads fail-closed anyway). Depends on T016, T017. *(Gated on 019 being merged — see T001.)*
+- [x] T016 [US1] Implement `sync_member_from_groups` in `services/api/sync.py`: if `groups is None` → return (no-op, never revoke — D3). Else (authoritative) resolve `groups` through `workspaces.idp_binding` (roles + teams; name/GUID/attr) → `INSERT ... ON CONFLICT (workspace_id, subject) DO UPDATE` on `members.console_role`+`teams`, **reconciling to the resolved set — clear the synced role/team when the mapping shrinks/empties but a member row exists (D4 revoke)**; first-time no-match → write nothing (FR-022). Runs under the tenant session. Depends on T002, T003.
+- [x] T017 [US1] Implement the `group_members` projection upsert in `sync.py` (`source='login_seen'` on login; `source='members_of'` in `refresh_group_projection`); cache-only, never read for authZ (FR-023). Depends on T002, T003.
+- [x] T018 [US1] Implement `refresh_group_projection`: iterate `idp_binding` group refs, call `members_of(group_ref)` where the active provider supports it (capability-detected, D2), upsert the projection; `None` → skip. Ships as a callable (no scheduler infra yet, D5). Depends on T004, T017.
+- [x] T019 [US1] Wire the sync into 019's `services/api/routers/auth.py` `/auth/callback`: after `issue_session`, call `groups_for(subject)` on the active provider (if capable) → `sync_member_from_groups` per mapped workspace → upsert `group_members` (`source='login_seen'`). Best-effort: a sync failure logs and does not break login (authZ reads fail-closed anyway). Depends on T016, T017. *(Gated on 019 being merged — see T001.)*
 
 ### Refactor (keep all US1 tests green)
 
-- [ ] T020 [US1] Extract the `idp_binding` resolution (native-ref → role/teams) into a small pure helper reused by both login sync and refresh; confirm the authZ read path (`membership.py`, `require_permission`) is untouched (FR-021/D4) and `services/runtime/` untouched (P6).
+- [x] T020 [US1] Extract the `idp_binding` resolution (native-ref → role/teams) into a small pure helper reused by both login sync and refresh; confirm the authZ read path (`membership.py`, `require_permission`) is untouched (FR-021/D4) and `services/runtime/` untouched (P6).
 
 **Checkpoint**: `pytest tests/test_idp_group_sync.py tests/test_migration_0010.py` green.
 
@@ -73,11 +73,11 @@ description: "Task list — 020 M5 IdP Group → Members-Store Sync + Notificati
 
 ## Phase 4: Polish & Cross-Cutting
 
-- [ ] T021 Add `services/tests/test_migration_0010.py` (mirror `test_migration_0006`): upgrade/downgrade; `idp_binding` column present; `group_members` present **with its WorkspaceScoped RLS policy** (D5).
-- [ ] T022 Run full regression `pytest -q` — 019 login + the 012/013 authZ reads stay green (no live group→role path added).
-- [ ] T023 [P] `ruff check . && mypy .` clean (defer to CI if tools absent locally — note it honestly).
-- [ ] T024 Run `quickstart.md` validation.
-- [ ] T025 At DoD: update tracker memory `m5-security-split` (020 ✅) and reconcile the group-sync/`idp_binding`/`group_members` rows in `docs/backend-integration-status.md` + `docs/implementation-plan.md` (per update-docs-after-feature). Flag that `workspaces.idp_binding` moved from "assumed-existing" to "created in 0010" (corrects the umbrella data-model).
+- [x] T021 Add `services/tests/test_migration_0010.py` (mirror `test_migration_0006`): upgrade/downgrade; `idp_binding` column present; `group_members` present **with its WorkspaceScoped RLS policy** (D5).
+- [x] T022 Run full regression `pytest -q` — 019 login + the 012/013 authZ reads stay green (no live group→role path added).
+- [x] T023 [P] `ruff check . && mypy .` clean (defer to CI if tools absent locally — note it honestly). **DEFERRED TO CI: `ruff`/`mypy` are not installed in `services/.venv`; not run locally. New/changed files compile cleanly (`py_compile`) and the full suite is green.**
+- [x] T024 Run `quickstart.md` validation. **Covered by the automated suite: `test_idp_group_sync.py` exercises the name/GUID/attr mappings, no-match fail-closed, revoke-on-reconcile, claim-less no-op, projection provenance, and RLS scoping end-to-end against the compose Postgres; the quickstart's manual steps were not run by hand.**
+- [x] T025 At DoD: update tracker memory `m5-security-split` (020 ✅) and reconcile the group-sync/`idp_binding`/`group_members` rows in `docs/backend-integration-status.md` + `docs/implementation-plan.md` (per update-docs-after-feature). Flag that `workspaces.idp_binding` moved from "assumed-existing" to "created in 0010" (corrects the umbrella data-model).
 
 ---
 

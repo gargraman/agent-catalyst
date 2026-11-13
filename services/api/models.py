@@ -61,6 +61,9 @@ class Workspace(Base):
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, server_default=func.gen_random_uuid())
     name: Mapped[str] = mapped_column(String(80))
     group_prefix: Mapped[str | None] = mapped_column(String(64))
+    # feature 020 (D1): AC role/team → NATIVE IdP group ref (Okta name / Entra GUID / SAML attr); no naming
+    # convention assumed (FR-021). Shape: {"roles": {role: ref}, "teams": {team: ref}}. Default {} = no binding.
+    idp_binding: Mapped[dict] = mapped_column(JSONB, default=dict)
     created_at: Mapped[datetime.datetime] = mapped_column(server_default=func.now())
 
 
@@ -290,6 +293,19 @@ class Member(Base, WorkspaceScoped):
     console_role: Mapped[str] = mapped_column(Text, default="viewer")
     teams: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list)  # feature 013: server-owned team membership (authZ)
     created_at: Mapped[datetime.datetime] = mapped_column(server_default=func.now())
+
+
+class GroupMember(Base, WorkspaceScoped):
+    """Notification fan-out projection (feature 020, D5). CACHE-ONLY — MUST NEVER be read to grant access
+    (FR-023); authZ reads the `members` store (console_role/teams). Upserted `source='login_seen'` on login and
+    `source='members_of'` on a scheduled enumeration. WorkspaceScoped under RLS; composite pk (re-declare
+    workspace_id as primary, like WorkspaceSettings, since the mixin declares it non-primary)."""
+    __tablename__ = "group_members"
+    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workspaces.id"), primary_key=True)
+    group_ref: Mapped[str] = mapped_column(Text, primary_key=True)
+    subject: Mapped[str] = mapped_column(Text, primary_key=True)
+    source: Mapped[str] = mapped_column(Text)                                     # 'login_seen' | 'members_of'
+    seen_at: Mapped[datetime.datetime] = mapped_column(server_default=func.now())
 
 
 class ProviderKey(Base, WorkspaceScoped):

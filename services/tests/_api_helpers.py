@@ -48,10 +48,10 @@ def dev_headers(*, workspace: str, subject: str = "u1", claims: dict | None = No
 
 
 # ---- DB seeders (integration; via the real tenant_session so RLS applies) ------------------------
-async def seed_workspace(name: str | None = None) -> str:
+async def seed_workspace(name: str | None = None, idp_binding: dict | None = None) -> str:
     name = name or f"ws-{uuid.uuid4().hex[:8]}"
     async with tenant_session(uuid.uuid4()) as s:        # workspaces = tenant root (no RLS)
-        w = Workspace(name=name)
+        w = Workspace(name=name, idp_binding=idp_binding or {})   # feature 020: optional group→ref binding
         s.add(w)
         await s.flush()
         return str(w.id)
