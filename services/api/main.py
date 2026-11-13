@@ -10,8 +10,9 @@ from fastapi import FastAPI, Response
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
-from api import db, metrics
+from api import db, metrics, redis_client
 from api.csrf import CSRFMiddleware
+from api.settings import get_settings
 from api.errors import AppError, app_error_handler
 from api.routers import (
     agents, auth, evals, invoke, knowledge, members, provider_keys, runs, skills, tokens, tools, workspaces,
@@ -50,14 +51,28 @@ def create_app() -> FastAPI:
     @app.get("/readyz", tags=["meta"])
     async def readyz() -> Response:
         """Readiness (orchestration probe, deployment infra slice) — the service can serve traffic:
-        verifies DB connectivity via the app (RLS) engine. Returns 503 not-ready if the DB is unreachable,
-        so a load balancer / k8s readiness gate holds traffic until the stack is up (migrations run first)."""
+        verifies DB connectivity via the app (RLS) engine, and — when Redis is configured — that the shared
+        cache is reachable. Returns 503 not-ready if either dependency is down so a load balancer / k8s
+        readiness gate holds/drains traffic until the stack is up (migrations run first).
+
+        Redis readiness (feature 021, D3): a *configured-but-unreachable* Redis flips /readyz to 503 because
+        the 018 deny-set fails CLOSED on it — every authenticated console request would 401, so the instance
+        genuinely cannot serve traffic and should be drained, not left answering a wall of 401s. Parity carve-
+        out (mirrors `denyset.is_denied`): when AC_REDIS_URL is UNSET (dev/test, no deny-set to consult),
+        Redis is NOT a readiness dependency and /readyz stays 200 — only a configured Redis that errors trips."""
         try:
             async with db.app_engine().connect() as conn:
                 await conn.execute(text("select 1"))
         except Exception:                                    # noqa: BLE001 — any DB failure → not ready
             return JSONResponse({"status": "not-ready", "checks": {"database": "down"}}, status_code=503)
-        return JSONResponse({"status": "ready", "checks": {"database": "ok"}})
+        checks = {"database": "ok"}
+        # Redis is a readiness dependency only when configured (carve-out: unset → not consulted, stays 200).
+        if get_settings().redis_url:
+            if not await redis_client.is_healthy():
+                checks["redis"] = "down"
+                return JSONResponse({"status": "not-ready", "checks": checks}, status_code=503)
+            checks["redis"] = "ok"
+        return JSONResponse({"status": "ready", "checks": checks})
 
     # Feature 010 (F12): unauthenticated, non-/api/v1 Prometheus scrape surface (aggregate counts only —
     # no tenant/content). Network restriction is a deploy concern (FR-011).

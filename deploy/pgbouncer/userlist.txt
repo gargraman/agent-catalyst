@@ -1,0 +1,5 @@
+; PgBouncer client-auth userlist (feature 021). Format: "user" "password-or-hash".
+; md5 hash = "md5" + md5(password + username), here md5("ac_app_pw" + "ac_app"). Deterministic from the known
+; dev password, so it survives a fresh Postgres volume (unlike a salted scram verifier). DEV-ONLY — not a real
+; credential; prod uses auth_query/scram against the secret store, not this file.
+"ac_app" "md51d0f392efe22d928cfa4751b340f5e66"

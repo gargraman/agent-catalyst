@@ -20,7 +20,7 @@ description: "Task list — 021 M5 Redis-SPOF Degraded Mode + PgBouncer Transact
 
 ## Phase 1: Setup
 
-- [ ] T001 Confirm on disk (no code change) the already-built degraded behaviors this feature validates: rate-limit fail-open+alert (`services/api/ratelimit.py:82`, `services/api/deps.py:246-254`, `services/api/metrics.py:73`); deny-set fail-closed (`services/api/auth/denyset.py:48`, `deps.py:72-77`); `SET LOCAL` GUC (`services/api/tenancy.py:32`, `services/api/db.py:66`); in-process idempotency (`deps.py:315`); Postgres spend cap (`deps.py:172-189`). Record the line refs for the decision doc (T014).
+- [x] T001 Confirm on disk (no code change) the already-built degraded behaviors this feature validates: rate-limit fail-open+alert (`services/api/ratelimit.py:82`, `services/api/deps.py:246-254`, `services/api/metrics.py:73`); deny-set fail-closed (`services/api/auth/denyset.py:48`, `deps.py:72-77`); `SET LOCAL` GUC (`services/api/tenancy.py:32`, `services/api/db.py:66`); in-process idempotency (`deps.py:315`); Postgres spend cap (`deps.py:172-189`). Record the line refs for the decision doc (T014).
 
 ---
 
@@ -28,8 +28,8 @@ description: "Task list — 021 M5 Redis-SPOF Degraded Mode + PgBouncer Transact
 
 **⚠️ Must complete before US1 can go Green. No migration — a deployment-topology change + a Redis-down test harness.**
 
-- [ ] T002 Add a Redis-down test harness in `services/tests/_redis_degraded.py` (or a conftest fixture): a `fakeredis` client whose ops raise `ConnectionError`, plus a helper to toggle `AC_REDIS_URL` set-but-dead vs. unset. Used by the degraded-mode matrix (T006–T011) and the readyz test (T012).
-- [ ] T003 Add a PgBouncer service to `deploy/compose.yaml` (`pool_mode = transaction`) + a `deploy/pgbouncer/` config dir (`pgbouncer.ini`, `userlist.txt`). Route the **app** role (`ac_app` / `AC_APP_DATABASE_URL`) through PgBouncer; leave the **owner/migration** role (`ac` / `AC_DATABASE_URL`/`AC_DATABASE_SYNC_URL`) on a **direct** Postgres connection (D4).
+- [x] T002 Add a Redis-down test harness in `services/tests/_redis_degraded.py` (or a conftest fixture): a `fakeredis` client whose ops raise `ConnectionError`, plus a helper to toggle `AC_REDIS_URL` set-but-dead vs. unset. Used by the degraded-mode matrix (T006–T011) and the readyz test (T012).
+- [x] T003 Add a PgBouncer service to `deploy/compose.yaml` (`pool_mode = transaction`) + a `deploy/pgbouncer/` config dir (`pgbouncer.ini`, `userlist.txt`). Route the **app** role (`ac_app` / `AC_APP_DATABASE_URL`) through PgBouncer; leave the **owner/migration** role (`ac` / `AC_DATABASE_URL`/`AC_DATABASE_SYNC_URL`) on a **direct** Postgres connection (D4).
 
 **Checkpoint**: the degraded harness imports; `docker compose -f deploy/compose.yaml config` validates with the new pgbouncer service.
 
@@ -43,25 +43,25 @@ description: "Task list — 021 M5 Redis-SPOF Degraded Mode + PgBouncer Transact
 
 ### Tests for User Story 1 (write FIRST, confirm they FAIL on behavior) ⚠️
 
-- [ ] T004 [US1] Scaffold `services/tests/test_redis_degraded_mode.py` using the T002 harness (import real app/deps; no behavior assertions) so Red tests fail on behavior, not import.
-- [ ] T005 [US1] Scaffold `services/tests/test_pgbouncer_txn_isolation.py` (integration): bind a pooled engine (NOT `NullPool`) through the PgBouncer service; two-tenant request helper. No behavior assertions yet.
-- [ ] T006 [US1] Red `test_denyset_fails_closed_both_planes`: Redis configured-but-down → console session auth AND caller-token auth both 401 (0 through unchecked) (FR-024, AS1).
-- [ ] T007 [US1] Red `test_ratelimit_fails_open_and_alerts`: Redis down → request allowed, `ac_rate_limit_degraded_total` increments, a WARNING is emitted (FR-024, AS1).
-- [ ] T008 [US1] Red `test_spend_cap_fails_closed`: a forced ledger/compute error → the spend gate refuses before any paid call (FR-024, AS1).
-- [ ] T009 [US1] Red `test_idempotency_fails_closed_retryable`: an in-flight retry of the same `Idempotency-Key` → `409` (retryable), independent of Redis (FR-024, AS1).
-- [ ] T010 [US1] Red `test_controls_resume_after_redis_recovers`: Redis back mid-run → deny-set/rate-limit resume normal behavior without a restart (edge case).
-- [ ] T011 [US1] Red `test_readyz_503_when_configured_redis_down`: `AC_REDIS_URL` set but Redis unreachable → `/readyz` 503 `{database: ok, redis: down}`; `AC_REDIS_URL` **unset** → `/readyz` 200 (D3 carve-out).
-- [ ] T012 [US1] Red `test_no_guc_leak_across_pooled_requests` (in `test_pgbouncer_txn_isolation.py`): two tenants reusing one pooled physical connection → 0 cross-tenant reads; no stale `app.workspace_id` across requests (FR-026, AS3).
+- [x] T004 [US1] Scaffold `services/tests/test_redis_degraded_mode.py` using the T002 harness (import real app/deps; no behavior assertions) so Red tests fail on behavior, not import.
+- [x] T005 [US1] Scaffold `services/tests/test_pgbouncer_txn_isolation.py` (integration): bind a pooled engine (NOT `NullPool`) through the PgBouncer service; two-tenant request helper. No behavior assertions yet.
+- [x] T006 [US1] Red `test_denyset_fails_closed_both_planes`: Redis configured-but-down → console session auth AND caller-token auth both 401 (0 through unchecked) (FR-024, AS1).
+- [x] T007 [US1] Red `test_ratelimit_fails_open_and_alerts`: Redis down → request allowed, `ac_rate_limit_degraded_total` increments, a WARNING is emitted (FR-024, AS1).
+- [x] T008 [US1] Red `test_spend_cap_fails_closed`: a forced ledger/compute error → the spend gate refuses before any paid call (FR-024, AS1).
+- [x] T009 [US1] Red `test_idempotency_fails_closed_retryable`: an in-flight retry of the same `Idempotency-Key` → `409` (retryable), independent of Redis (FR-024, AS1).
+- [x] T010 [US1] Red `test_controls_resume_after_redis_recovers`: Redis back mid-run → deny-set/rate-limit resume normal behavior without a restart (edge case).
+- [x] T011 [US1] Red `test_readyz_503_when_configured_redis_down`: `AC_REDIS_URL` set but Redis unreachable → `/readyz` 503 `{database: ok, redis: down}`; `AC_REDIS_URL` **unset** → `/readyz` 200 (D3 carve-out).
+- [x] T012 [US1] Red `test_no_guc_leak_across_pooled_requests` (in `test_pgbouncer_txn_isolation.py`): two tenants reusing one pooled physical connection → 0 cross-tenant reads; no stale `app.workspace_id` across requests (FR-026, AS3).
 
 ### Implementation for US1 (make the above Green, dependency order)
 
-- [ ] T013 [US1] Add the Redis check to `/readyz` in `services/api/main.py` (D3): when `AC_REDIS_URL` is configured, call `redis_client.is_healthy()`; unhealthy → `503 {database: ok, redis: down}`; unset `AC_REDIS_URL` → Redis is not a readiness dependency, keep `200`. This is the only application-code change (the controls are already correct — D1).
-- [ ] T014 [US1] Write the **degraded-mode decision record** `docs/backend/<degraded-mode>.md` (FR-025): per-control behavior + recovery path (deny-set/spend = fail closed; idempotency = fail closed retryable, in-process; rate limit = fail open + alert) + the Redis **blast-radius** map, each claim citing the code line refs from T001. Note idempotency/spend do not depend on Redis today (D2). **Document the D3-widened radius**: a configured-Redis outage flips `/readyz`→503 and 401s console auth (deny-set fail-closed) — the "accepted SPOF" takes authenticated console + readiness down together (021-M3).
-- [ ] T015 [US1] (If D2 so rules) Add a consistency check `test_decision_record_matches_code` asserting each decision-record claim ties to the cited behavior; otherwise a docs link/consistency check over `docs/backend/<degraded-mode>.md` (P9 docs clause).
+- [x] T013 [US1] Add the Redis check to `/readyz` in `services/api/main.py` (D3): when `AC_REDIS_URL` is configured, call `redis_client.is_healthy()`; unhealthy → `503 {database: ok, redis: down}`; unset `AC_REDIS_URL` → Redis is not a readiness dependency, keep `200`. This is the only application-code change (the controls are already correct — D1).
+- [x] T014 [US1] Write the **degraded-mode decision record** `docs/backend/<degraded-mode>.md` (FR-025): per-control behavior + recovery path (deny-set/spend = fail closed; idempotency = fail closed retryable, in-process; rate limit = fail open + alert) + the Redis **blast-radius** map, each claim citing the code line refs from T001. Note idempotency/spend do not depend on Redis today (D2). **Document the D3-widened radius**: a configured-Redis outage flips `/readyz`→503 and 401s console auth (deny-set fail-closed) — the "accepted SPOF" takes authenticated console + readiness down together (021-M3).
+- [x] T015 [US1] (If D2 so rules) Add a consistency check `test_decision_record_matches_code` asserting each decision-record claim ties to the cited behavior; otherwise a docs link/consistency check over `docs/backend/<degraded-mode>.md` (P9 docs clause).
 
 ### Refactor (keep all US1 tests green)
 
-- [ ] T016 [US1] Tidy the `/readyz` body (shared check helper if it grows); confirm no control code (`denyset.py`/`ratelimit.py`/`deps.py`/`tenancy.py`) was altered (D1) and `services/runtime/` untouched (P6).
+- [x] T016 [US1] Tidy the `/readyz` body (shared check helper if it grows); confirm no control code (`denyset.py`/`ratelimit.py`/`deps.py`/`tenancy.py`) was altered (D1) and `services/runtime/` untouched (P6).
 
 **Checkpoint**: `pytest tests/test_redis_degraded_mode.py` green; `pytest tests/test_pgbouncer_txn_isolation.py` green against the pooled stack.
 
@@ -69,10 +69,10 @@ description: "Task list — 021 M5 Redis-SPOF Degraded Mode + PgBouncer Transact
 
 ## Phase 4: Polish & Cross-Cutting
 
-- [ ] T017 Run full regression `pytest -q` — the 016/018 suites stay green (no control code changed; only `/readyz` + tests + docs).
-- [ ] T018 [P] `ruff check . && mypy .` clean (defer to CI if tools absent locally — note it honestly).
-- [ ] T019 Run `quickstart.md` validation (degraded-mode matrix + the PgBouncer txn-mode isolation run).
-- [ ] T020 At DoD: update tracker memory `m5-security-split` (021 ✅, **M5 milestone closed — capstone**) and reconcile the degraded-mode/PgBouncer rows in `docs/backend-integration-status.md` + `docs/implementation-plan.md` (per update-docs-after-feature). Cross-link the decision record (T014).
+- [x] T017 Run full regression `pytest -q` — the 016/018 suites stay green (no control code changed; only `/readyz` + tests + docs).
+- [x] T018 [P] `ruff check . && mypy .` clean (defer to CI if tools absent locally — note it honestly).
+- [x] T019 Run `quickstart.md` validation (degraded-mode matrix + the PgBouncer txn-mode isolation run).
+- [x] T020 At DoD: update tracker memory `m5-security-split` (021 ✅, **M5 milestone closed — capstone**) and reconcile the degraded-mode/PgBouncer rows in `docs/backend-integration-status.md` + `docs/implementation-plan.md` (per update-docs-after-feature). Cross-link the decision record (T014).
 
 ---
 
