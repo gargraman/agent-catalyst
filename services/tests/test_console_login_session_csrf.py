@@ -254,6 +254,21 @@ async def test_csrf_matching_token_passes(fake_redis):
     assert not (r.status_code == 403 and r.json().get("error", {}).get("code") == "csrf.invalid")
 
 
+async def test_csrf_double_submit_bound_to_session(fake_redis):
+    """code-review #3: the double-submit token must be BOUND to the session. A cookie+header that match each OTHER
+    but not the session's minted csrf (an attacker who planted a cookie on the victim) must be rejected — plain
+    cookie==header is not enough once the attacker controls both."""
+    cookie, real_csrf = sess.issue_session("u", IDP_ISS, IDP_AUD)
+    forged = "attacker-chosen-token-xxxxxxxxxxxx"
+    assert forged != real_csrf
+    async with _aclient() as c:
+        r = await c.post("/api/v1/agents",
+                         cookies={sess.SESSION_COOKIE_NAME: cookie, sess.CSRF_COOKIE_NAME: forged},
+                         headers={"X-CSRF-Token": forged}, json={})
+    assert r.status_code == 403
+    assert r.json()["error"]["code"] == "csrf.invalid"   # bound check fires even though cookie == header
+
+
 async def test_get_is_csrf_exempt(fake_redis):
     cookie, _ = sess.issue_session("u", IDP_ISS, IDP_AUD)
     async with _aclient() as c:
@@ -308,6 +323,27 @@ async def test_idp_unreachable_fails_visibly(stub_oidc, monkeypatch):
                          cookies={sess.LOGIN_STATE_COOKIE_NAME: login_state})
     assert r2.status_code == 503                             # visible failure, not fail-open
     assert sess.SESSION_COOKIE_NAME not in r2.headers.get("set-cookie", "")
+
+
+# ---- code-review #4: a missing JWKS URI disables login UP FRONT, not after an auth-code round-trip ---
+def test_config_from_settings_requires_jwks_uri():
+    """`config_from_settings` must fail-fast (AuthConfigError → 503) when the IdP JWKS URI is unset, so /auth/login
+    is cleanly disabled (D4). Without this the login redirect succeeds and the failure only surfaces at the callback
+    as a misleading 'identity provider unavailable' after a full auth-code round-trip."""
+    from api.auth.registry import AuthConfigError
+    s = SimpleNamespace(oidc_client_id="c", oidc_client_secret="s", oidc_redirect_uri="http://test/auth/callback",
+                        iam_issuer="https://idp.local/iam", iam_jwks_uri=None,
+                        iam_audience="aud", iam_allowed_algs="RS256")
+    with pytest.raises(AuthConfigError):
+        oidc_login.config_from_settings(s)
+
+
+def test_config_from_settings_builds_with_jwks_uri():
+    s = SimpleNamespace(oidc_client_id="c", oidc_client_secret="s", oidc_redirect_uri="http://test/auth/callback",
+                        iam_issuer="https://idp.local/iam", iam_jwks_uri="https://idp.local/jwks",
+                        iam_audience="aud", iam_allowed_algs="RS256")
+    cfg = oidc_login.config_from_settings(s)
+    assert cfg.jwks_uri == "https://idp.local/jwks"
 
 
 # ---- D4: interactive login is disabled under the dev profile (no OIDC configured) -------------------

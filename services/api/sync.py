@@ -78,6 +78,12 @@ async def sync_member_from_groups(session, workspace_id, subject, groups) -> Non
         return                                          # D3: can't enumerate → never touch the members store
     binding = await _binding_for(session, workspace_id)
     role, teams = _resolve_binding(binding, groups)
+    # D4 revoke applies to roles ONLY when this binding actually declares role→group mappings. A teams-only binding
+    # (no "roles" key) says nothing about roles, so reconciling console_role from it would wrongly clear an existing
+    # member to the default (code-review #2a: a teams-only-bound workspace must not demote a builder/publisher to
+    # viewer on login). NOTE (deferred #2b): even a role-declaring binding can't yet distinguish "role revoked in
+    # IdP" from "role set by hand by an admin" — that needs a provenance column on `members` and is tracked separately.
+    declares_roles = bool((binding or {}).get("roles"))
     # RLS scopes `members` to this workspace, so matching on subject alone is tenant-safe (mirrors membership.py).
     member = await session.scalar(select(Member).where(Member.subject == subject))
     if member is None:
@@ -86,7 +92,8 @@ async def sync_member_from_groups(session, workspace_id, subject, groups) -> Non
         session.add(Member(workspace_id=_as_uuid(workspace_id), subject=subject,
                            console_role=role or _DEFAULT_ROLE, teams=teams))
     else:
-        member.console_role = role or _DEFAULT_ROLE     # D4: revoke → clear to default when no role maps
+        if declares_roles:
+            member.console_role = role or _DEFAULT_ROLE  # D4: revoke → clear to default when no role maps
         member.teams = teams                            # D4: reconcile (shrink clears dropped teams)
     await session.flush()
 

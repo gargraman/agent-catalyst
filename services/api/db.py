@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy.pool import NullPool
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -30,10 +30,25 @@ _app_engine = None
 _app_sessionmaker: async_sessionmaker | None = None
 
 
+def _app_connect_args() -> dict:
+    """asyncpg connect args the app (`ac_app`) role needs because feature 021 (D4) routes it through PgBouncer in
+    TRANSACTION pool mode. Txn-mode hands a pooled server backend to a different client between transactions, so
+    asyncpg's default per-connection prepared-statement cache + fixed statement names (``__asyncpg_stmt_N__``)
+    collide across clients on a reused backend → intermittent ``prepared statement "..." already exists / does not
+    exist`` under concurrent load. Disable the cache and give every prepared statement a process-unique name so no
+    two pooled clients can clash. Harmless on a direct connection (dev/tests), so the app path uses it always; the
+    owner/migration engine (``ASYNC_URL``) connects DIRECT to Postgres and deliberately gets none of this."""
+    return {
+        "statement_cache_size": 0,                                   # no asyncpg server-side prepared-stmt cache
+        "prepared_statement_name_func": lambda: f"__asyncpg_{uuid4().hex}__",  # unique names → no cross-client clash
+    }
+
+
 def app_engine():
     global _app_engine
     if _app_engine is None:
-        _app_engine = create_async_engine(APP_ASYNC_URL, poolclass=NullPool)
+        _app_engine = create_async_engine(APP_ASYNC_URL, poolclass=NullPool,
+                                          connect_args=_app_connect_args())
     return _app_engine
 
 

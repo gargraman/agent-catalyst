@@ -67,6 +67,11 @@ def config_from_settings(settings) -> OIDCConfig:
     issuer = (settings.iam_issuer or "").rstrip("/")
     if not issuer:
         raise AuthConfigError("interactive console login requires an IdP issuer")
+    # Validate the JWKS URI up front (D4): without it, /auth/login would still redirect to the IdP and the failure
+    # would only surface at /auth/callback as a misleading 503 "identity provider unavailable" after a full
+    # auth-code round-trip. Fail CLOSED here so login is cleanly disabled, not half-working.
+    if not settings.iam_jwks_uri:
+        raise AuthConfigError("interactive console login requires an IdP JWKS URI")
     return OIDCConfig(
         client_id=cid, client_secret=csecret,
         authorize_endpoint=f"{issuer}/authorize",

@@ -17,7 +17,7 @@ from sqlalchemy import select
 from api import membership, sync
 from api.db import tenant_session
 from api.models import GroupMember
-from tests._api_helpers import seed_workspace
+from tests._api_helpers import seed_member, seed_workspace
 
 pytestmark = pytest.mark.integration
 
@@ -186,6 +186,20 @@ async def test_sync_is_workspace_scoped():
         assert await membership.role_for(s, "kyle") == "builder"
     async with tenant_session(ws_b) as s:
         assert await membership.role_for(s, "kyle") is None                 # not leaked across tenants (RLS)
+
+
+# ---- code-review #2a: a teams-only binding must NOT downgrade an existing member's role -----------
+async def test_teams_only_binding_preserves_existing_role():
+    """A binding that maps only teams (no "roles" key) says nothing about console roles. Reconciling it must leave
+    an existing member's role intact — not silently demote a publisher to viewer on login (#2a). Teams still sync."""
+    teams_only = {"teams": {"SOC": T_SOC, "Detection": T_DET}}
+    ws = await seed_workspace(idp_binding=teams_only)
+    await seed_member(ws, "pat", role="publisher", teams=[])
+    async with tenant_session(ws) as s:
+        await sync.sync_member_from_groups(s, ws, "pat", [T_SOC])        # holds a mapped team; binding has no roles
+    async with tenant_session(ws) as s:
+        assert await membership.role_for(s, "pat") == "publisher"        # role preserved, NOT downgraded to viewer
+        assert await membership.teams_for(s, "pat") == ["SOC"]           # team still reconciled
 
 
 # ---- T019 wiring: run_login_sync drives the members sync + login projection on an authoritative IdP
