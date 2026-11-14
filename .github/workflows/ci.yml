@@ -1,0 +1,114 @@
+name: CI
+
+# CI gate. Covers the constitution's Minimum Verification Checks that exist today: DB/tenant (migration +
+# RLS + negative cross-tenant), provider/runtime purity, secret scanning, and an OpenAPI emit smoke (the
+# FastAPI app now exists). Deferred: the strict OpenAPI-drift gate vs the generated FE client (openapi-typescript,
+# M12 — FE wiring in progress, 4/257 seams), and AWS-Secrets-Manager/Langfuse/ClickHouse-dependent paths.
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  services-unit:
+    name: services · unit (infra-free)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e '.[api,test]'
+      - name: Unit tests (integration auto-deselected — no DB)
+        run: pytest -q -m "not integration"
+      - name: Runtime purity — runtime/ imports no FastAPI/HTTP (P6 single-library invariant)
+        run: pytest -q tests/test_runtime_purity.py
+
+  services-integration:
+    name: services · integration (Postgres + RLS)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: ac
+          POSTGRES_PASSWORD: ac_dev_pw       # dev-only; prod creds come from AWS Secrets Manager (feature 014). Never a real cred.
+          POSTGRES_DB: agent_catalyst
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ac -d agent_catalyst"
+          --health-interval 5s --health-timeout 5s --health-retries 15
+    env:
+      # Migrations run as the superuser (psycopg); the request/job path + tests connect as the
+      # non-superuser ac_app role (asyncpg) so RLS actually applies (09 §7). Driver-validated by api/settings.py.
+      # NOTE: port 5432 is the CI service-container port (mapped 5432:5432 above). Running the integration
+      # batch LOCALLY uses deploy/compose.yaml, which publishes Postgres on host port 5433 (6380 for Redis)
+      # to avoid clashing with a local server — point AC_*_URL at 5433 there, not 5432.
+      AC_DATABASE_SYNC_URL: postgresql+psycopg://ac:ac_dev_pw@localhost:5432/agent_catalyst
+      AC_DATABASE_URL: postgresql+asyncpg://ac_app:ac_app_pw@localhost:5432/agent_catalyst
+      AC_APP_DATABASE_URL: postgresql+asyncpg://ac_app:ac_app_pw@localhost:5432/agent_catalyst
+      # Auth is fail-closed by default (feature 012); the suite uses the dev provider (conftest also sets these).
+      AC_ENV: dev
+      AC_AUTH_PROVIDER: dev
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e '.[api,test]'
+      - name: Alembic migrate to head (as superuser — creates RLS policies + ac_app role)
+        run: alembic upgrade head
+      - name: Integration tests (RLS, immutability triggers, tenant session, ORM, snapshot, API, auth, health)
+        run: pytest -q -m integration
+
+  openapi-emit:
+    name: services · openapi emit smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install (api)
+        working-directory: services
+        run: pip install -e '.[api]'
+      - name: Emit OpenAPI (schema generates cleanly)
+        run: python scripts/emit_openapi.py
+
+  mvp-unit:
+    name: mvp · unit (offline experiment)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mvp
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e '.[dev]'
+      - name: Offline tests (H1 plumbing + H2 cost reconciliation — no network, no API key)
+        run: pytest -q
+
+  secret-scan:
+    name: secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install gitleaks (pinned)
+        run: |
+          curl -sSfL https://github.com/gitleaks/gitleaks/releases/download/v8.21.2/gitleaks_8.21.2_linux_x64.tar.gz \
+            | sudo tar -xz -C /usr/local/bin gitleaks
+      - name: Scan working tree
+        run: gitleaks detect --no-git --source . --redact --config .gitleaks.toml
