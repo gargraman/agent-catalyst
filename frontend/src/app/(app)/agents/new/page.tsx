@@ -144,7 +144,16 @@ export default function NewAgentPage() {
     return list.includes(v) ? list.filter((x) => x !== v) : [...list, v];
   }
 
-  function create() {
+  // Live create is a network round-trip: block double-submit and keep the form on failure. A REF is the guard
+  // (state updates are async, so two clicks in one tick would both pass a state check); state only drives the UI.
+  const [creating, setCreating] = React.useState(false);
+  const inFlight = React.useRef(false);
+  // One Idempotency-Key per submission, reused if the user retries after a failure (same draft intent).
+  const idemKey = React.useRef<string | null>(null);
+
+  async function create() {
+    if (inFlight.current) return;
+    inFlight.current = true;
     const slug = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || genId("agent");
     const agent: Agent = {
       id: slug, name: name.trim() || "Untitled agent",
@@ -167,8 +176,16 @@ export default function NewAgentPage() {
         includeCitations: outputFormat === "Structured JSON + citations",
       },
     };
-    addAgent(agent);
-    router.push(`/agents/${agent.id}`);
+    setCreating(true);
+    idemKey.current ??= crypto.randomUUID();
+    try {
+      // Resolves to the SERVER-assigned id in a live workspace (the slug above is only the mock id).
+      const id = await addAgent(agent, { idempotencyKey: idemKey.current });
+      router.push(`/agents/${id}`);
+    } catch {
+      inFlight.current = false;
+      setCreating(false); // addAgent already toasted the server's error; stay on the form
+    }
   }
 
   // Guard the whole create flow — direct navigation to /agents/new must respect agent.create, not just
@@ -375,7 +392,7 @@ export default function NewAgentPage() {
               <Row k="Modality" v="Chat" />
               {selectedModel && <Row k="Pricing" v={<span className="tnum">{usd(selectedModel.inUsd)} / {usd(selectedModel.outUsd)} per 1M</span>} />}
               <div className="pt-2">
-                <Button variant="primary" className="w-full" onClick={create}><Rocket className="size-4" /> Create agent</Button>
+                <Button variant="primary" className="w-full" onClick={() => void create()} disabled={creating}><Rocket className="size-4" /> {creating ? "Creating…" : "Create agent"}</Button>
                 <p className="mt-2 text-center text-xs text-muted">Created as a draft. Publish after a passing eval.</p>
               </div>
             </CardContent>

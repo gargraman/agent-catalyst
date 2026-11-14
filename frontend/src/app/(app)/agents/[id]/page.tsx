@@ -4,7 +4,7 @@ import * as React from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import {
-  Archive, ArrowLeft, Blocks, ChevronDown, ChevronRight, Copy,
+  Archive, ArrowLeft, Blocks, Bot, ChevronDown, ChevronRight, Copy,
   Database, FlaskConical, GitBranch, History, Lock, MessageSquare, MoreHorizontal,
   Plug, Plus, Rocket, Settings2, Shield, ShieldCheck, Sparkles, Trash2, TriangleAlert,
   Wrench, X,
@@ -30,7 +30,10 @@ import {
   addSuite, renameSuite, deleteSuite, upsertCase, deleteCase,
   updateAgent, updateAgentConfig, deleteAgent, duplicateAgent, toast, genId, nowIso,
   publishAgent, unpublishAgent, archiveAgent, restoreAgent, rollbackVersion, reFreezeBaseline,
+  useEnsureAgent, useRemoteStatus, useIsLiveWorkspace, loadAgent,
 } from "@/lib/store";
+import { LIVE_API } from "@/lib/api/client";
+import { LiveStatus } from "@/components/live-status";
 import { useAuth, usePrincipal } from "@/lib/auth";
 import { ORG } from "@/lib/org";
 import { GateButton } from "@/components/gate";
@@ -97,9 +100,39 @@ export default function AgentDetailPage() {
   const [runEvalOpen, setRunEvalOpen] = React.useState(false);
   const [gate, setGate] = React.useState<PublishGate | null>(null);
   const [deleteOpen, setDeleteOpen] = React.useState(false);
+  // Live mode: a deep link / reload lands here before the list has loaded — fetch the one agent.
+  useEnsureAgent(params.id);
+  const remote = useRemoteStatus(`agent:${params.id}`);
+  const discovery = useRemoteStatus("workspaces");
+  const live = useIsLiveWorkspace();
+
+  // Live cold load: until discovery has run (and, for a live workspace, until the one-agent fetch has run), a missing
+  // agent means "not loaded yet", not "not found" — otherwise the page flashes "Agent not found" first.
+  const pendingDiscovery = LIVE_API && (discovery.status === "idle" || discovery.status === "loading");
+  const pendingAgent = live && (remote.status === "idle" || remote.status === "loading");
+  if (!agent && (pendingDiscovery || pendingAgent)) {
+    return (
+      <div className="space-y-6">
+        <Link href="/agents" className="inline-flex items-center gap-1.5 text-sm text-muted hover:text-ink"><ArrowLeft className="size-4" /> Back to agents</Link>
+        <EmptyState icon={<Bot className="size-6" />} title="Loading agent…" hint="Fetching this agent from the API." />
+      </div>
+    );
+  }
+
+  // Live: a transport/server failure is NOT "not found" — surface it with Retry. (404, and 403 which the API
+  // deliberately makes indistinguishable from 404 — P5 no-leak, fall through to not-found below.)
+  if (!agent && remote.status === "error" && remote.httpStatus !== 404 && remote.httpStatus !== 403) {
+    return (
+      <div className="space-y-6">
+        <Link href="/agents" className="inline-flex items-center gap-1.5 text-sm text-muted hover:text-ink"><ArrowLeft className="size-4" /> Back to agents</Link>
+        <LiveStatus live status={remote} label="this agent" onRetry={() => void loadAgent(params.id, { force: true })} />
+      </div>
+    );
+  }
 
   // Cross-workspace defense-in-depth: useAgent resolves by id across all workspaces, so treat an agent
   // belonging to another tenant as not-found (AppBoundary only gates the active workspace).
+  // Live: a 404 from the API (or a 403 — no existence leak) also lands here.
   if (!agent || agent.workspaceId !== activeWorkspaceId) {
     return (
       <div className="space-y-6">
@@ -119,6 +152,11 @@ export default function AgentDetailPage() {
 
   return (
     <div className="space-y-6">
+      {live && (
+        <LiveStatus live status={remote.status === "error" ? { status: "ready" } : remote} label="this agent"
+          onRetry={() => void loadAgent(params.id, { force: true })}
+          note="edits, config, publish, eval runs and tokens on this page are not saved to the server yet" />
+      )}
       <div>
         <Link href="/agents" className="inline-flex items-center gap-1.5 text-sm text-muted hover:text-ink"><ArrowLeft className="size-4" /> Agents</Link>
         <div className="mt-3 flex flex-wrap items-start justify-between gap-4">

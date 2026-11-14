@@ -1,6 +1,11 @@
 "use client";
 
-import { useRef, useSyncExternalStore } from "react";
+import { useEffect, useRef, useSyncExternalStore } from "react";
+import {
+  LIVE_API, ApiError, createAgent, getAgent, listAgents, listMyWorkspaces,
+  type DevPrincipal, type WorkspaceMembershipOut,
+} from "./api/client";
+import { agentOutToAgent, agentToCreate } from "./api/adapters";
 import {
   AGENTS, KNOWLEDGE_BASES, INGESTION_JOBS, MCP_SERVERS, TOOLS_REPO, SKILLS, EVAL_RUNS, EVAL_SUITES, RUNS, TOOL_APPROVALS,
   API_TOKENS, PROVIDER_KEYS, MEMBERS, CHANNELS_SEED, resolveConfig, getVersions,
@@ -118,6 +123,8 @@ type State = {
   workspaceSettings: Record<string, WorkspaceSettings>;
   limits: Record<string, Limits>;
   toasts: Toast[];
+  // Live mode: per-resource load status, keyed "<family>:<consoleWorkspaceId>" (or "workspaces"). See `load()`.
+  remote: Record<string, RemoteStatus>;
 };
 
 // @backend remove - initial state is hydrated from mock seeds (src/lib/data.ts). With the backend,
@@ -149,6 +156,7 @@ let state: State = {
   workspaceSettings: WORKSPACE_SETTINGS,
   limits: LIMITS,
   toasts: [],
+  remote: {},
 };
 
 const listeners = new Set<() => void>();
@@ -187,6 +195,201 @@ export function setActiveWorkspace(id: string) {
   if (id === state.activeWorkspaceId) return;
   set({ activeWorkspaceId: id });
 }
+/* ------------------------------------------------- live API (NEXT_PUBLIC_API_MODE=live) */
+// Wiring is INCREMENTAL by design: a workspace becomes "live" when discovery gives it a `backendId`; inside a live
+// workspace each WIRED family (agents today) is sourced from the API, every other family stays on its mock seed.
+// Wiring the next family = one `loadX()` on the `load()` convention + one adapter + one `useEnsureX()` in its page.
+// With the flag off, none of this runs and the console is the pure mock it always was.
+
+export type RemoteStatus = {
+  status: "idle" | "loading" | "ready" | "error";
+  error?: string;
+  code?: string;       // backend error-envelope code (e.g. "access.denied")
+  httpStatus?: number; // 0 = network / proxy failure (backend unreachable)
+  at?: number;         // epoch ms of the last successful load (freshness for `maxAgeMs`)
+};
+/** Default freshness window: a key loaded within this window is served from the store without a refetch, so N
+ *  components mounting together cost one request; older data is revalidated in the background on next mount. */
+const DEFAULT_MAX_AGE_MS = 30_000;
+const IDLE: RemoteStatus = { status: "idle" };
+const inflight = new Map<string, Promise<void>>();
+
+function setRemote(key: string, s: RemoteStatus) {
+  set({ remote: { ...state.remote, [key]: s } });
+}
+function errStatus(e: unknown): RemoteStatus {
+  if (e instanceof ApiError) return { status: "error", error: e.message, code: e.code, httpStatus: e.status };
+  // fetch() rejections (network down, proxy refused, AbortSignal timeout) → httpStatus 0 = "unreachable".
+  return { status: "error", error: e instanceof Error ? e.message : String(e), httpStatus: 0 };
+}
+
+/** The ONE async-load convention every wired family uses:
+ *  - keyed status (idle/loading/ready/error) readable via `useRemoteStatus(key)`;
+ *  - in-flight de-duplication — N components mounting the same key issue ONE request;
+ *  - `fn` applies its result to the store itself, and only on success, so a failed refresh never blanks data
+ *    that is already on screen (and there is no silent fallback to mock data — the error is surfaced).
+ *  - stale-while-revalidate: a "ready" key younger than `maxAgeMs` is not refetched; an older one is refetched
+ *    while the previous data stays on screen (`force` always refetches — e.g. the Retry button).
+ *  Keys are family + console workspace id, so switching workspaces is a separate cache entry, and a response that
+ *  lands after a switch still writes into the workspace it was fetched for. */
+export type LoadOpts = { force?: boolean; maxAgeMs?: number };
+function load(key: string, fn: () => Promise<void>, { force = false, maxAgeMs = DEFAULT_MAX_AGE_MS }: LoadOpts = {}): Promise<void> {
+  const existing = inflight.get(key);
+  if (existing) return existing;
+  const prev = state.remote[key];
+  if (!force && prev?.status === "ready" && Date.now() - (prev.at ?? 0) < maxAgeMs) return Promise.resolve();
+  setRemote(key, { status: "loading", at: prev?.at });
+  const p = fn()
+    .then(() => setRemote(key, { status: "ready", at: Date.now() }), (e: unknown) => setRemote(key, errStatus(e)))
+    .finally(() => inflight.delete(key));
+  inflight.set(key, p);
+  return p;
+}
+
+// @backend session - the subject comes from the OIDC session once real auth lands; `client.devAuthHeaders` is the
+//   single place the header shape changes. No role claim is sent: the server resolves the role (members store).
+const callerFor = (ws?: Workspace): DevPrincipal => ({ subject: MOCK_PROFILE.email, ws: ws?.backendId });
+const activeWorkspace = () => state.workspaces.find((w) => w.id === state.activeWorkspaceId);
+
+const BACKEND_ROLES: readonly Role[] = ["viewer", "builder", "publisher", "admin"];
+/** Unknown role strings fail to least privilege. */
+const toRole = (r: string): Role => (BACKEND_ROLES.includes(r as Role) ? (r as Role) : "viewer");
+
+/** Join discovered backend workspaces onto the console registry. Match on `group_prefix` (the stable IdP binding
+ *  both sides share), then on the name slug; an unmatched backend workspace is appended as a new live entry.
+ *  Backend fields are reset first, so a membership revoked server-side stops being live on the next discovery. */
+function mergeDiscovered(current: Workspace[], rows: WorkspaceMembershipOut[]): Workspace[] {
+  const next: Workspace[] = current.map((w) => {
+    if (w.backendId === undefined && w.backendRole === undefined) return w;
+    const copy = { ...w };
+    delete copy.backendId;
+    delete copy.backendRole;
+    return copy;
+  });
+  for (const r of rows) {
+    const live = { backendId: r.id, backendRole: toRole(r.role) };
+    const slug = slugify(r.name);
+    const idx = next.findIndex((w) => (r.group_prefix && w.groupPrefix === r.group_prefix) || w.id === slug);
+    if (idx >= 0) {
+      next[idx] = { ...next[idx], ...live };
+    } else {
+      const id = slug && !next.some((w) => w.id === slug) ? slug : r.id;
+      next.push({ id, name: r.name, short: shortOf(r.name), groupPrefix: r.group_prefix ?? "", ...live });
+    }
+  }
+  return next;
+}
+
+/** Recompute the server-style binding rollups after the agent set changes (shared by every agent mutation). */
+function rollupsFor(agents: Agent[]) {
+  const toolCounts = withBoundToolCounts(agents, state.tools, state.mcpServers);
+  return {
+    knowledgeBases: withBoundAgentCounts(agents, state.knowledgeBases),
+    tools: toolCounts.tools,
+    mcpServers: toolCounts.mcpServers,
+    skills: withBoundSkillCounts(agents, state.skills),
+  };
+}
+
+/** Workspace discovery (GET /api/v1/workspaces). Live workspaces drop their mock agent seeds immediately — the
+ *  server owns that list now, so the UI shows loading → real data, never a flash of fixtures. */
+// TODO(fe-wiring): only the agents family is dropped here. As each family is wired, drop its seeds for live
+//   workspaces too (KBs, tools, skills, runs, evals…) — until then a live workspace shows seed runs/evals that
+//   reference seed agent ids the server doesn't have (rendered as unresolved, no crash).
+// TODO(fe-wiring): if discovery FAILS in live mode, workspaces stay un-linked, so pages render seed data under the
+//   error strip (surfaced, not silent — but misleading). Decide: hide wired families' seeds whenever LIVE_API is on
+//   and discovery isn't "ready", at the cost of an empty console while the API is down.
+// TODO(fe-wiring): two backend workspaces sharing a group_prefix both match the same console entry (last wins) —
+//   the backend doesn't enforce group_prefix uniqueness (see services/api/models.py Workspace TODO).
+export function loadWorkspaces(opts?: LoadOpts): Promise<void> {
+  if (!LIVE_API) return Promise.resolve();
+  return load("workspaces", async () => {
+    const workspaces = mergeDiscovered(state.workspaces, await listMyWorkspaces(callerFor()));
+    const liveIds = new Set(workspaces.filter((w) => w.backendId).map((w) => w.id));
+    const agents = state.agents.filter((a) => !liveIds.has(a.workspaceId ?? "") || !isSeedAgent(a));
+    set({ workspaces, agents, ...rollupsFor(agents) });
+  }, opts);
+}
+/** Client-clock time each live agent was created in this tab (see the create/revalidate race in loadAgents). */
+const createdLocallyAt = new Map<string, number>();
+const SEED_AGENT_IDS = new Set(AGENTS.map((a) => a.id));
+const isSeedAgent = (a: Agent) => SEED_AGENT_IDS.has(a.id);
+
+/** Agents of the ACTIVE workspace from the API (no-op for a mock-only workspace). Replaces that workspace's slice
+ *  wholesale — the server list is authoritative (access-policy visibility is applied server-side). */
+export function loadAgents(opts?: LoadOpts): Promise<void> {
+  const ws = activeWorkspace();
+  if (!LIVE_API || !ws?.backendId) return Promise.resolve();
+  const wsId = ws.id;
+  return load(`agents:${wsId}`, async () => {
+    const startedAt = Date.now();
+    const byId = new Map(state.agents.map((a) => [a.id, a]));
+    // Server-owned fields win; local-only fields of an agent already in this tab survive the revalidation.
+    const live = (await listAgents(callerFor(ws))).map((o) => {
+      const fresh = agentOutToAgent(o, wsId);
+      const prev = byId.get(fresh.id);
+      return prev ? { ...prev, ...pickServerOwned(fresh) } : fresh;
+    });
+    const liveIds = new Set(live.map((a) => a.id));
+    // Keep agents this tab created WHILE the list was in flight (the response predates them), so a create racing a
+    // background revalidation isn't dropped; everything else in this workspace is replaced by the server list.
+    // (Client clock on both sides — `createdLocallyAt` is stamped by addAgent — so server clock skew can't bite.)
+    const createdDuring = state.agents.filter(
+      (a) => a.workspaceId === wsId && !liveIds.has(a.id) && (createdLocallyAt.get(a.id) ?? 0) >= startedAt);
+    const agents = [...createdDuring, ...live, ...state.agents.filter((a) => a.workspaceId !== wsId)];
+    set({ agents, ...rollupsFor(agents) });
+  }, opts);
+}
+
+/** One agent by id, for a deep link / reload straight onto a detail page before the list has loaded. Resolved in
+ *  the ACTIVE workspace (the API is workspace-scoped); already-present agents are not re-fetched. */
+// TODO(fe-wiring): detail URLs (/agents/<uuid>) carry no workspace, so a deep link into a workspace other than the
+//   active one 404s ("Agent not found"). Fix by scoping routes (/w/<ws>/agents/<id>) or by a server-side
+//   agent→workspace lookup for the caller, then switching the active workspace before loading.
+// TODO(fe-wiring): the response's ETag header is dropped. Capture it per agent (store it next to the Agent) when
+//   PATCH is wired — the backend REQUIRES If-Match on every edit (400 without it, 409 when stale).
+export function loadAgent(id: string, opts: LoadOpts = {}): Promise<void> {
+  const ws = activeWorkspace();
+  if (!LIVE_API || !ws?.backendId) return Promise.resolve();
+  if (!opts.force && state.agents.some((a) => a.id === id)) return Promise.resolve();
+  const wsId = ws.id;
+  return load(`agent:${id}`, async () => {
+    const fresh = agentOutToAgent(await getAgent(callerFor(ws), id), wsId);
+    // Merge over an existing copy so a refresh doesn't wipe local-only display fields (see addAgent NOTE).
+    const prev = state.agents.find((x) => x.id === id);
+    const a = prev ? { ...prev, ...pickServerOwned(fresh) } : fresh;
+    const agents = [a, ...state.agents.filter((x) => x.id !== id)];
+    set({ agents, ...rollupsFor(agents) });
+  }, opts);
+}
+
+/** The Agent fields the SERVER owns today (AgentOut). Everything else is placeholder or local-only until the
+ *  contract carries it (feature 011 F-A), so merges must not overwrite it with placeholders. */
+function pickServerOwned(a: Agent): Partial<Agent> {
+  return {
+    id: a.id, name: a.name, status: a.status, workspaceId: a.workspaceId, createdAt: a.createdAt,
+    updatedAt: a.updatedAt, activeVersion: a.activeVersion, versions: a.versions, accessPolicy: a.accessPolicy,
+  };
+}
+
+/** True when the active workspace's wired families are sourced from the API. */
+export const isLiveWorkspace = (ws: Workspace | undefined) => LIVE_API && !!ws?.backendId;
+
+/** Is this agent server-owned (it lives in a live workspace)? */
+export function isLiveAgent(agentId: string): boolean {
+  const a = state.agents.find((x) => x.id === agentId);
+  return !!a && isLiveWorkspace(state.workspaces.find((w) => w.id === a.workspaceId));
+}
+const warnedLocalOnly = new Set<string>();
+/** Honesty guard for the agent mutations that are NOT wired yet: on a server-owned agent the change is applied to
+ *  this tab only and is lost on reload — say so (once per agent per session) instead of a bare success toast.
+ *  Remove each call site as its endpoint is wired. */
+function warnLocalOnly(agentId: string, action: string) {
+  if (!isLiveAgent(agentId) || warnedLocalOnly.has(agentId)) return;
+  warnedLocalOnly.add(agentId);
+  toast(`${action}: not saved to the server yet (agent edits aren't wired) — this change is local to this tab.`, "neutral");
+}
+
 // @backend remove - roleOverride/teamOverride/platformAdminOverride are dev-only preview switches; delete
 //   once the real IAM session supplies role + teams + platform-admin from the OIDC `groups` claim.
 //   [ref: frontend-auth-access-plan.md#part-e]
@@ -353,7 +556,10 @@ export function setEvalPolicy(wsId: string, patch: Partial<EvalPolicy>) {
 // @backend POST /v1/versions/:vid/baseline - re-freeze the trusted baseline to the active version; this is
 //   explicit + audited (writes an audit_logs row) so quality can't erode one silent step at a time
 //   (backend/05 §4, backend/08). Admin / eval.govern. Mock: records the action via a toast.
+// TODO(backend): there is NO baseline re-freeze endpoint — the baseline is only an input field of
+//   POST /api/v1/agents/:id/eval-runs (EvalRunIn.baseline). Build the audited re-freeze (backend/05 §4), then wire.
 export function reFreezeBaseline(agentId: string) {
+  warnLocalOnly(agentId, "Re-freeze baseline");
   const a = state.agents.find((x) => x.id === agentId);
   if (!a) return;
   toast(`Baseline re-frozen to ${a.activeVersion} for ${a.name} (audited).`);
@@ -406,6 +612,8 @@ export function setAccessPolicy(
   const stamped: AccessPolicy =
     policy.visibility === "private" && !policy.owner ? { ...policy, owner: MOCK_PROFILE.email } : policy;
   const apply = <T extends WithTenant>(arr: T[]) => arr.map((r) => (keyOf(r) === id ? { ...r, accessPolicy: stamped } : r));
+  // TODO(fe-wiring): for a live agent, persist via PATCH /api/v1/agents/:id {access_policy} (BUILT; needs If-Match).
+  if (kind === "agent") warnLocalOnly(id, "Access policy");
   if (kind === "agent") set({ agents: apply(state.agents) });
   else if (kind === "knowledge") set({ knowledgeBases: apply(state.knowledgeBases) });
   else if (kind === "tool") set({ tools: apply(state.tools) });
@@ -421,25 +629,51 @@ export function setAccessPolicy(
    in the IdP. [ref: backend/18 §4] */
 
 /* --------------------------------------------------------------- actions */
-// @backend POST /v1/agents - create a draft agent in the active workspace; returns the created id.
-export function addAgent(a: Agent) {
-  const stamped = tagResource({ ...a, workspaceId: a.workspaceId ?? state.activeWorkspaceId });
-  const agents = [stamped, ...state.agents];
-  const toolCounts = withBoundToolCounts(agents, state.tools, state.mcpServers);
-  set({
-    agents,
-    knowledgeBases: withBoundAgentCounts(agents, state.knowledgeBases),
-    tools: toolCounts.tools,
-    mcpServers: toolCounts.mcpServers,
-    skills: withBoundSkillCounts(agents, state.skills),
-  });
+// POST /api/v1/agents - create a draft agent in the active workspace; resolves to the created id.
+//   Live workspace: the SERVER creates it (and assigns the id) — the store reflects the response, never an
+//   optimistic guess, and a rejection (400/403/…) is toasted and re-thrown so the form stays put.
+//   Mock workspace: the in-memory create, as before (resolves immediately with the client id).
+//   NOTE: the console form's richer fields (description, tags, KB/tool/skill bindings, config beyond the system
+//   prompt) are not in AgentCreate yet — they are kept on the local copy so the UI shows what was entered, but are
+//   NOT persisted server-side (contract gap; see adapters.ts).
+// TODO(fe-wiring): once AgentCreate/versions carry them, persist the form's KB/tool/skill bindings + full config
+//   (POST …/versions with bindings) instead of keeping them local-only.
+export async function addAgent(a: Agent, opts: { idempotencyKey?: string } = {}): Promise<string> {
+  const ws = state.workspaces.find((w) => w.id === (a.workspaceId ?? state.activeWorkspaceId));
+  let stamped: Agent;
+  if (isLiveWorkspace(ws)) {
+    try {
+      // One Idempotency-Key per form submission (the caller keeps it stable across a retry of the same draft): the
+      // backend's guard (D8) rejects a concurrent duplicate with 409 instead of creating a second agent.
+      // NOTE: the backend guard is in-flight-only + process-local today (completed-key replay deferred) — see
+      // the TODO on services/api/deps.py idempotency_guard.
+      const out = await createAgent(callerFor(ws), agentToCreate(a), {
+        idempotencyKey: opts.idempotencyKey ?? crypto.randomUUID(),
+      });
+      createdLocallyAt.set(out.id, Date.now());
+      // Server owns identity + lifecycle; the form's display fields ride along locally (see NOTE above).
+      stamped = { ...a, ...pickServerOwned(agentOutToAgent(out, ws!.id)) };
+    } catch (e) {
+      toast(`Create failed: ${e instanceof Error ? e.message : String(e)}`, "critical");
+      throw e;
+    }
+  } else {
+    stamped = tagResource({ ...a, workspaceId: a.workspaceId ?? state.activeWorkspaceId });
+  }
+  const agents = [stamped, ...state.agents.filter((x) => x.id !== stamped.id)];
+  set({ agents, ...rollupsFor(agents) });
   toast(`Agent "${stamped.name}" created as a draft`);
+  return stamped.id;
 }
 // @backend PATCH /v1/agents/:id - generic field patch + bind knowledge/tools. Lifecycle transitions
 //   (publish/unpublish/archive/restore) and version rollback go through the dedicated guarded wrappers
 //   below (publishAgent/unpublishAgent/archiveAgent/restoreAgent/rollbackVersion), which map to the same
 //   endpoint but centralize the passing-eval guard.
+// TODO(fe-wiring): wire to PATCH /api/v1/agents/:id (BUILT) — needs the agent's ETag as If-Match (see loadAgent
+//   TODO) and an AgentPatch adapter (backend accepts name/status/active_version_id/access_policy only; provider/
+//   model/bindings are version-level → POST …/versions). Covers unpublish/archive/restore/rollback below too.
 export function updateAgent(id: string, patch: Partial<Agent>, notify = true) {
+  warnLocalOnly(id, "Edit");
   // A behavior-changing (trigger) field edit flags the agent for re-eval (publishable proxy, backend/05 §5),
   // unless the caller set needsReEval explicitly (e.g. a rollback that clears it).
   const TRIGGER_FIELDS: (keyof Agent)[] = ["provider", "model", "knowledgeBases", "tools", "skills"];
@@ -462,7 +696,10 @@ export function updateAgent(id: string, patch: Partial<Agent>, notify = true) {
 //   Guardrails specifically map to PUT /v1/agents/:id/guardrails (per-version config) per
 //   docs/backend-integration-map.md. Deep-merges into agent.config (updateAgent is shallow); the merged
 //   result is a full AgentConfig stored back into the Partial<AgentConfig> field.
+// TODO(fe-wiring): draft config is version-level on the backend — wire as POST /api/v1/agents/:id/versions (BUILT)
+//   with the merged config, then re-point via PATCH active_version_id. Local-only today.
 export function updateAgentConfig(id: string, patch: Partial<AgentConfig>, notify = true) {
+  warnLocalOnly(id, "Config change");
   set({
     agents: state.agents.map((a) => {
       if (a.id !== id) return a;
@@ -484,7 +721,10 @@ export function updateAgentConfig(id: string, patch: Partial<AgentConfig>, notif
 // @backend PATCH /v1/agents/:id - lifecycle transitions below are dedicated wrappers over the same
 //   endpoint; they centralize the guards (publish requires a passing eval) the UI previously duplicated.
 /** Publish the active version. Blocked when the agent is eval_failing. Returns false if blocked. */
+// TODO(fe-wiring): wire to POST /api/v1/agents/:id/publish (BUILT, advisory verdict) — the server's eval gate
+//   should replace the client-side policy check below. Local-only today.
 export function publishAgent(id: string): boolean {
+  warnLocalOnly(id, "Publish");
   const a = state.agents.find((x) => x.id === id);
   if (!a) return false;
   if (a.status === "eval_failing") {
@@ -541,7 +781,10 @@ export function rollbackVersion(id: string, label: string) {
 // @backend DELETE /v1/agents/:id - delete agent and its versions (server cascade). The mock mirrors the
 //   cascade client-side: drop the agent's eval runs, runs, tokens, and scrub it from channel bindings so
 //   no dangling references survive the delete.
+// TODO(backend): DELETE /api/v1/agents/:id is DEFERRED server-side (agents router docstring) — build it, then wire
+//   here. Until then a delete of a live agent is local-only and the agent reappears on the next list refresh.
 export function deleteAgent(id: string) {
+  warnLocalOnly(id, "Delete");
   const a = state.agents.find((x) => x.id === id);
   const agents = state.agents.filter((x) => x.id !== id);
   const toolCounts = withBoundToolCounts(agents, state.tools, state.mcpServers);
@@ -564,7 +807,10 @@ export function deleteAgent(id: string) {
   toast("Agent deleted", "neutral");
 }
 // @backend POST /v1/agents/:id/duplicate - server copies config into a new draft; returns new id.
+// TODO(backend): POST /api/v1/agents/:id/duplicate is DEFERRED server-side — build it (or compose create +
+//   versions client-side), then wire. Local-only today.
 export function duplicateAgent(id: string): string | null {
+  warnLocalOnly(id, "Duplicate");
   const a = state.agents.find((x) => x.id === id);
   if (!a) return null;
   const newId = genId(a.id);
@@ -992,12 +1238,46 @@ export const useTeamOverride = () => useSelector((s) => s.teamOverride);
 // @backend remove - dev-only preview of the platform-admin dimension (null = use the OIDC `groups` claim).
 export const usePlatformAdminOverride = () => useSelector((s) => s.platformAdminOverride);
 
+/* live API: load status + mount-time loaders (no-ops unless NEXT_PUBLIC_API_MODE=live) */
+export const useRemoteStatus = (key: string) => useSelector((s) => s.remote[key] ?? IDLE);
+/** Load status of the active workspace's agent list. */
+export const useAgentsStatus = () => useSelector((s) => s.remote[`agents:${s.activeWorkspaceId}`] ?? IDLE);
+const useActiveBackendId = () =>
+  useSelector((s) => s.workspaces.find((w) => w.id === s.activeWorkspaceId)?.backendId);
+/** True when the active workspace's wired families come from the API (drives the Live/Mock badge). */
+export function useIsLiveWorkspace(): boolean {
+  const backendId = useActiveBackendId();
+  return LIVE_API && !!backendId;
+}
+/** Mount once at the app boundary: workspace discovery. */
+export function useEnsureWorkspaces() {
+  useEffect(() => { void loadWorkspaces(); }, []);
+}
+/** Mount in a page that lists agents. Re-runs on workspace switch AND when discovery assigns the backendId
+ *  (so a cold reload works without ordering assumptions). */
+export function useEnsureAgents() {
+  const ws = useActiveWorkspaceId();
+  const backendId = useActiveBackendId();
+  useEffect(() => { void loadAgents(); }, [ws, backendId]);
+}
+/** Mount in an agent detail page (deep link / reload). */
+export function useEnsureAgent(id: string) {
+  const ws = useActiveWorkspaceId();
+  const backendId = useActiveBackendId();
+  useEffect(() => { void loadAgent(id); }, [id, ws, backendId]);
+}
+
 /* workspace-scoped lists
    @backend reads - every selector below replaces its mock store slice with a workspace-scoped API
    GET (filter by the active workspace server-side); the server also applies access-policy visibility
    so restricted resources never reach a caller who can't use them. [ref: backend-integration-plan.md#part-2] */
 // @backend GET /v1/agents?workspace=:id - list agents for active workspace.
-export const useAgents = () => useSelector((s) => inWs(s.agents, s.activeWorkspaceId));
+//   Live: the hook itself triggers the (de-duplicated, freshness-windowed) load, so EVERY consumer — dashboard,
+//   playground, evaluations, settings, pickers — gets the server list, not just the agents page.
+export function useAgents() {
+  useEnsureAgents();
+  return useSelector((s) => inWs(s.agents, s.activeWorkspaceId));
+}
 // @backend GET /v1/agents/:id - single agent (config, versions, bound knowledge/tools).
 /** Single resource getters resolve by id across workspaces; callers scope/guard as needed. */
 export const useAgent = (id: string) => useSelector((s) => s.agents.find((a) => a.id === id));
