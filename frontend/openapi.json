@@ -3642,6 +3642,146 @@
         }
       }
     },
+    "/api/v1/workspace/telemetry": {
+      "get": {
+        "tags": [
+          "workspace"
+        ],
+        "summary": "Get Telemetry",
+        "description": "Feature 023: the workspace's content-logging switch + whether call-log lines actually carry redacted text\n(`effective` includes the non-prod dev override). Read-only \u2014 never creates the settings row.",
+        "operationId": "get_telemetry_api_v1_workspace_telemetry_get",
+        "parameters": [
+          {
+            "name": "workspace",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Workspace"
+            }
+          },
+          {
+            "name": "X-Workspace-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TelemetrySettingsOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "workspace"
+        ],
+        "summary": "Put Telemetry",
+        "description": "Feature 023 (FR-002b): admin-only opt-in for redacted prompt/output text in this workspace's call-log lines.\nEvery CHANGE writes one audit line (who, when, which workspace, old\u2192new); a same-value PUT writes none. The\ndurable `audit_logs` table is deferred project-wide (018) \u2014 structured log line now.",
+        "operationId": "put_telemetry_api_v1_workspace_telemetry_put",
+        "parameters": [
+          {
+            "name": "workspace",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Workspace"
+            }
+          },
+          {
+            "name": "X-Workspace-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TelemetrySettingsIn"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TelemetrySettingsOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/workspace": {
       "patch": {
         "tags": [
@@ -6772,6 +6912,40 @@
         },
         "type": "object",
         "title": "SkillPatch"
+      },
+      "TelemetrySettingsIn": {
+        "properties": {
+          "content_logging": {
+            "type": "boolean",
+            "title": "Content Logging"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "content_logging"
+        ],
+        "title": "TelemetrySettingsIn",
+        "description": "Feature 023: admin-only per-workspace content-logging switch (strict \u2014 unknown keys rejected)."
+      },
+      "TelemetrySettingsOut": {
+        "properties": {
+          "content_logging": {
+            "type": "boolean",
+            "title": "Content Logging"
+          },
+          "effective": {
+            "type": "boolean",
+            "title": "Effective"
+          }
+        },
+        "type": "object",
+        "required": [
+          "content_logging",
+          "effective"
+        ],
+        "title": "TelemetrySettingsOut",
+        "description": "`content_logging` = the stored workspace setting; `effective` = whether call-log lines for this workspace\nactually carry redacted text (stored OR the non-prod dev-profile override)."
       },
       "TokenMintIn": {
         "properties": {

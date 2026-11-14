@@ -621,6 +621,33 @@ export interface paths {
         patch: operations["patch_settings_api_v1_workspace_settings_patch"];
         trace?: never;
     };
+    "/api/v1/workspace/telemetry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Telemetry
+         * @description Feature 023: the workspace's content-logging switch + whether call-log lines actually carry redacted text
+         *     (`effective` includes the non-prod dev override). Read-only — never creates the settings row.
+         */
+        get: operations["get_telemetry_api_v1_workspace_telemetry_get"];
+        /**
+         * Put Telemetry
+         * @description Feature 023 (FR-002b): admin-only opt-in for redacted prompt/output text in this workspace's call-log lines.
+         *     Every CHANGE writes one audit line (who, when, which workspace, old→new); a same-value PUT writes none. The
+         *     durable `audit_logs` table is deferred project-wide (018) — structured log line now.
+         */
+        put: operations["put_telemetry_api_v1_workspace_telemetry_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/workspace": {
         parameters: {
             query?: never;
@@ -1671,6 +1698,25 @@ export interface components {
             access_policy?: {
                 [key: string]: unknown;
             } | null;
+        };
+        /**
+         * TelemetrySettingsIn
+         * @description Feature 023: admin-only per-workspace content-logging switch (strict — unknown keys rejected).
+         */
+        TelemetrySettingsIn: {
+            /** Content Logging */
+            content_logging: boolean;
+        };
+        /**
+         * TelemetrySettingsOut
+         * @description `content_logging` = the stored workspace setting; `effective` = whether call-log lines for this workspace
+         *     actually carry redacted text (stored OR the non-prod dev-profile override).
+         */
+        TelemetrySettingsOut: {
+            /** Content Logging */
+            content_logging: boolean;
+            /** Effective */
+            effective: boolean;
         };
         /** TokenMintIn */
         TokenMintIn: {
@@ -3537,6 +3583,76 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["WorkspaceSettingsOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_telemetry_api_v1_workspace_telemetry_get: {
+        parameters: {
+            query?: {
+                workspace?: string | null;
+            };
+            header?: {
+                "X-Workspace-Id"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TelemetrySettingsOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    put_telemetry_api_v1_workspace_telemetry_put: {
+        parameters: {
+            query?: {
+                workspace?: string | null;
+            };
+            header?: {
+                "X-Workspace-Id"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TelemetrySettingsIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TelemetrySettingsOut"];
                 };
             };
             /** @description Validation Error */
