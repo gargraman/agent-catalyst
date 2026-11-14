@@ -39,6 +39,7 @@ def create_app() -> FastAPI:
     app.include_router(skills.router)
     app.include_router(knowledge.router)
     app.include_router(workspaces.router)
+    app.include_router(workspaces.discovery_router)   # GET /api/v1/workspaces — pre-selection discovery (switcher)
     app.include_router(members.router)
     app.include_router(provider_keys.router)
     app.include_router(runs.router)

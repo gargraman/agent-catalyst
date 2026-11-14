@@ -5,6 +5,63 @@
     "version": "0.5.0"
   },
   "paths": {
+    "/auth/login": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Login",
+        "operationId": "login_auth_login_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/callback": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Callback",
+        "operationId": "callback_auth_callback_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/logout": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Logout",
+        "operationId": "logout_auth_logout_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/agents": {
       "post": {
         "tags": [
@@ -459,6 +516,7 @@
           "invoke"
         ],
         "summary": "Invoke Agent",
+        "description": "Console/playground plane \u2014 session auth, `run_source=\"playground\"`. An admin revocation of this subject\nis cut mid-stream via the deny-set re-check (the same subject `session_principal` already checks per request).",
         "operationId": "invoke_agent_api_v1_agents__agent_id__invoke_post",
         "parameters": [
           {
@@ -521,6 +579,353 @@
                 "schema": {}
               }
             }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/agents/{agent_id}/invoke": {
+      "post": {
+        "tags": [
+          "invoke"
+        ],
+        "summary": "Published Invoke",
+        "description": "Published plane \u2014 caller-token auth (role `executer`), `run_source=\"published\"`, tenant pinned by the token.\nAuthorization is the per-resource access policy (keyed on the token's teams), NOT console RBAC.",
+        "operationId": "published_invoke_v1_agents__agent_id__invoke_post",
+        "parameters": [
+          {
+            "name": "agent_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Agent Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InvokeIn"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/agents/{agent_id}/tokens": {
+      "post": {
+        "tags": [
+          "tokens"
+        ],
+        "summary": "Mint Token",
+        "operationId": "mint_token_api_v1_agents__agent_id__tokens_post",
+        "parameters": [
+          {
+            "name": "agent_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Agent Id"
+            }
+          },
+          {
+            "name": "workspace",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Workspace"
+            }
+          },
+          {
+            "name": "X-Workspace-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TokenMintIn"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenMintOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "tokens"
+        ],
+        "summary": "List Tokens",
+        "operationId": "list_tokens_api_v1_agents__agent_id__tokens_get",
+        "parameters": [
+          {
+            "name": "agent_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Agent Id"
+            }
+          },
+          {
+            "name": "workspace",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Workspace"
+            }
+          },
+          {
+            "name": "X-Workspace-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/TokenOut"
+                  },
+                  "title": "Response List Tokens Api V1 Agents  Agent Id  Tokens Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/tokens/{token_id}": {
+      "delete": {
+        "tags": [
+          "tokens"
+        ],
+        "summary": "Revoke Token",
+        "operationId": "revoke_token_api_v1_tokens__token_id__delete",
+        "parameters": [
+          {
+            "name": "token_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Token Id"
+            }
+          },
+          {
+            "name": "workspace",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Workspace"
+            }
+          },
+          {
+            "name": "X-Workspace-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace-Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/org/revoke-user": {
+      "post": {
+        "tags": [
+          "tokens"
+        ],
+        "summary": "Revoke User",
+        "description": "Admin force-logout. Cuts an active console session AND revokes caller tokens (FR-013). Token revocation is\nDURABLE (an UPDATE to revoked_at, so it survives the deny-set TTL \u2014 closes the resurrection gap) and RLS-SCOPED\n(an admin can only revoke tokens in their own workspace \u2014 no cross-tenant reach by id). The deny-set adds\nimmediacy (in-flight cut) and, for a subject, is the ONLY mechanism cutting a console session (no durable row),\nso its write MUST confirm \u2014 it fails CLOSED on a configured-Redis error (FR-024b), rolling the whole op back\nfor the admin to retry. (The routine durable revoke that works even on a Redis outage is DELETE /tokens/{id}.)\n\n  - token_id: revoke exactly that caller token (404 if it isn't in this workspace \u2014 mirrors DELETE, no leak).\n  - subject:  deny the console session (global subject key \u2014 org-level offboarding) AND durably revoke every\n              caller token that subject minted IN THIS WORKSPACE (created_by sweep, RLS-scoped).",
+        "operationId": "revoke_user_api_v1_org_revoke_user_post",
+        "parameters": [
+          {
+            "name": "workspace",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Workspace"
+            }
+          },
+          {
+            "name": "X-Workspace-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RevokeUserIn"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
           },
           "422": {
             "description": "Validation Error",
@@ -3312,6 +3717,32 @@
         }
       }
     },
+    "/api/v1/workspaces": {
+      "get": {
+        "tags": [
+          "workspace"
+        ],
+        "summary": "List My Workspaces",
+        "description": "The workspaces the signed-in caller may enter \u2014 each with the console role they hold. Source for the\nconsole's workspace switcher. Pre-selection and cross-tenant by nature: resolved from the members store via\nthe `member_workspaces()` SECURITY DEFINER function (migration 0011) on an unscoped session, so a caller only\never sees workspaces they are a member of and the app role never gains a broad RLS bypass (09 \u00a77). When real\nOIDC replaces the dev provider, membership is populated by the IdP group sync (feature 020); this endpoint is\nunchanged.",
+        "operationId": "list_my_workspaces_api_v1_workspaces_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/WorkspaceMembershipOut"
+                  },
+                  "type": "array",
+                  "title": "Response List My Workspaces Api V1 Workspaces Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/members": {
       "get": {
         "tags": [
@@ -3617,6 +4048,322 @@
         "responses": {
           "204": {
             "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/provider-keys": {
+      "post": {
+        "tags": [
+          "provider-keys"
+        ],
+        "summary": "Capture Key",
+        "operationId": "capture_key_api_v1_provider_keys_post",
+        "parameters": [
+          {
+            "name": "workspace",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Workspace"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          },
+          {
+            "name": "X-Workspace-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderKeyCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderKeyOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "provider-keys"
+        ],
+        "summary": "List Keys",
+        "operationId": "list_keys_api_v1_provider_keys_get",
+        "parameters": [
+          {
+            "name": "workspace",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Workspace"
+            }
+          },
+          {
+            "name": "X-Workspace-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ProviderKeyOut"
+                  },
+                  "title": "Response List Keys Api V1 Provider Keys Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/provider-keys/{key_id}/rotate": {
+      "post": {
+        "tags": [
+          "provider-keys"
+        ],
+        "summary": "Rotate Key",
+        "operationId": "rotate_key_api_v1_provider_keys__key_id__rotate_post",
+        "parameters": [
+          {
+            "name": "key_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Key Id"
+            }
+          },
+          {
+            "name": "workspace",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Workspace"
+            }
+          },
+          {
+            "name": "X-Workspace-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderKeyRotate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderKeyOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/provider-keys/{key_id}/revoke": {
+      "post": {
+        "tags": [
+          "provider-keys"
+        ],
+        "summary": "Revoke Key",
+        "operationId": "revoke_key_api_v1_provider_keys__key_id__revoke_post",
+        "parameters": [
+          {
+            "name": "key_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Key Id"
+            }
+          },
+          {
+            "name": "workspace",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Workspace"
+            }
+          },
+          {
+            "name": "X-Workspace-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderKeyOut"
+                }
+              }
+            }
           },
           "422": {
             "description": "Validation Error",
@@ -4027,7 +4774,7 @@
           "meta"
         ],
         "summary": "Readyz",
-        "description": "Readiness (orchestration probe, deployment infra slice) \u2014 the service can serve traffic:\nverifies DB connectivity via the app (RLS) engine. Returns 503 not-ready if the DB is unreachable,\nso a load balancer / k8s readiness gate holds traffic until the stack is up (migrations run first).",
+        "description": "Readiness (orchestration probe, deployment infra slice) \u2014 the service can serve traffic:\nverifies DB connectivity via the app (RLS) engine, and \u2014 when Redis is configured \u2014 that the shared\ncache is reachable. Returns 503 not-ready if either dependency is down so a load balancer / k8s\nreadiness gate holds/drains traffic until the stack is up (migrations run first).\n\nRedis readiness (feature 021, D3): a *configured-but-unreachable* Redis flips /readyz to 503 because\nthe 018 deny-set fails CLOSED on it \u2014 every authenticated console request would 401, so the instance\ngenuinely cannot serve traffic and should be drained, not left answering a wall of 401s. Parity carve-\nout (mirrors `denyset.is_denied`): when AC_REDIS_URL is UNSET (dev/test, no deny-set to consult),\nRedis is NOT a readiness dependency and /readyz stays 200 \u2014 only a configured Redis that errors trips.",
         "operationId": "readyz_readyz_get",
         "responses": {
           "200": {
@@ -5508,6 +6255,120 @@
         "type": "object",
         "title": "PolicyIn"
       },
+      "ProviderKeyCreate": {
+        "properties": {
+          "provider": {
+            "type": "string",
+            "title": "Provider"
+          },
+          "label": {
+            "type": "string",
+            "title": "Label"
+          },
+          "value": {
+            "type": "string",
+            "title": "Value"
+          },
+          "region": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Region"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "provider",
+          "label",
+          "value"
+        ],
+        "title": "ProviderKeyCreate",
+        "description": "Capture body. `value` is the raw secret \u2014 stored once in the secrets backend, never returned."
+      },
+      "ProviderKeyOut": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "provider": {
+            "type": "string",
+            "title": "Provider"
+          },
+          "label": {
+            "type": "string",
+            "title": "Label"
+          },
+          "masked": {
+            "type": "string",
+            "title": "Masked"
+          },
+          "region": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Region"
+          },
+          "added": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Added"
+          },
+          "rotatedAt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rotatedat"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "provider",
+          "label",
+          "masked",
+          "added",
+          "status"
+        ],
+        "title": "ProviderKeyOut",
+        "description": "Masked roster entry \u2014 the drop-in `data.ts` ProviderKey shape. No raw value, no vault_path."
+      },
+      "ProviderKeyRotate": {
+        "properties": {
+          "value": {
+            "type": "string",
+            "title": "Value"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "value"
+        ],
+        "title": "ProviderKeyRotate",
+        "description": "Rotate body \u2014 the replacement raw secret (write-once, never returned)."
+      },
       "PublishIn": {
         "properties": {
           "version_id": {
@@ -5565,6 +6426,35 @@
           "status"
         ],
         "title": "PublishOut"
+      },
+      "RevokeUserIn": {
+        "properties": {
+          "subject": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subject"
+          },
+          "token_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Token Id"
+          }
+        },
+        "type": "object",
+        "title": "RevokeUserIn",
+        "description": "Admin immediate-revocation target: a console `subject` and/or a caller `token_id` (at least one)."
       },
       "RubricDimIn": {
         "properties": {
@@ -5883,6 +6773,168 @@
         "type": "object",
         "title": "SkillPatch"
       },
+      "TokenMintIn": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
+          "teams": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Teams"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "title": "TokenMintIn"
+      },
+      "TokenMintOut": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "prefix": {
+            "type": "string",
+            "title": "Prefix"
+          },
+          "secret": {
+            "type": "string",
+            "title": "Secret"
+          },
+          "agent_id": {
+            "type": "string",
+            "title": "Agent Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "prefix",
+          "secret",
+          "agent_id",
+          "name",
+          "created_at"
+        ],
+        "title": "TokenMintOut",
+        "description": "Mint result \u2014 carries the FULL secret exactly once (FR-010). Never returned again."
+      },
+      "TokenOut": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "prefix": {
+            "type": "string",
+            "title": "Prefix"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "agent_id": {
+            "type": "string",
+            "title": "Agent Id"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "last_used_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Used At"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
+          "revoked_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revoked At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "prefix",
+          "name",
+          "agent_id",
+          "created_at"
+        ],
+        "title": "TokenOut",
+        "description": "Masked roster entry \u2014 prefix only, never the secret (FR-011)."
+      },
       "ToolCreate": {
         "properties": {
           "name": {
@@ -6129,6 +7181,42 @@
           "created_at"
         ],
         "title": "VersionOut"
+      },
+      "WorkspaceMembershipOut": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "group_prefix": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Group Prefix"
+          },
+          "role": {
+            "type": "string",
+            "title": "Role"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "group_prefix",
+          "role"
+        ],
+        "title": "WorkspaceMembershipOut",
+        "description": "A workspace the signed-in caller may enter, plus the console role they hold in it. The console's workspace\nswitcher consumes this (GET /api/v1/workspaces) \u2014 `id` is the backend workspace UUID the FE then sends as\nX-Workspace-Id on every tenant-scoped call."
       },
       "WorkspaceOut": {
         "properties": {

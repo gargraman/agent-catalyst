@@ -4,6 +4,57 @@
  */
 
 export interface paths {
+    "/auth/login": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Login */
+        get: operations["login_auth_login_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/callback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Callback */
+        get: operations["callback_auth_callback_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/logout": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Logout */
+        post: operations["logout_auth_logout_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/agents": {
         parameters: {
             query?: never;
@@ -66,8 +117,97 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Invoke Agent */
+        /**
+         * Invoke Agent
+         * @description Console/playground plane — session auth, `run_source="playground"`. An admin revocation of this subject
+         *     is cut mid-stream via the deny-set re-check (the same subject `session_principal` already checks per request).
+         */
         post: operations["invoke_agent_api_v1_agents__agent_id__invoke_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/agents/{agent_id}/invoke": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Published Invoke
+         * @description Published plane — caller-token auth (role `executer`), `run_source="published"`, tenant pinned by the token.
+         *     Authorization is the per-resource access policy (keyed on the token's teams), NOT console RBAC.
+         */
+        post: operations["published_invoke_v1_agents__agent_id__invoke_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/agents/{agent_id}/tokens": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Tokens */
+        get: operations["list_tokens_api_v1_agents__agent_id__tokens_get"];
+        put?: never;
+        /** Mint Token */
+        post: operations["mint_token_api_v1_agents__agent_id__tokens_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/tokens/{token_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Revoke Token */
+        delete: operations["revoke_token_api_v1_tokens__token_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/org/revoke-user": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Revoke User
+         * @description Admin force-logout. Cuts an active console session AND revokes caller tokens (FR-013). Token revocation is
+         *     DURABLE (an UPDATE to revoked_at, so it survives the deny-set TTL — closes the resurrection gap) and RLS-SCOPED
+         *     (an admin can only revoke tokens in their own workspace — no cross-tenant reach by id). The deny-set adds
+         *     immediacy (in-flight cut) and, for a subject, is the ONLY mechanism cutting a console session (no durable row),
+         *     so its write MUST confirm — it fails CLOSED on a configured-Redis error (FR-024b), rolling the whole op back
+         *     for the admin to retry. (The routine durable revoke that works even on a Redis outage is DELETE /tokens/{id}.)
+         *
+         *       - token_id: revoke exactly that caller token (404 if it isn't in this workspace — mirrors DELETE, no leak).
+         *       - subject:  deny the console session (global subject key — org-level offboarding) AND durably revoke every
+         *                   caller token that subject minted IN THIS WORKSPACE (created_by sweep, RLS-scoped).
+         */
+        post: operations["revoke_user_api_v1_org_revoke_user_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -498,6 +638,31 @@ export interface paths {
         patch: operations["rename_workspace_api_v1_workspace_patch"];
         trace?: never;
     };
+    "/api/v1/workspaces": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List My Workspaces
+         * @description The workspaces the signed-in caller may enter — each with the console role they hold. Source for the
+         *     console's workspace switcher. Pre-selection and cross-tenant by nature: resolved from the members store via
+         *     the `member_workspaces()` SECURITY DEFINER function (migration 0011) on an unscoped session, so a caller only
+         *     ever sees workspaces they are a member of and the app role never gains a broad RLS bypass (09 §7). When real
+         *     OIDC replaces the dev provider, membership is populated by the IdP group sync (feature 020); this endpoint is
+         *     unchanged.
+         */
+        get: operations["list_my_workspaces_api_v1_workspaces_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/members": {
         parameters: {
             query?: never;
@@ -532,6 +697,58 @@ export interface paths {
         head?: never;
         /** Patch Member */
         patch: operations["patch_member_api_v1_members__member_id__patch"];
+        trace?: never;
+    };
+    "/api/v1/provider-keys": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Keys */
+        get: operations["list_keys_api_v1_provider_keys_get"];
+        put?: never;
+        /** Capture Key */
+        post: operations["capture_key_api_v1_provider_keys_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/provider-keys/{key_id}/rotate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Rotate Key */
+        post: operations["rotate_key_api_v1_provider_keys__key_id__rotate_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/provider-keys/{key_id}/revoke": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Revoke Key */
+        post: operations["revoke_key_api_v1_provider_keys__key_id__revoke_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/api/v1/runs": {
@@ -649,8 +866,15 @@ export interface paths {
         /**
          * Readyz
          * @description Readiness (orchestration probe, deployment infra slice) — the service can serve traffic:
-         *     verifies DB connectivity via the app (RLS) engine. Returns 503 not-ready if the DB is unreachable,
-         *     so a load balancer / k8s readiness gate holds traffic until the stack is up (migrations run first).
+         *     verifies DB connectivity via the app (RLS) engine, and — when Redis is configured — that the shared
+         *     cache is reachable. Returns 503 not-ready if either dependency is down so a load balancer / k8s
+         *     readiness gate holds/drains traffic until the stack is up (migrations run first).
+         *
+         *     Redis readiness (feature 021, D3): a *configured-but-unreachable* Redis flips /readyz to 503 because
+         *     the 018 deny-set fails CLOSED on it — every authenticated console request would 401, so the instance
+         *     genuinely cannot serve traffic and should be drained, not left answering a wall of 401s. Parity carve-
+         *     out (mirrors `denyset.is_denied`): when AC_REDIS_URL is UNSET (dev/test, no deny-set to consult),
+         *     Redis is NOT a readiness dependency and /readyz stays 200 — only a configured Redis that errors trips.
          */
         get: operations["readyz_readyz_get"];
         put?: never;
@@ -1236,6 +1460,53 @@ export interface components {
              */
             allow_low_confidence_override: boolean;
         };
+        /**
+         * ProviderKeyCreate
+         * @description Capture body. `value` is the raw secret — stored once in the secrets backend, never returned.
+         */
+        ProviderKeyCreate: {
+            /** Provider */
+            provider: string;
+            /** Label */
+            label: string;
+            /** Value */
+            value: string;
+            /** Region */
+            region?: string | null;
+        };
+        /**
+         * ProviderKeyOut
+         * @description Masked roster entry — the drop-in `data.ts` ProviderKey shape. No raw value, no vault_path.
+         */
+        ProviderKeyOut: {
+            /** Id */
+            id: string;
+            /** Provider */
+            provider: string;
+            /** Label */
+            label: string;
+            /** Masked */
+            masked: string;
+            /** Region */
+            region?: string | null;
+            /**
+             * Added
+             * Format: date-time
+             */
+            added: string;
+            /** Rotatedat */
+            rotatedAt?: string | null;
+            /** Status */
+            status: string;
+        };
+        /**
+         * ProviderKeyRotate
+         * @description Rotate body — the replacement raw secret (write-once, never returned).
+         */
+        ProviderKeyRotate: {
+            /** Value */
+            value: string;
+        };
         /** PublishIn */
         PublishIn: {
             /** Version Id */
@@ -1259,6 +1530,16 @@ export interface components {
              * @default Publish is advisory in this release: the eval verdict is reported but does NOT gate publishing until the judge is κ-calibrated (owner decision #3).
              */
             advisory_note: string;
+        };
+        /**
+         * RevokeUserIn
+         * @description Admin immediate-revocation target: a console `subject` and/or a caller `token_id` (at least one).
+         */
+        RevokeUserIn: {
+            /** Subject */
+            subject?: string | null;
+            /** Token Id */
+            token_id?: string | null;
         };
         /** RubricDimIn */
         RubricDimIn: {
@@ -1391,6 +1672,63 @@ export interface components {
                 [key: string]: unknown;
             } | null;
         };
+        /** TokenMintIn */
+        TokenMintIn: {
+            /** Name */
+            name: string;
+            /** Expires At */
+            expires_at?: string | null;
+            /** Teams */
+            teams?: string[] | null;
+        };
+        /**
+         * TokenMintOut
+         * @description Mint result — carries the FULL secret exactly once (FR-010). Never returned again.
+         */
+        TokenMintOut: {
+            /** Id */
+            id: string;
+            /** Prefix */
+            prefix: string;
+            /** Secret */
+            secret: string;
+            /** Agent Id */
+            agent_id: string;
+            /** Name */
+            name: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Expires At */
+            expires_at?: string | null;
+        };
+        /**
+         * TokenOut
+         * @description Masked roster entry — prefix only, never the secret (FR-011).
+         */
+        TokenOut: {
+            /** Id */
+            id: string;
+            /** Prefix */
+            prefix: string;
+            /** Name */
+            name: string;
+            /** Agent Id */
+            agent_id: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Last Used At */
+            last_used_at?: string | null;
+            /** Expires At */
+            expires_at?: string | null;
+            /** Revoked At */
+            revoked_at?: string | null;
+        };
         /** ToolCreate */
         ToolCreate: {
             /** Name */
@@ -1497,6 +1835,22 @@ export interface components {
              */
             created_at: string;
         };
+        /**
+         * WorkspaceMembershipOut
+         * @description A workspace the signed-in caller may enter, plus the console role they hold in it. The console's workspace
+         *     switcher consumes this (GET /api/v1/workspaces) — `id` is the backend workspace UUID the FE then sends as
+         *     X-Workspace-Id on every tenant-scoped call.
+         */
+        WorkspaceMembershipOut: {
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
+            /** Group Prefix */
+            group_prefix: string | null;
+            /** Role */
+            role: string;
+        };
         /** WorkspaceOut */
         WorkspaceOut: {
             /** Id */
@@ -1566,6 +1920,66 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    login_auth_login_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    callback_auth_callback_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    logout_auth_logout_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
     list_agents_api_v1_agents_get: {
         parameters: {
             query?: {
@@ -1777,6 +2191,183 @@ export interface operations {
                 content: {
                     "application/json": unknown;
                 };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    published_invoke_v1_agents__agent_id__invoke_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InvokeIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_tokens_api_v1_agents__agent_id__tokens_get: {
+        parameters: {
+            query?: {
+                workspace?: string | null;
+            };
+            header?: {
+                "X-Workspace-Id"?: string | null;
+            };
+            path: {
+                agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TokenOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    mint_token_api_v1_agents__agent_id__tokens_post: {
+        parameters: {
+            query?: {
+                workspace?: string | null;
+            };
+            header?: {
+                "X-Workspace-Id"?: string | null;
+            };
+            path: {
+                agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TokenMintIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TokenMintOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    revoke_token_api_v1_tokens__token_id__delete: {
+        parameters: {
+            query?: {
+                workspace?: string | null;
+            };
+            header?: {
+                "X-Workspace-Id"?: string | null;
+            };
+            path: {
+                token_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    revoke_user_api_v1_org_revoke_user_post: {
+        parameters: {
+            query?: {
+                workspace?: string | null;
+            };
+            header?: {
+                "X-Workspace-Id"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RevokeUserIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {
@@ -2996,6 +3587,26 @@ export interface operations {
             };
         };
     };
+    list_my_workspaces_api_v1_workspaces_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceMembershipOut"][];
+                };
+            };
+        };
+    };
     list_members_api_v1_members_get: {
         parameters: {
             query?: {
@@ -3127,6 +3738,151 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["MemberOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_keys_api_v1_provider_keys_get: {
+        parameters: {
+            query?: {
+                workspace?: string | null;
+            };
+            header?: {
+                "X-Workspace-Id"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProviderKeyOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    capture_key_api_v1_provider_keys_post: {
+        parameters: {
+            query?: {
+                workspace?: string | null;
+            };
+            header?: {
+                "Idempotency-Key"?: string | null;
+                "X-Workspace-Id"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProviderKeyCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProviderKeyOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    rotate_key_api_v1_provider_keys__key_id__rotate_post: {
+        parameters: {
+            query?: {
+                workspace?: string | null;
+            };
+            header?: {
+                "X-Workspace-Id"?: string | null;
+            };
+            path: {
+                key_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProviderKeyRotate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProviderKeyOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    revoke_key_api_v1_provider_keys__key_id__revoke_post: {
+        parameters: {
+            query?: {
+                workspace?: string | null;
+            };
+            header?: {
+                "X-Workspace-Id"?: string | null;
+            };
+            path: {
+                key_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProviderKeyOut"];
                 };
             };
             /** @description Validation Error */

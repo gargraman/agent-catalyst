@@ -49,6 +49,16 @@ class WorkspaceOut(BaseModel):
     group_prefix: str | None
 
 
+class WorkspaceMembershipOut(BaseModel):
+    """A workspace the signed-in caller may enter, plus the console role they hold in it. The console's workspace
+    switcher consumes this (GET /api/v1/workspaces) — `id` is the backend workspace UUID the FE then sends as
+    X-Workspace-Id on every tenant-scoped call."""
+    id: str
+    name: str
+    group_prefix: str | None
+    role: str
+
+
 class WorkspacePatch(BaseModel):
     name: str | None = None
     group_prefix: str | None = None

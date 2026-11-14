@@ -12,15 +12,40 @@ from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from api import spend
-from api.deps import require_permission, rate_limit, resolve_workspace, tenant_db
+from api import membership, spend
+from api.db import auth_lookup_session
+from api.deps import Principal, require_permission, rate_limit, resolve_workspace, session_principal, tenant_db
 from api.errors import ConflictStale, InputInvalid, NotFound
 from api.models import Workspace, WorkspaceSettings
 from api.schemas.workspaces import (
-    WorkspaceOut, WorkspacePatch, WorkspaceSettingsOut, WorkspaceSettingsPatch, WorkspaceSpendOut,
+    WorkspaceMembershipOut, WorkspaceOut, WorkspacePatch, WorkspaceSettingsOut, WorkspaceSettingsPatch,
+    WorkspaceSpendOut,
 )
 
 router = APIRouter(prefix="/api/v1/workspace", tags=["workspace"])
+
+# Discovery lives at the PLURAL path /api/v1/workspaces (distinct from the singular active-workspace admin router
+# above). It is the ONLY workspace-scoped-exempt console read: it runs BEFORE a workspace is selected, so it takes
+# no X-Workspace-Id and uses `session_principal` (authenticated) rather than `resolve_workspace`.
+discovery_router = APIRouter(prefix="/api/v1/workspaces", tags=["workspace"])
+
+
+@discovery_router.get("")
+async def list_my_workspaces(
+    principal: Principal = Depends(session_principal),
+) -> list[WorkspaceMembershipOut]:
+    """The workspaces the signed-in caller may enter — each with the console role they hold. Source for the
+    console's workspace switcher. Pre-selection and cross-tenant by nature: resolved from the members store via
+    the `member_workspaces()` SECURITY DEFINER function (migration 0011) on an unscoped session, so a caller only
+    ever sees workspaces they are a member of and the app role never gains a broad RLS bypass (09 §7). When real
+    OIDC replaces the dev provider, membership is populated by the IdP group sync (feature 020); this endpoint is
+    unchanged."""
+    async with auth_lookup_session() as s:
+        rows = await membership.workspaces_for(s, principal.subject)
+    return [
+        WorkspaceMembershipOut(id=str(r.id), name=r.name, group_prefix=r.group_prefix, role=r.console_role)
+        for r in rows
+    ]
 
 
 def _settings_out(s: WorkspaceSettings) -> WorkspaceSettingsOut:
