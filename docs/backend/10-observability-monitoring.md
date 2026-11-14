@@ -9,6 +9,17 @@
 
 ## 1. The one rule: every model call is logged, from one place
 
+> **AS BUILT (feature 023, 2026-11-14).** The "one place" is realized without `runtime/obs.py` or Langfuse: the shared
+> spine (`runtime/invoke.py`) builds one pure `ModelCallRecord` per model turn and hands it to an injected sink,
+> `RunContext.record_call` (sibling of `record_run`; the runtime stays pure, P6). The API sink `services/api/call_log.py`
+> writes one JSON line per call to stdout (logger `ac.call_log`, `"event":"model_call"`) for the platform log
+> pipeline. **Metadata by default** (ids, model, prompt version, latency, cost, outcome, char counts, keyed
+> per-workspace HMAC fingerprints); **redacted text only on audited admin opt-in** (`PUT /api/v1/workspace/telemetry`,
+> migration 0012) or the dev profile. Per-call cost = the gateway's turn Decimal, so Σ calls == `runs.cost_usd`
+> exactly (the run cost is now the Decimal sum of turn costs). Emission is best-effort (`ac_call_log_errors_total`).
+> Outbound correlation: providers receive only a **platform-generated** 32-hex `X-Correlation-Id`, never a
+> caller-supplied id. Langfuse spans remain deferred. Contract: `specs/023-m6-call-log-correlation/contracts/observability.md`.
+
 `spec.md A2` is a hard contract: **every model call logs `{model, prompt_version, input, output,
 latency, cost, success}`.** The only way that stays true across playground, eval, and published invoke
 is to emit it from the *shared* runtime (00 §1), never from the four callers (playground, eval, published, channel; 12 §1). There is exactly one
@@ -158,6 +169,11 @@ def _emit_langfuse(ctx: "RunContext", rec: SpanRecord):
   production failures into a dataset that seeds new `eval_cases` (05).
 
 ## 4. Metrics (OTel → Prometheus)
+
+> **AS BUILT (023).** Built on the existing prometheus-client registry (`api/metrics.py`, `GET /metrics`), not OTel:
+> `ac_first_token_seconds{source}` (buckets 0.25…30 s), `ac_run_latency_seconds{source}` (0.5…45 s),
+> `ac_deadline_exceeded_total{source}` (== `ac_runs_total{status="timeout"}`), `ac_call_log_errors_total{stage}` —
+> observed at the exactly-once `run_sink` site; source-only labels (no tenant/content).
 
 Instrument the `api` and `worker` with OpenTelemetry; export to Prometheus. The histograms must be
 labeled by `workspace_id`, `agent_id`, `run_source`, and `model` so every SLO and cost view can slice.

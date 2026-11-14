@@ -15,15 +15,16 @@ cURL export) is deliberately plain software with no model in it.
 This is a **monorepo**: `frontend/` (Next.js console) + `services/` (Python backend) + `docs/` + `specs/`
 (spec-kit feature slices) + `deploy/` (local dev stack) + `mvp/` (the viability-gate prototype).
 
-- **Backend (`services/`) is BUILT, not just designed.** ~210 Python files, ~730 pytest tests (TDD).
+- **Backend (`services/`) is BUILT, not just designed.** ~215 Python files, ~815 pytest tests (TDD).
   Milestones **M0–M5 + M11 are shipped** (provider gateway, the `runtime.invoke` spine, the eval/drift
   engine, thin API + tenancy/RLS, the full M5 security set, and the M11 local dev stack). What exists on
   disk under `services/`: `runtime/` (pure lib) + `runtime/providers/`, `evals/`, `api/` (12 routers +
-  12 schemas + `auth/` + `secrets/` + `publish/`), and `migrations/` (10 Alembic revisions).
+  12 schemas + `auth/` + `secrets/` + `publish/`), and `migrations/` (12 Alembic revisions).
 - **Still unbuilt (designed only):** the orchestration layer — `runtime/graph/` (LangGraph),
-  `retrieval/` (RAG), `guardrails/`, `memory/`, `cache/` — plus `ingestion/`, `mcp/`, and the
+  `retrieval/` (RAG), `guardrails/` (only the shared `runtime/guardrails/redact.py` primitive exists, 023), `memory/`, `cache/` — plus `ingestion/`, `mcp/`, and the
   `channels`/`adoption`/`org`/`notifications` routers. M6 is only **partially** done (spend cap + run
-  observability shipped; orchestration not). Don't assume these paths exist — check first.
+  observability + 023 per-call model log / outbound correlation / latency SLIs shipped; orchestration not).
+  Don't assume these paths exist — check first.
 - **Frontend (`frontend/`) is MOCK by default; 4/257 seams are live behind a build flag.** By default
   reads come from seed fixtures, writes are in-memory store mutations, auth/tenancy/RBAC are simulated
   client-side. With `NEXT_PUBLIC_API_MODE=live`, **workspace discovery + agents list/detail/create** come
@@ -42,9 +43,9 @@ This is a **monorepo**: `frontend/` (Next.js console) + `services/` (Python back
 
 ```bash
 cd services
-./.venv/bin/python -m pytest -q -m "not integration"   # fast, infra-free suite (~480 tests)
+./.venv/bin/python -m pytest -q -m "not integration"   # fast, infra-free suite (~555 tests)
 ./.venv/bin/python -m pytest -q -m integration          # needs Postgres (via deploy/compose.yaml)
-./.venv/bin/python -m pytest -q --collect-only          # ~730 tests collected
+./.venv/bin/python -m pytest -q --collect-only          # ~815 tests collected
 alembic upgrade head                                     # run migrations
 ```
 

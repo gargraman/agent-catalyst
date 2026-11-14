@@ -149,6 +149,14 @@ def _emit_langfuse(ctx: "RunContext", rec: "SpanRecord") -> None:
 
 ## 3. The per-call structured log line (fills the spec-A2 contract)
 
+> **AS BUILT (feature 023).** Line shape is pinned in `specs/023-m6-call-log-correlation/contracts/observability.md` §1.
+> Deviations from this section: A2 "input/output" is satisfied as **char counts + keyed per-workspace fingerprints by
+> default** (`HMAC-SHA256(HMAC-SHA256(AC_TELEMETRY_FINGERPRINT_KEY, workspace_id), text)`, 32 hex) — text only on audited
+> opt-in (decision log 2026-11-14). Both `correlation_id` (edge id, may be caller-supplied) and
+> `provider_correlation_id` (platform-generated, the only id sent to providers) are on every line, plus
+> `provider_request_id` captured from litellm `_hidden_params.additional_headers` (spike T002). Sink:
+> `services/api/call_log.py`; emitter: `runtime/invoke.py` via `RunContext.record_call`.
+
 `10 §1` calls the spec-A2 line a "hard contract" but never emits it. It is the **model span, serialized as one
 redacted JSON line to stdout**, picked up by the platform log pipeline (Loki/CloudWatch, `11`). It is a
 **projection of the `SpanRecord`, not a source of truth** — `cost_usd` is the *same* quantized Decimal that
@@ -237,6 +245,13 @@ Summing already-quantized `numeric(12,6)` values in Postgres is exact (`02 §7`:
 ---
 
 ## 5. Redaction — reuse the `06` scrub, never log a raw secret
+
+> **AS BUILT (feature 023).** `06`'s scrub did not exist yet, so 023 introduced the shared primitive
+> `services/runtime/guardrails/redact.py` — `redact(text, known_secrets=())`: exact-match scrub of known secrets (the
+> run's provider key) → credential patterns (PEM, JWT, `sk-`/`sk-ant-`, AWS, GitHub, Slack, Bearer) → PII (email,
+> Luhn-valid cards, SSN, phone) → `[REDACTED:<kind>]`. Redact **then** truncate (2,048); failure → `[redaction-failed]`
+> (fail closed). The future output guardrail MUST reuse this function (one definition, FR-010). Residual risk: pattern
+> redaction misses names/addresses — why content logging is off by default.
 
 `10 §7`/`09` require redaction "before any log/trace write" but give no path. **There is exactly one redaction
 primitive, shared with the `06` guardrails** — the tier-0 PII + secret-leak detectors (`06 §2`
