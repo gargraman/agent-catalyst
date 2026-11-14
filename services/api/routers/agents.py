@@ -3,6 +3,9 @@
 Create/get/list/PATCH + POST-version, all workspace-scoped through the RLS session (P5). Optimistic concurrency
 uses the Postgres `xmin` row-version as the ETag (D7, migration-free). Idempotent create via the in-flight
 guard (D8). DELETE/duplicate are deferred.
+
+TODO(backend): DELETE /{agent_id} and POST /{agent_id}/duplicate are still missing — the console calls both
+  (frontend store.ts deleteAgent/duplicateAgent) and, for a live agent, they are local-only until these exist.
 """
 from __future__ import annotations
 

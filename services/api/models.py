@@ -61,6 +61,9 @@ class Workspace(Base):
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, server_default=func.gen_random_uuid())
     name: Mapped[str] = mapped_column(String(80))
     group_prefix: Mapped[str | None] = mapped_column(String(64))
+    # TODO(backend): group_prefix is NOT unique, yet the console joins discovered workspaces onto its registry by it
+    #   (frontend store.ts mergeDiscovered) — two workspaces sharing a prefix collide there (last wins). Add a partial
+    #   UNIQUE index (WHERE group_prefix IS NOT NULL) once the platform-admin workspace-create plane lands.
     # feature 020 (D1): AC role/team → NATIVE IdP group ref (Okta name / Entra GUID / SAML attr); no naming
     # convention assumed (FR-021). Shape: {"roles": {role: ref}, "teams": {team: ref}}. Default {} = no binding.
     idp_binding: Mapped[dict] = mapped_column(JSONB, default=dict)

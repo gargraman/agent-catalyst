@@ -44,6 +44,11 @@ class VersionOut(BaseModel):
     created_at: datetime.datetime
 
 
+# TODO(backend/contract): AgentOut is a thin projection (feature 011 finding F-A). The console renders provider/model,
+#   description, owner, tags and 30-day metrics, which it currently fills with placeholders. provider/model are
+#   cheap — the active version's `model_config_` is already loaded (selectinload(versions)) — so project them here
+#   first; description/owner/tags need columns; metrics belong to a separate rollup endpoint (runs). Then drop the
+#   placeholders in frontend/src/lib/api/adapters.ts agentOutToAgent.
 class AgentOut(BaseModel):
     """Mirrors FE `Agent`. The row ETag (Postgres xmin, D7) is surfaced via the `ETag` response header,
     not this body."""

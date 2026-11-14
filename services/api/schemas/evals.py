@@ -27,6 +27,10 @@ class CaseIn(BaseModel):
     expected: str | dict | None = None
 
 
+# TODO(backend): the baseline is CALLER-SUPPLIED on every eval-run — there is no stored, audited baseline and no
+#   re-freeze endpoint (backend/05 §4: "explicit + audited so quality can't erode one silent step at a time"). A
+#   caller can pass any baseline it likes. Persist a frozen baseline per agent/version + POST …/baseline (audit_logs
+#   row); the console's reFreezeBaseline (frontend store.ts) is local-only until then.
 class BaselineIn(BaseModel):
     quality: float
     cost_usd: float

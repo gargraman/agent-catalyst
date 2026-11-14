@@ -322,6 +322,10 @@ _INFLIGHT: set[tuple[str, str]] = set()
 async def idempotency_guard(workspace_id: str, key: str | None):
     """Reject a concurrent retry of an in-flight create (same workspace + Idempotency-Key) with
     409 idempotency.in_progress (D8). Durable replay of a COMPLETED key is deferred (Redis store)."""
+    # TODO(backend): `_INFLIGHT` is a per-process set — with >1 API replica (or worker) a concurrent duplicate on
+    #   another process is NOT caught, and a retry after a lost response creates a second agent (no completed-key
+    #   replay). Move to Redis SET NX with a TTL storing the response for replay. The console already sends a
+    #   per-submission Idempotency-Key on create (frontend store.ts addAgent), so only this side needs the change.
     if not key:
         yield
         return
