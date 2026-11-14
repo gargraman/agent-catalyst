@@ -5,7 +5,7 @@ is out of scope (deferred). RBAC enforcement of roles is deferred to M5 (FR-012)
 """
 from __future__ import annotations
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 
 class Limits(BaseModel):
@@ -62,3 +62,16 @@ class WorkspaceMembershipOut(BaseModel):
 class WorkspacePatch(BaseModel):
     name: str | None = None
     group_prefix: str | None = None
+
+
+class TelemetrySettingsIn(BaseModel):
+    """Feature 023: admin-only per-workspace content-logging switch (strict — unknown keys rejected)."""
+    model_config = ConfigDict(extra="forbid")
+    content_logging: bool
+
+
+class TelemetrySettingsOut(BaseModel):
+    """`content_logging` = the stored workspace setting; `effective` = whether call-log lines for this workspace
+    actually carry redacted text (stored OR the non-prod dev-profile override)."""
+    content_logging: bool
+    effective: bool

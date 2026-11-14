@@ -34,6 +34,7 @@ class OpenAIAdapter:
             tools=req.tools or None,
             substitutions=subs,
             timeout=timeout,
+            provider_correlation_id=req.provider_correlation_id,
         )
 
 

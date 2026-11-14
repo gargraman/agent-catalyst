@@ -145,6 +145,7 @@ async def test_resolve_no_key_dev_falls_back_to_env():
 
 async def test_resolve_no_key_prod_fails_closed(monkeypatch):
     monkeypatch.setenv("AC_ENV", "prod")
+    monkeypatch.setenv("AC_TELEMETRY_FINGERPRINT_KEY", "test-prod-fingerprint-key")  # 023: prod requires it
     get_settings.cache_clear()
     try:
         ws = await seed_workspace()

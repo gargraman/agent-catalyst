@@ -40,6 +40,7 @@ class AnthropicAdapter:
             usage_mapper=_common.map_anthropic_usage,
             substitutions=subs,
             timeout=timeout,
+            provider_correlation_id=req.provider_correlation_id,
         )
 
 

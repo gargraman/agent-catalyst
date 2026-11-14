@@ -20,10 +20,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from api import sse
+from api import call_log, sse
 from api.access_policy import PolicyPrincipal
 from api.auth import denyset
-from api.correlation import correlation_id
+from api.correlation import Correlation, correlation
 from api.deps import (access_principal, assert_within_spend_cap, caller_db, enforce_spend_cap, ensure_use,
                       rate_limit, require_caller, require_permission, resolve_workspace, tenant_db)
 from api.provider_keys import resolve_provider_key
@@ -68,7 +68,7 @@ async def _load_version(session: AsyncSession, agent_id: str, version_id: str | 
 
 
 async def _run_invoke(*, session: AsyncSession, ws: str, ap: PolicyPrincipal, agent_id: str, body: InvokeIn,
-                      corr: str, source: str, deny_subject: str | None = None,
+                      corr: str, provider_corr: str, source: str, deny_subject: str | None = None,
                       deny_token_id: str | None = None) -> StreamingResponse:
     """Shared invoke body for BOTH planes (P6 — same runtime.invoke). Access-gate → load snapshot → resolve key
     → stream, re-checking the deny-set between frames so an in-flight revoke is cut (feature 018, FR-012/D3)."""
@@ -97,6 +97,11 @@ async def _run_invoke(*, session: AsyncSession, ws: str, ap: PolicyPrincipal, ag
     run_id = uuid.uuid4().hex
     ctx = RunContext(workspace_id=ws, source=source, api_key=api_key,
                      record_run=runs.append, correlation_id=corr, run_id=run_id, deadline_s=30.0)
+    # Feature 023: one call-log line per model call (metadata by default; redacted text only when effective).
+    _, content_logging = await call_log.effective_content_logging(session, ws)
+    ctx.record_call = call_log.make_call_sink(workspace_id=ws, api_key=api_key, content_logging=content_logging)
+    ctx.content_logging = content_logging
+    ctx.provider_correlation_id = provider_corr   # FR-014: providers only ever see a platform-generated id
 
     recheck_s = get_settings().denyset_stream_recheck_s
     has_deny_target = deny_subject is not None or deny_token_id is not None
@@ -152,12 +157,12 @@ async def invoke_agent(
     ws: str = Depends(resolve_workspace),
     session: AsyncSession = Depends(tenant_db),
     ap: PolicyPrincipal = Depends(access_principal),   # feature 013: access-policy caller view
-    corr: str = Depends(correlation_id),      # F13: inbound traceparent / X-Correlation-Id, else generated
+    cor: Correlation = Depends(correlation),  # F13 inbound traceparent / X-Correlation-Id, else generated (+023 provider id)
 ):
     """Console/playground plane — session auth, `run_source="playground"`. An admin revocation of this subject
     is cut mid-stream via the deny-set re-check (the same subject `session_principal` already checks per request)."""
-    return await _run_invoke(session=session, ws=ws, ap=ap, agent_id=agent_id, body=body, corr=corr,
-                             source="playground", deny_subject=ap.subject)
+    return await _run_invoke(session=session, ws=ws, ap=ap, agent_id=agent_id, body=body, corr=cor.id,
+                             provider_corr=cor.provider_id, source="playground", deny_subject=ap.subject)
 
 
 @published_router.post("/{agent_id}/invoke")
@@ -166,7 +171,7 @@ async def published_invoke(
     body: InvokeIn,
     caller=Depends(require_caller),                     # 018: caller-token auth (401/429 fail-closed); FastAPI-cached
     session: AsyncSession = Depends(caller_db),         # RLS session for the token's workspace (reuses `caller`)
-    corr: str = Depends(correlation_id),
+    cor: Correlation = Depends(correlation),
 ):
     """Published plane — caller-token auth (role `executer`), `run_source="published"`, tenant pinned by the token.
     Authorization is the per-resource access policy (keyed on the token's teams), NOT console RBAC."""
@@ -176,5 +181,5 @@ async def published_invoke(
     await assert_within_spend_cap(session, caller.workspace_id)     # same spend gate as console (no plane bypass)
     ap = PolicyPrincipal(role="executer", teams=tuple(caller.teams), subject=None)
     return await _run_invoke(session=session, ws=caller.workspace_id, ap=ap, agent_id=agent_id, body=body,
-                             corr=corr, source="published", deny_subject=caller.subject,
+                             corr=cor.id, provider_corr=cor.provider_id, source="published", deny_subject=caller.subject,
                              deny_token_id=caller.token_id)

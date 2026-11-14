@@ -176,6 +176,7 @@ async def test_revoke_blocks_resolution_fail_closed_in_prod(monkeypatch):
         adm = dev_headers(workspace=ws, subject="adm", claims={ws: "admin"})
         assert (await c.post(f"/api/v1/provider-keys/{kid}/revoke", headers=adm)).status_code == 200
     monkeypatch.setenv("AC_ENV", "prod")
+    monkeypatch.setenv("AC_TELEMETRY_FINGERPRINT_KEY", "test-prod-fingerprint-key")  # 023: prod requires it
     get_settings.cache_clear()
     try:
         async with tenant_session(ws) as s:

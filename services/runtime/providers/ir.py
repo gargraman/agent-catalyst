@@ -23,6 +23,9 @@ class NormalizedRequest:
     reasoning: dict | None = None        # {effort|budget} — only if profile.reasoning_control
     cache_hints: list[dict] = field(default_factory=list)    # prompt-cache breakpoints (07)
     stream: bool = True
+    # Feature 023 FR-014: platform-generated 32-hex id forwarded as `X-Correlation-Id`; never a caller value and
+    # NOT part of any snapshot/prompt hash (per-request metadata, not agent identity).
+    provider_correlation_id: str | None = None
 
 
 class EventType(str, Enum):

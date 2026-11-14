@@ -8,6 +8,7 @@ Raw token counts only — cost is attached by the gateway (never here, never fro
 from __future__ import annotations
 
 import json
+import re
 from typing import TYPE_CHECKING, AsyncIterator, Callable
 
 from runtime.providers import transport
@@ -175,6 +176,25 @@ def map_anthropic_usage(usage) -> NormalizedUsage:
     )
 
 
+# Feature 023: outbound correlation header (platform-generated ids only — FR-014) and provider response id capture.
+_PROVIDER_CORR = re.compile(r"^[0-9a-f]{32}$")
+_PROVIDER_REQ_ID = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
+# litellm (1.106.6, spike T002) exposes provider response headers on each chunk's _hidden_params.
+_REQ_ID_HEADERS = ("llm_provider-x-request-id", "llm_provider-request-id")
+
+
+def _response_request_id(chunk) -> str | None:
+    hp = getattr(chunk, "_hidden_params", None)
+    headers = hp.get("additional_headers") if isinstance(hp, dict) else None
+    if not isinstance(headers, dict):
+        return None
+    for name in _REQ_ID_HEADERS:
+        val = headers.get(name)
+        if isinstance(val, str) and _PROVIDER_REQ_ID.match(val):
+            return val
+    return None
+
+
 async def stream_via_transport(
     *,
     model: str,
@@ -185,6 +205,7 @@ async def stream_via_transport(
     usage_mapper: Callable[[object], NormalizedUsage] = map_openai_usage,
     substitutions: list[Substitution] | None = None,
     timeout: float | None = None,
+    provider_correlation_id: str | None = None,
 ) -> AsyncIterator[NormalizedStreamEvent]:
     """Drive the LiteLLM transport seam and yield normalized events: TEXT_DELTA as content streams,
     then exactly one terminal USAGE carrying raw NormalizedUsage (cost attached by the gateway).
@@ -198,10 +219,17 @@ async def stream_via_transport(
         # Bound the litellm call itself (research D5). Omitted when None so M1's existing behavior and its
         # mocked tests are unchanged; litellm accepts `timeout` as a request-level bound.
         kwargs["timeout"] = timeout
+    if provider_correlation_id and _PROVIDER_CORR.match(provider_correlation_id):
+        # Only a platform-generated 32-hex id is ever forwarded (023 FR-014); anything else is dropped, never an error.
+        # Merge, don't overwrite: wire params may already carry provider headers.
+        kwargs["extra_headers"] = {**(kwargs.get("extra_headers") or {}), "X-Correlation-Id": provider_correlation_id}
 
     usage: NormalizedUsage | None = None
     usage_seen = False
+    provider_request_id: str | None = None
     async for chunk in transport.stream_chunks(**kwargs):
+        if provider_request_id is None:
+            provider_request_id = _response_request_id(chunk)
         choices = getattr(chunk, "choices", None) or []
         if choices:
             delta = getattr(choices[0], "delta", None)
@@ -217,7 +245,7 @@ async def stream_via_transport(
     # is degenerate (usage-mapping.md) — we do NOT synthesize a zero USAGE that would read as a success;
     # the gateway detects the missing USAGE and emits a degraded ERROR instead (P8).
     if usage_seen:
-        yield NormalizedStreamEvent(
-            EventType.USAGE,
-            {"usage": usage, "substitutions": list(substitutions or [])},
-        )
+        data: dict = {"usage": usage, "substitutions": list(substitutions or [])}
+        if provider_request_id:
+            data["provider_request_id"] = provider_request_id
+        yield NormalizedStreamEvent(EventType.USAGE, data)

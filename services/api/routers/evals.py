@@ -13,7 +13,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.access_policy import PolicyPrincipal
-from api.correlation import correlation_id
+from api import call_log
+from api.correlation import Correlation, correlation
 from api.deps import (access_principal, enforce_spend_cap, ensure_manage, ensure_use, require_permission,
                       rate_limit, resolve_workspace, tenant_db)
 from api.provider_keys import resolve_provider_key
@@ -40,8 +41,9 @@ async def create_eval_run(
     ws: str = Depends(resolve_workspace),
     session: AsyncSession = Depends(tenant_db),
     ap: PolicyPrincipal = Depends(access_principal),   # feature 013: access-policy caller view
-    corr: str = Depends(correlation_id),      # F13: inbound correlation id (else generated)
+    cor: Correlation = Depends(correlation),  # F13 inbound correlation id (else generated) + 023 provider id
 ) -> EvalRunOut:
+    corr, provider_corr = cor.id, cor.provider_id
     response.headers["X-Correlation-Id"] = corr   # echo resolved id
     # feature 013: eval-run is a USE of the agent (it invokes it) — deny fail-closed BEFORE loading the version
     # or calling runtime (no Run row, no provider call). 404 indistinguishable from an absent agent (P5).
@@ -89,6 +91,11 @@ async def create_eval_run(
     runs: list = []
     ctx = RunContext(workspace_id=ws, source="eval", api_key=api_key,
                      record_run=runs.append, correlation_id=corr, deadline_s=30.0)
+    # Feature 023: one call-log line per model call (metadata by default; redacted text only when effective).
+    _, content_logging = await call_log.effective_content_logging(session, ws)
+    ctx.record_call = call_log.make_call_sink(workspace_id=ws, api_key=api_key, content_logging=content_logging)
+    ctx.content_logging = content_logging
+    ctx.provider_correlation_id = provider_corr   # FR-014: providers only ever see a platform-generated id
 
     result = await run_eval(cases, candidate_snapshot, baseline, policy, ctx, workspace_id=ws)
 

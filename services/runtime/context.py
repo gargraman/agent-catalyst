@@ -10,10 +10,13 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Awaitable, Callable, Union
 
 if TYPE_CHECKING:
-    from runtime.run import RunRecord
+    from runtime.run import ModelCallRecord, RunRecord
 
 # A sink receives the finished RunRecord. May be sync or async; the runtime awaits it if awaitable.
 RunSink = Callable[["RunRecord"], Union[Awaitable[None], None]]
+# A call sink receives one ModelCallRecord per model turn (feature 023). Best-effort: the runtime swallows its
+# failures so telemetry can never fail or alter a run (FR-009).
+CallSink = Callable[["ModelCallRecord"], Union[Awaitable[None], None]]
 
 
 @dataclass
@@ -33,3 +36,6 @@ class RunContext:
     deadline_s: float = 30.0          # wall-clock budget, actively enforced (D5)
     max_tool_calls: int = 8           # carried, NOT enforced in M2a (D6)
     max_corrections: int = 2          # dedicated self-correction budget (M2b, FR-010); independent of max_tool_calls
+    record_call: CallSink | None = None   # per-model-call sink (023); None → no per-call records
+    content_logging: bool = False     # effective content-logging flag, carried for the sink; unused by runtime logic
+    provider_correlation_id: str | None = None  # platform-generated id for providers (023 FR-014); never a caller value

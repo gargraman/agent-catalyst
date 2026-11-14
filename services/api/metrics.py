@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import logging
 
-from prometheus_client import CONTENT_TYPE_LATEST, CollectorRegistry, Counter, generate_latest
+from prometheus_client import CONTENT_TYPE_LATEST, CollectorRegistry, Counter, Histogram, generate_latest
 
 _log = logging.getLogger("api.metrics")
 
@@ -44,6 +44,53 @@ ac_egress_blocked_total = Counter(
     "Outbound tool egress attempts refused by the SSRF/egress guard, by coarse reason (feature 017, F19)",
     ["reason"], registry=REGISTRY,
 )
+
+
+ac_call_log_errors_total = Counter(
+    "ac_call_log_errors_total",
+    "Per-call log emission failures by stage (feature 023; fingerprint|redact|serialize|write) — never a run failure",
+    ["stage"], registry=REGISTRY,
+)
+
+
+# Feature 023 US3 latency SLIs — labeled by caller source only (FR-018).
+ac_first_token_seconds = Histogram(
+    "ac_first_token_seconds", "Time to first streamed token per pass-through run (feature 023)",
+    ["source"], buckets=(0.25, 0.5, 1, 1.5, 2, 3, 5, 8, 13, 30), registry=REGISTRY,
+)
+ac_run_latency_seconds = Histogram(
+    "ac_run_latency_seconds", "End-to-end run latency per recorded run (feature 023; p99 <= 30s deadline SLO)",
+    ["source"], buckets=(0.5, 1, 2, 5, 10, 15, 20, 25, 30, 45), registry=REGISTRY,
+)
+ac_deadline_exceeded_total = Counter(
+    "ac_deadline_exceeded_total", "Runs cut by the wall-clock deadline (outcome timeout), by source (feature 023)",
+    ["source"], registry=REGISTRY,
+)
+
+
+def record_run_slis(rec) -> None:
+    """Observe the 023 SLIs for one recorded RunRecord — called at the same exactly-once site as `record_run`.
+    Best-effort — never raises (FR-009)."""
+    try:
+        # Same fallback as the record_run call site so ac_runs_total and the SLIs label a run identically.
+        source = getattr(rec, "source", None) or "playground"
+        ac_run_latency_seconds.labels(source=source).observe(max(0, int(rec.latency_ms or 0)) / 1000.0)
+        ft = getattr(rec, "first_token_ms", None)
+        if ft is not None:
+            ac_first_token_seconds.labels(source=source).observe(max(0, int(ft)) / 1000.0)
+        outcome = rec.outcome.value if hasattr(rec.outcome, "value") else str(rec.outcome)
+        if outcome == "timeout":
+            ac_deadline_exceeded_total.labels(source=source).inc()
+    except Exception as e:  # noqa: BLE001 — telemetry must never break the run path
+        _log.debug("SLI observation failed: %s", e)
+
+
+def record_call_log_error(stage: str) -> None:
+    """Count one call-log sink failure by stage (023 FR-009 alert signal). Best-effort — never raises."""
+    try:
+        ac_call_log_errors_total.labels(stage=stage or "unknown").inc()
+    except Exception as e:  # noqa: BLE001
+        _log.debug("ac_call_log_errors_total increment failed: %s", e)
 
 
 def record_run(status: str, source: str) -> None:

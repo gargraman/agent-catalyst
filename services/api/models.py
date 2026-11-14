@@ -10,6 +10,7 @@ from __future__ import annotations
 import datetime
 import uuid
 
+from sqlalchemy import false as sa_false
 from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, MetaData, Numeric, String, Text, Uuid, func
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, declared_attr, mapped_column, relationship
@@ -284,6 +285,8 @@ class WorkspaceSettings(Base, WorkspaceScoped):
     default_model: Mapped[str] = mapped_column(Text, default="")
     limits: Mapped[dict] = mapped_column(JSONB, default=dict)
     eval_policy: Mapped[dict] = mapped_column(JSONB, default=dict)
+    # Feature 023 (0012): per-workspace opt-in for redacted text in call-log lines; admin-only, audited.
+    content_logging: Mapped[bool] = mapped_column(Boolean, default=False, server_default=sa_false())
 
 
 class Member(Base, WorkspaceScoped):

@@ -14,12 +14,14 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Annotated
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 _DEV_ASYNC = "postgresql+asyncpg://ac:ac_dev_pw@localhost:5433/agent_catalyst"
 _DEV_SYNC = "postgresql+psycopg://ac:ac_dev_pw@localhost:5433/agent_catalyst"
 _DEV_APP = "postgresql+asyncpg://ac_app:ac_app_pw@localhost:5433/agent_catalyst"
+# Dev-only fingerprint root key (feature 023). Public by design — rejected under AC_ENV=prod.
+_DEV_FINGERPRINT_KEY = "ac-dev-telemetry-fingerprint-key-not-secret"
 
 
 class Settings(BaseSettings):
@@ -187,6 +189,28 @@ class Settings(BaseSettings):
         # under prod would ship session/csrf cookies over plaintext HTTP. Fail closed at load, not deep in a flow.
         if self.env == "prod" and not self.session_cookie_secure:
             raise ValueError("AC_SESSION_COOKIE_SECURE cannot be disabled under a production profile (AC_ENV=prod)")
+        return self
+
+    # --- Per-call telemetry (feature 023) --------------------------------------------------------
+    # Root key for the keyed per-workspace content fingerprints on call-log lines (research D4). Sensitive: never
+    # logged or returned. Non-prod gets a fixed public dev default; prod MUST inject a real value (fail closed at
+    # load — a public key would make fingerprints guessable for short values, defeating FR-002c).
+    telemetry_fingerprint_key: SecretStr = Field(
+        default=SecretStr(_DEV_FINGERPRINT_KEY), alias="AC_TELEMETRY_FINGERPRINT_KEY")
+    # Dev-profile override: redacted text on call-log lines for every workspace (D6). Ignored under prod.
+    telemetry_log_content_in_dev: bool = Field(default=True, alias="AC_TELEMETRY_LOG_CONTENT_IN_DEV")
+
+    @property
+    def telemetry_content_override(self) -> bool:
+        """True when the deployment profile forces content logging on. EXACTLY `dev` only (023 analysis S1): a shared
+        non-prod env such as staging may hold real data, so it behaves like prod and needs the audited opt-in."""
+        return self.env == "dev" and self.telemetry_log_content_in_dev
+
+    @model_validator(mode="after")
+    def _fingerprint_key_required_in_prod(self) -> "Settings":
+        key = self.telemetry_fingerprint_key.get_secret_value()
+        if self.env == "prod" and (not key or key == _DEV_FINGERPRINT_KEY):
+            raise ValueError("AC_TELEMETRY_FINGERPRINT_KEY must be set to a deployment value under AC_ENV=prod")
         return self
 
     @field_validator("database_url", "app_database_url")

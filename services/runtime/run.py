@@ -57,6 +57,37 @@ class RunRecord:
     substitutions: tuple[Substitution, ...] = ()  # M1 ledger carried through unchanged (FR-017)
     stop_reason: str | None = None
     error: dict | None = None                     # normalized, api_key-scrubbed (P8)
+    first_token_ms: int | None = None             # first TEXT_DELTA of the first pass-through turn (023 US3); None in validated mode
+
+
+@dataclass(frozen=True)
+class ModelCallRecord:
+    """One model call (= one gateway turn) of a run (feature 023, spec A2). Produced by the runtime once per turn and
+    handed to `RunContext.record_call`; NEVER persisted by the runtime. Carries raw text IN-PROCESS ONLY — the API
+    sink decides what leaves the process (metadata by default, redacted text on opt-in). Pure (P6)."""
+
+    run_id: str
+    correlation_id: str                 # edge-resolved (may be caller-supplied) — never sent to a provider
+    provider_correlation_id: str        # platform-generated 32-hex id sent to the provider (FR-014)
+    workspace_id: str
+    agent_id: str
+    version_id: str
+    source: str                         # playground | api | eval
+    role: str                           # "judge" if version_id == "judge" else "candidate"
+    call_seq: int                       # 0-based turn index within the run
+    correction: bool                    # True for validated-mode correction turns
+    provider: str
+    model: str
+    prompt_version: str                 # snapshot prompt_hash
+    input_text: str                     # raw, in-process only
+    output_text: str                    # raw, in-process only
+    latency_ms: int
+    first_token_ms: int | None
+    cost_usd: Decimal                   # the gateway-attached turn cost; 0 when no usage
+    cost_known: bool
+    success: bool
+    error_code: str | None              # normalized error code (no raw provider payload)
+    provider_request_id: str | None = None
 
 
 @dataclass(frozen=True)

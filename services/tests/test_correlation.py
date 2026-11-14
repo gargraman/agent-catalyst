@@ -50,3 +50,24 @@ def test_traceparent_precedence_over_x_correlation_id():
 
 def test_no_headers_generates_hex_id():
     assert _HEX32.match(resolve_correlation_id(_Req({})))
+
+
+# ---- Feature 023 US2 (T023): caller-supplied vs generated + provider id derivation (FR-014) ----------------
+from api.correlation import provider_correlation_id_for, resolve_correlation  # noqa: E402
+
+
+def test_resolve_correlation_flags_supplied():
+    assert resolve_correlation(_Req({"traceparent": _VALID_TP})) == (_TRACE_ID, True)
+    assert resolve_correlation(_Req({"X-Correlation-Id": "demo-123"})) == ("demo-123", True)
+    cid, supplied = resolve_correlation(_Req({}))
+    assert supplied is False and _HEX32.match(cid)
+    cid, supplied = resolve_correlation(_Req({"X-Correlation-Id": "bad id with spaces"}))
+    assert supplied is False and _HEX32.match(cid)
+
+
+def test_provider_id_reuses_generated_mints_fresh_for_supplied():
+    assert provider_correlation_id_for("f" * 32, False) == "f" * 32
+    fresh = provider_correlation_id_for("demo-123", True)
+    assert _HEX32.match(fresh) and fresh != "demo-123"
+    # a supplied id that HAPPENS to be 32-hex is still replaced (never forward caller data)
+    assert provider_correlation_id_for(_TRACE_ID, True) != _TRACE_ID

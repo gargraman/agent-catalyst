@@ -79,6 +79,9 @@ services:
     command: ["alembic", "upgrade", "head"]
     environment:
       AC_DATABASE_SYNC_URL: postgresql+psycopg://ac:ac_dev_pw@postgres:5432/agent_catalyst
+      # Dev profile (feature 023): settings default to prod (fail closed), and prod requires
+      # AC_TELEMETRY_FINGERPRINT_KEY — a prod migrate job must inject it like the api does.
+      AC_ENV: dev
     depends_on:
       postgres:
         condition: service_healthy

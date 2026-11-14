@@ -44,7 +44,7 @@ from runtime.providers.validation import (
     validate_output,
     validate_tool_call,
 )
-from runtime.run import InvokeResult, Outcome, RunRecord
+from runtime.run import InvokeResult, ModelCallRecord, Outcome, RunRecord
 from runtime.tokens import count_tokens
 
 
@@ -60,6 +60,7 @@ class _State:
     error: dict | None = None
     correction_turns: int = 0
     run: RunRecord | None = None
+    turns: list = field(default_factory=list)   # every model turn actually sent to the gateway (023 per-call records)
 
 
 @dataclass
@@ -73,6 +74,40 @@ class _Turn:
     cost_is_estimate: bool = False
     stop_reason: str | None = None
     error: dict | None = None
+    # 023 per-call bookkeeping (not part of validation logic)
+    input_text: str = ""
+    correction: bool = False
+    t_start: float = 0.0
+    t_end: float | None = None
+    first_token_ms: int | None = None
+    provider_request_id: str | None = None
+    done: bool = False                     # the gateway stream ran to completion (not cut / disconnected)
+
+
+def _turn_cost(turn: "_Turn") -> Decimal:
+    """The gateway-attached turn cost as Decimal (0 when the turn reported no usage)."""
+    return Decimal(str(turn.usage.cost_usd)) if turn.usage is not None else Decimal(0)
+
+
+def _render_input(req) -> str:
+    """The conversation sent in one turn (incl. repair messages on correction turns), in-process only (023).
+    EXCLUDES the system prompt — it is agent config, already identified by `prompt_version` (analysis U2), so it
+    neither inflates fingerprints/char counts nor lands in opt-in text. Never raises (FR-009)."""
+    try:
+        parts = []
+        for m in req.messages or ():
+            c = m.get("content") if isinstance(m, dict) else m
+            parts.append(c if isinstance(c, str) else json.dumps(c, sort_keys=True, default=str))
+        return "\n".join(parts)
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _start_turn(state: "_State", req, *, correction: bool, render: bool = True) -> "_Turn":
+    # `render=False` when no call sink is wired: the rendered input only feeds per-call records.
+    t = _Turn(input_text=_render_input(req) if render else "", correction=correction, t_start=time.perf_counter())
+    state.turns.append(t)
+    return t
 
 
 def _profile_hash(profile_snapshot: dict) -> str:
@@ -82,7 +117,9 @@ def _profile_hash(profile_snapshot: dict) -> str:
 
 def _build_run(snapshot, ctx, correlation_id, outcome, state, latency_ms) -> RunRecord:
     usage = state.usage
-    cost = Decimal(str(usage.cost_usd)) if usage is not None else None  # carried, not recomputed (FR-014)
+    # Carried, not recomputed (FR-014). The run cost is the Decimal SUM of the per-turn gateway costs, so the
+    # per-call records sum to it exactly (023 FR-005) — a float sum then Decimal would drift (0.1 + 0.2).
+    cost = sum((_turn_cost(t) for t in state.turns), Decimal(0)) if usage is not None else None
     mc = snapshot.model_config or {}
     return RunRecord(
         run_id=ctx.run_id or uuid.uuid4().hex,   # honor a caller-supplied run id (frame consistency); else mint
@@ -108,6 +145,8 @@ def _build_run(snapshot, ctx, correlation_id, outcome, state, latency_ms) -> Run
         substitutions=state.substitutions,
         stop_reason=state.stop_reason,
         error=state.error,
+        # 023 US3: first token of the first turn — only set in pass-through (validated turns are buffered).
+        first_token_ms=state.turns[0].first_token_ms if state.turns else None,
     )
 
 
@@ -155,10 +194,10 @@ def _error_event(err: dict) -> NormalizedStreamEvent:
     return NormalizedStreamEvent(EventType.ERROR, {"error": err})
 
 
-async def _collect_turn(req, ctx, profile, deadline) -> _Turn:
-    """Consume ONE full gateway turn into a buffered _Turn (no yielding — validated mode). Mirrors the
-    pass-through event handling so a turn's usage/substitutions/error are captured identically."""
-    t = _Turn()
+async def _collect_turn(req, ctx, profile, deadline, t: _Turn) -> _Turn:
+    """Consume ONE full gateway turn into the given buffered _Turn (no yielding — validated mode). Mirrors the
+    pass-through event handling so a turn's usage/substitutions/error are captured identically. The _Turn is
+    supplied by the caller so a turn cut mid-stream (deadline) still leaves its partial state for its record."""
     async for ev in gateway.stream(req, api_key=ctx.api_key, profile=profile, timeout=deadline):
         et = ev.type
         if et is EventType.TEXT_DELTA:
@@ -171,6 +210,7 @@ async def _collect_turn(req, ctx, profile, deadline) -> _Turn:
             t.stop_reason = ev.data.get("reason")
         elif et is EventType.USAGE:
             t.usage = ev.data.get("usage")
+            t.provider_request_id = ev.data.get("provider_request_id")
             t.substitutions = tuple(ev.data.get("substitutions", ()))
             t.cost_is_estimate = bool(ev.data.get("cost_is_estimate", False))
         elif et is EventType.ERROR:
@@ -178,13 +218,69 @@ async def _collect_turn(req, ctx, profile, deadline) -> _Turn:
             err_subs = t.error.get("substitutions")
             if err_subs:
                 t.substitutions = tuple(err_subs)
+    t.done = True
+    t.t_end = time.perf_counter()
     return t
+
+
+def _call_record(snapshot, ctx, run: RunRecord, provider_corr: str, seq: int, t: _Turn,
+                 outcome: Outcome, now: float) -> ModelCallRecord:
+    mc = snapshot.model_config or {}
+    if t.error:
+        error_code = str(t.error.get("type") or "provider_error")
+    elif not t.done:
+        error_code = "timeout" if outcome is Outcome.TIMEOUT else "interrupted"
+    else:
+        error_code = None
+    end = t.t_end if t.t_end is not None else now
+    return ModelCallRecord(
+        run_id=run.run_id,
+        correlation_id=run.correlation_id,
+        provider_correlation_id=provider_corr,
+        workspace_id=run.workspace_id,
+        agent_id=snapshot.agent_id,
+        version_id=snapshot.version_id,
+        source=ctx.source,
+        role="judge" if snapshot.version_id == "judge" else "candidate",
+        call_seq=seq,
+        correction=t.correction,
+        provider=mc.get("provider", ""),
+        model=mc.get("model", ""),
+        prompt_version=snapshot.prompt_hash,
+        input_text=t.input_text,
+        output_text=t.text,
+        latency_ms=max(0, int((end - t.t_start) * 1000)),
+        first_token_ms=t.first_token_ms,
+        cost_usd=_turn_cost(t),
+        cost_known=t.usage is not None,
+        success=t.done and t.usage is not None and not t.error,
+        error_code=error_code,
+        provider_request_id=t.provider_request_id,
+    )
+
+
+async def _emit_calls(ctx, records) -> None:
+    """Hand each per-call record to ctx.record_call. Best-effort (FR-009): ANY sink failure is swallowed so
+    telemetry can never fail, delay beyond the sink's own work, or alter the run / its stream / its RunRecord."""
+    if ctx.record_call is None:
+        return
+    for rec in records:
+        try:
+            result = ctx.record_call(rec)
+            if inspect.isawaitable(result):
+                await result
+        except Exception:  # noqa: BLE001 — telemetry is best-effort by contract
+            pass
 
 
 async def _pipeline(snapshot, inputs, ctx, state: _State):
     """Core generator: yields the surfaced events; builds + emits the RunRecord exactly once at the end."""
     t0 = time.perf_counter()
     correlation_id = ctx.correlation_id or uuid.uuid4().hex
+    # 023 FR-014: providers only ever see a PLATFORM-GENERATED id. Prefer the edge's; else reuse the id we just
+    # minted (it is ours); else (caller-supplied correlation id, no edge provider id) mint a fresh one.
+    provider_corr = ctx.provider_correlation_id or (
+        correlation_id if ctx.correlation_id is None else uuid.uuid4().hex)
 
     emitted = False
 
@@ -193,9 +289,19 @@ async def _pipeline(snapshot, inputs, ctx, state: _State):
         if emitted:  # exactly one Run per invocation, even if called from both a guard and the finally
             return
         emitted = True
-        latency_ms = int((time.perf_counter() - t0) * 1000)
+        now = time.perf_counter()
+        latency_ms = int((now - t0) * 1000)
         state.run = _build_run(snapshot, ctx, correlation_id, outcome, state, latency_ms)
+        # The billable RunRecord goes first: per-call telemetry is best-effort (FR-009) and must never delay or
+        # prevent it — so record construction is guarded too, not just the sink call.
         await _emit(ctx, state.run)
+        if state.turns and ctx.record_call is not None:
+            try:
+                records = [_call_record(snapshot, ctx, state.run, provider_corr, i, t, outcome, now)
+                           for i, t in enumerate(state.turns)]
+            except Exception:  # noqa: BLE001 — telemetry is best-effort by contract
+                records = []
+            await _emit_calls(ctx, records)
 
     # Tenancy well-formedness — a run must be attributable to a workspace (P5; data-model: workspace_id
     # MUST be non-empty). Fail closed BEFORE any provider call rather than silently emit an untenanted Run
@@ -235,6 +341,7 @@ async def _pipeline(snapshot, inputs, ctx, state: _State):
         state.error = {"type": "config_error", "retryable": False, "message": str(exc)}
         await _finish(Outcome.CONFIG_ERROR)
         return
+    req = replace(req, provider_correlation_id=provider_corr)   # 023: platform id rides every turn (incl. corrections)
     try:
         profile = _profile_from_json(snapshot.profile_snapshot)
     except (KeyError, TypeError) as exc:
@@ -270,9 +377,13 @@ async def _pipeline(snapshot, inputs, ctx, state: _State):
         async with asyncio.timeout(deadline):
             if not validated:
                 # ---- PASS-THROUGH (M2a behavior, unchanged) ----
+                turn = _start_turn(state, req, correction=False, render=ctx.record_call is not None)
                 async for ev in gateway.stream(req, api_key=ctx.api_key, profile=profile, timeout=deadline):
                     if ev.type is EventType.TEXT_DELTA:
+                        if turn.first_token_ms is None:   # 023 US3: first streamed token of this turn
+                            turn.first_token_ms = int((time.perf_counter() - turn.t_start) * 1000)
                         state.text += ev.data.get("text", "")
+                        turn.text += ev.data.get("text", "")
                     elif ev.type is EventType.REASONING_DELTA:
                         state.reasoning_parts.append(ev.data.get("text", ""))
                     elif ev.type is EventType.TOOL_CALL_END:
@@ -281,22 +392,30 @@ async def _pipeline(snapshot, inputs, ctx, state: _State):
                         state.stop_reason = ev.data.get("reason")
                     elif ev.type is EventType.USAGE:
                         state.usage = ev.data.get("usage")
+                        turn.usage = state.usage
+                        turn.provider_request_id = ev.data.get("provider_request_id")
                         state.substitutions = tuple(ev.data.get("substitutions", ()))
                         state.cost_is_estimate = bool(ev.data.get("cost_is_estimate", False))
                     elif ev.type is EventType.ERROR:
                         state.error = ev.data.get("error") or {}
+                        turn.error = state.error
                         err_subs = state.error.get("substitutions")
                         if err_subs:
                             state.substitutions = tuple(err_subs)
                         etype = state.error.get("type")
                         outcome = Outcome.DEGRADED if etype == "degraded" else Outcome.PROVIDER_ERROR
                     yield ev
+                turn.done = True
+                turn.t_end = time.perf_counter()
             else:
                 # ---- BUFFERED VALIDATED MODE (M2b trust boundary) ----
                 messages = req.messages
                 budget = ctx.max_corrections
                 while True:
-                    turn = await _collect_turn(replace(req, messages=messages), ctx, profile, deadline)
+                    turn_req = replace(req, messages=messages)
+                    turn = await _collect_turn(turn_req, ctx, profile, deadline,
+                                               _start_turn(state, turn_req, correction=bool(state.turns),
+                                                           render=ctx.record_call is not None))
                     _accumulate(state, turn)
 
                     # A gateway failure on any turn fails closed (never recorded as success) (P8).
@@ -382,6 +501,9 @@ async def _pipeline(snapshot, inputs, ctx, state: _State):
                        "message": f"deadline of {deadline}s exceeded"}
     except (gateway.ModelRetiredError, FileNotFoundError) as exc:
         # Snapshot names a retired/unknown model — a caller-visible config error, not a provider failure.
+        # The gateway raises BEFORE any provider call, so the turn just opened made no model call (023: no record).
+        if state.turns and not state.turns[-1].done:
+            state.turns.pop()
         outcome = Outcome.CONFIG_ERROR
         state.error = {"type": "config_error", "retryable": False, "message": str(exc)}
     finally:

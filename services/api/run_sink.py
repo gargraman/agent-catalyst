@@ -57,3 +57,4 @@ async def persist_run_record(session: AsyncSession, workspace_id: str, rec) -> N
     # exact count would need an after_commit hook, deferred).
     from api import metrics
     metrics.record_run(outcome, rec.source or "playground")
+    metrics.record_run_slis(rec)   # 023 US3: first-token / latency / deadline SLIs at the same exactly-once site

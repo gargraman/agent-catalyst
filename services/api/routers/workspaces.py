@@ -5,22 +5,29 @@ platform-admin plane and is out of scope. RBAC enforcement of console roles is d
 """
 from __future__ import annotations
 
+import json
+import logging
 import uuid
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Header, Response
 from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from api import membership, spend
+from api import call_log, membership, spend
+from api.correlation import correlation_id
 from api.db import auth_lookup_session
 from api.deps import Principal, require_permission, rate_limit, resolve_workspace, session_principal, tenant_db
 from api.errors import ConflictStale, InputInvalid, NotFound
 from api.models import Workspace, WorkspaceSettings
+from api.settings import get_settings as app_settings   # `get_settings` is a route handler below
 from api.schemas.workspaces import (
-    WorkspaceMembershipOut, WorkspaceOut, WorkspacePatch, WorkspaceSettingsOut, WorkspaceSettingsPatch,
-    WorkspaceSpendOut,
+    TelemetrySettingsIn, TelemetrySettingsOut, WorkspaceMembershipOut, WorkspaceOut, WorkspacePatch,
+    WorkspaceSettingsOut, WorkspaceSettingsPatch, WorkspaceSpendOut,
 )
+
+_audit = logging.getLogger("api.security")
 
 router = APIRouter(prefix="/api/v1/workspace", tags=["workspace"])
 
@@ -134,6 +141,49 @@ def _apply(s: WorkspaceSettings, body: WorkspaceSettingsPatch) -> None:
         s.limits = body.limits
     if body.eval_policy is not None:
         s.eval_policy = body.eval_policy
+
+
+@router.get("/telemetry", dependencies=[Depends(require_permission("view"))])
+async def get_telemetry(ws: str = Depends(resolve_workspace),
+                        session: AsyncSession = Depends(tenant_db)) -> TelemetrySettingsOut:
+    """Feature 023: the workspace's content-logging switch + whether call-log lines actually carry redacted text
+    (`effective` includes the non-prod dev override). Read-only — never creates the settings row."""
+    stored, effective = await call_log.effective_content_logging(session, ws)
+    return TelemetrySettingsOut(content_logging=stored, effective=effective)
+
+
+@router.put("/telemetry",
+            dependencies=[Depends(require_permission("settings.manage")), Depends(rate_limit("default"))])
+async def put_telemetry(body: TelemetrySettingsIn, ws: str = Depends(resolve_workspace),
+                        principal: Principal = Depends(session_principal),
+                        corr: str = Depends(correlation_id),
+                        session: AsyncSession = Depends(tenant_db)) -> TelemetrySettingsOut:
+    """Feature 023 (FR-002b): admin-only opt-in for redacted prompt/output text in this workspace's call-log lines.
+    Every CHANGE writes one audit line (who, when, which workspace, old→new); a same-value PUT writes none. The
+    durable `audit_logs` table is deferred project-wide (018) — structured log line now."""
+    s = await _load_settings(session, ws, for_update=True)
+    old = bool(s.content_logging) if s is not None else False
+    if s is None and body.content_logging:
+        # Only create the row on a real change: a no-op PUT must not flip the settings ETag off "0".
+        s = WorkspaceSettings(workspace_id=uuid.UUID(ws), limits={}, eval_policy={}, content_logging=body.content_logging)
+        session.add(s)
+        try:
+            await session.flush()
+        except IntegrityError as exc:
+            raise ConflictStale("settings were created concurrently; re-read and retry",
+                                detail={"workspace_id": ws}) from exc
+    elif s is not None and old != body.content_logging:
+        s.content_logging = body.content_logging
+        await session.flush()
+    if old != body.content_logging:
+        _audit.info(json.dumps({
+            "event": "telemetry.content_logging.changed", "subject": principal.subject, "workspace_id": ws,
+            "old": old, "new": body.content_logging, "correlation_id": corr,
+            "ts": datetime.now(timezone.utc).isoformat(),
+        }, separators=(",", ":")))
+    # Same rule as call_log.effective_content_logging, without re-reading the row we just wrote.
+    effective = body.content_logging or app_settings().telemetry_content_override
+    return TelemetrySettingsOut(content_logging=body.content_logging, effective=effective)
 
 
 @router.patch("", dependencies=[Depends(require_permission("settings.manage")), Depends(rate_limit("default"))])

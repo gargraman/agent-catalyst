@@ -8,8 +8,14 @@ this only as an emit smoke (schema generates cleanly).
 from __future__ import annotations
 
 import json
+import os
 import pathlib
 import sys
+
+# Schema emission is tooling, not a deployment: default to the dev profile so prod-only fail-closed settings
+# guards (e.g. AC_TELEMETRY_FINGERPRINT_KEY, feature 023) don't block generating the document. An explicit
+# AC_ENV still wins.
+os.environ.setdefault("AC_ENV", "dev")
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "services"))
