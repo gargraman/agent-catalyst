@@ -1,5 +1,9 @@
-"""Cross-cutting API contract tests (M4, feature 005) — error envelope, OpenAPI 3.1, auth. No DB, no mocks."""
+"""Cross-cutting API contract tests (M4, feature 005) — error envelope, OpenAPI 3.1, auth. Mostly DB-free;
+the unclaimed-workspace 403 needs the DB (feature 012 resolves an unclaimed role from the membership store),
+so that one case is marked integration."""
 from __future__ import annotations
+
+import pytest
 
 from tests._api_helpers import client, dev_headers
 
@@ -13,6 +17,10 @@ async def test_no_principal_returns_401_envelope():
     assert set(body["error"]) >= {"code", "message"}            # FR-011 envelope shape
 
 
+# Integration: feature 012 made "workspace not in claims" fall through to a membership-store lookup
+# (resolve_workspace -> _membership_role -> tenant_session), so confirming the 403 needs the DB to report
+# no membership. Pre-012 this was a pure header check; the DB dependency is why it carries the marker.
+@pytest.mark.integration
 async def test_unclaimed_workspace_returns_403():
     async with client() as c:
         r = await c.get("/api/v1/agents", headers=dev_headers(workspace="ws_x", claims={"ws_y": "builder"}))

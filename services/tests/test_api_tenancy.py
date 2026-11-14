@@ -22,6 +22,9 @@ async def test_no_principal_is_401():
     assert r.status_code == 401 and r.json()["error"]["code"] == "auth.required"
 
 
+# Integration: feature 012 resolves an unclaimed workspace's role from the membership store
+# (resolve_workspace -> _membership_role -> tenant_session), so the 403 can only be confirmed with the DB up.
+@pytest.mark.integration
 async def test_unclaimed_workspace_is_403():
     async with client() as c:
         r = await c.get("/api/v1/agents", headers=dev_headers(workspace="ws_x", claims={"ws_y": "builder"}))
