@@ -9,7 +9,36 @@ This tracker records the honest state of the mock→real migration on **two inde
 - **Backend endpoint** — does a real, tested API endpoint exist? (BUILT / DEFERRED)
 - **Frontend wired** — has the console hook been swapped from the mock store to that endpoint? (MOCK / REAL)
 
-> ⚠️ **Current frontend-wired state: 0 / 257 seams are REAL.** The backend endpoints below are built and tested,
+> ⚠️ **Current frontend-wired state: 4 / 257 seams are REAL — behind a build flag.** With
+> `NEXT_PUBLIC_API_MODE=live`, workspace discovery + agents list / detail / create are sourced from the API
+> (2026-11-14, see "Live wiring" below). With the flag unset (the default) the console is the pure mock, unchanged.
+> Every other family still calls the in-memory mock store.
+>
+> **Live wiring — agents slice + workspace discovery (2026-11-14):** F-D is resolved by the new
+> `GET /api/v1/workspaces` discovery endpoint (migration **0011** `member_workspaces()` SECURITY DEFINER, same
+> pattern as `api_token_resolve`). The console `Workspace` gains `backendId` (UUID, sent as `X-Workspace-Id`) +
+> `backendRole` (server-resolved, now authoritative for UI gating) alongside the slug, joined on `group_prefix` —
+> so wiring is **incremental**: a live workspace sources its *wired* families from the API, everything else stays
+> on seeds. No role claim is sent — the server resolves the role from the members store (012). Browser traffic is
+> **same-origin** via a Next rewrite (`/api/v1/*` → `AC_API_ORIGIN`, default `:8000`) — no CORS surface, and the
+> 019 cookie session + CSRF drop in unchanged. One loader convention in `store.ts` (`load()` — keyed
+> loading/ready/error, in-flight de-dup, apply-on-success only, no silent mock fallback) + one shared
+> `<LiveStatus>` strip; `listAgents` follows `next_cursor`. **Verified:** `tsc` + full `eslint` clean; `next build`
+> passes in both modes; the real `client.ts`+`adapters.ts` run through the proxy (discovery, create→server UUID,
+> get, list 0→1, typed 403/404/400 errors — 8/8); headless-Chrome renders of the live console show the **Live**
+> badge + the server agent with seeds gone, a cold deep link to `/agents/<uuid>` resolves, a missing id shows
+> not-found; mock mode re-checked unchanged. **Not wired (still local-only in a live workspace):** agent
+> PATCH/lifecycle (publish/archive/duplicate/delete), versions, config, invoke/eval — edits to a live agent are not
+> persisted. AgentOut is still thin (F-A): description/model/metrics render as placeholders.
+>
+> **Review pass (2026-11-14):** `useAgents()` now triggers the load itself (all 10 consumer pages get live data, not
+> just /agents); loads are stale-while-revalidate (30 s window); 15 s request timeout; create sends a per-submission
+> `Idempotency-Key` + ref-guarded double-submit; failed discovery / 5xx are shown as errors (not "mock" / "not
+> found"); unwired mutations on a live agent toast "local only" instead of a bare success. Remaining gaps are marked
+> in code as `TODO(fe-wiring|backend|backend/contract|backend/perf|auth|deploy)` — `grep -rn "TODO(" frontend/src
+> frontend/next.config.ts services/api` (25 markers).
+>
+> (Original 0/257 note follows.) The backend endpoints below are built and tested,
 > but the frontend console still calls the in-memory mock store. Wiring requires generating the typed client
 > (`npm run gen:api`) and swapping hooks. The OpenAPI 3.1 contract is emitted to `frontend/openapi.json` and the
 > `gen:api` script + `openapi-typescript` devDep are wired, so the wiring is a mechanical step.
@@ -34,7 +63,8 @@ This tracker records the honest state of the mock→real migration on **two inde
 
 | Family | Backend endpoint | FE wired | Endpoints / reason |
 |---|---|---|---|
-| **agents** (CRUD, versions) | ✅ BUILT (M4a) | ⬜ MOCK | `POST/GET/LIST/PATCH /api/v1/agents`, `POST …/versions` |
+| **workspace discovery** (switcher) | ✅ BUILT (2026-11-14, migration 0011) | 🟢 REAL (live flag) | `GET /api/v1/workspaces` — caller's workspaces + server-resolved role; pre-selection (no `X-Workspace-Id`); `member_workspaces()` SECURITY DEFINER, self-scoped to the subject. FE: `loadWorkspaces()` at `AppBoundary`, joined to the console registry on `group_prefix` |
+| **agents** (CRUD, versions) | ✅ BUILT (M4a) | 🟡 PARTIAL — list/get/create 🟢 REAL (live flag); PATCH/lifecycle/versions ⬜ MOCK | `POST/GET/LIST/PATCH /api/v1/agents`, `POST …/versions` |
 | **invoke** (SSE) | ✅ BUILT (M4a) | ⬜ MOCK | `POST /api/v1/agents/:id/invoke` |
 | **eval-runs** | ✅ BUILT (M4a) | ⬜ MOCK | `POST /api/v1/agents/:id/eval-runs` (inline) |
 | **publish** (advisory) | ✅ BUILT (M4a) | ⬜ MOCK | `POST /api/v1/agents/:id/publish` — advisory divergence (verdict, not blocked) |
@@ -67,7 +97,7 @@ This tracker records the honest state of the mock→real migration on **two inde
 
 - **Backend endpoints/controls BUILT:** agents, invoke (SSE), eval, publish (advisory), tools, mcp, skills, KB, workspace settings, members (+ teams), runs, metrics (+ honest-deferred ingestion stub); **RBAC enforcement (008)**; **durable monthly spend cap + `GET /workspace/spend` (009)**; **correlation ingestion + `GET /metrics` (010)**; **pluggable IdP bearer authN + membership-sourced authZ (012)**; **per-resource access-policy enforcement (013)**; **provider-key custody via a pluggable secrets backend + resolve-at-invoke (014)**; **per-identity rate limiting (016, F5)**; **SSRF/egress guard (017, F19 — built unwired)**; **caller-token mint + Redis deny-set + the published invoke plane (018)**; **OIDC console login + stateless session cookie + double-submit CSRF (019)**; **IdP group→members-store sync + `group_members` projection (020, migration 0010)**; **Redis degraded-mode decision record + tested matrix, the `/readyz` Redis check, and PgBouncer transaction-mode tenant-isolation (021 — M5 capstone, milestone CLOSED)**. Cross-cutting on every paid/resource path: tenancy/RLS, RBAC role-gate, per-resource access policy, rate limit, spend cap, correlation; the deny-set additionally gates both invoke planes incl. in-flight streams.
 - **Backend DEFERRED:** tool approvals, Redis **spend-reservation** store (deferred, 021 D2 — documented, not built), heavy observability (Langfuse/ClickHouse) — M5/M6-remainder; channels + workspace-root — P2. *(Degraded-mode decision record + tested matrix, the `/readyz` Redis readiness check, and PgBouncer txn-mode isolation are now BUILT (021 — M5 CLOSED). Token mint + deny-set is BUILT (018); provider-key custody BUILT (014); the SSRF guard is BUILT but unwired (017) — no tool-execution path exists until P2. MCP/tool/data-source/channel credential storage remains designed-but-not-built behind the same secrets seam.)*
-- **Frontend seams wired to real API:** **0 / 257** (pending Node toolchain for client-gen + hook swap).
+- **Frontend seams wired to real API:** **4 / 257**, behind `NEXT_PUBLIC_API_MODE=live` — workspace discovery, `useAgents`, `useAgent`, `addAgent`. Next family = one `loadX()` on the store's `load()` convention + one adapter + one `useEnsureX()` in its page.
 
 ## How to complete the frontend wiring (in a Node environment)
 
