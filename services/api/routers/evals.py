@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from api.resilience_wiring import get_guard
 from api.access_policy import PolicyPrincipal
 from api import call_log
 from api.correlation import Correlation, correlation
@@ -92,7 +93,7 @@ async def create_eval_run(
     api_key = await resolve_provider_key(session, ws, provider)
 
     runs: list = []
-    ctx = RunContext(workspace_id=ws, source="eval", api_key=api_key,
+    ctx = RunContext(workspace_id=ws, source="eval", api_key=api_key, guard=get_guard(),  # 025: process Guard
                      record_run=runs.append, correlation_id=corr, deadline_s=30.0)
     # Feature 023: one call-log line per model call (metadata by default; redacted text only when effective).
     _, content_logging = await call_log.effective_content_logging(session, ws)

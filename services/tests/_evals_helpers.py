@@ -95,7 +95,7 @@ def make_routed_gateway(
     cand = candidate_text if candidate_text is not None else json.dumps(VALID_OUTPUT)
     jbody = judge_body if judge_body is not None else judge_payload()
 
-    async def _stream(req, *, api_key, profile=None, timeout=None):
+    async def _stream(req, *, api_key, profile=None, timeout=None, **_resilience):
         if getattr(req, "model", None) == JUDGE_MODEL:
             if on_judge_call is not None:
                 on_judge_call(req)

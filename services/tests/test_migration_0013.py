@@ -272,4 +272,4 @@ def test_downgrade_to_0012_and_back_roundtrips_clean() -> None:
     finally:
         up = _alembic("upgrade", "head")
     assert up.returncode == 0, f"upgrade 0012→head failed:\n{up.stderr[-2000:]}"
-    assert "0013" in _alembic("current").stdout
+    assert "(head)" in _alembic("current").stdout   # back at head (was hardcoded "0013"; 025 added 0014 above it)

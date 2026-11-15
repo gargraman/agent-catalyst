@@ -153,3 +153,120 @@ async def test_bedrock_dimension_mismatch_is_typed(monkeypatch):
     with pytest.raises(EmbeddingError) as ei:
         await gateway.embed(["x"], provider="bedrock", model="amazon.titan-embed-text-v2:0", api_key=None, region="us-east-1")
     assert ei.value.type == "dimension_mismatch"
+
+
+# ======================================================================================================================
+# Feature 025 (US1, T010) — per-batch bounded retry on the embedding path (contract runtime-resilience §5).
+# Injected Guard: sleep advances a fake clock (0 wall time). Vectors are appended only after a batch succeeds, so a
+# retried batch can never duplicate or reorder vectors.
+# ======================================================================================================================
+import random  # noqa: E402
+
+from runtime.providers import resilience  # noqa: E402
+
+
+class _Clock:
+    def __init__(self):
+        self.t, self.waits = 0.0, []
+
+    def now(self):
+        return self.t
+
+    async def sleep(self, s):
+        self.waits.append(s)
+        self.t += s
+
+
+def _guard025(clock=None, **policy):
+    clock = clock or _Clock()
+    return resilience.Guard(policy=resilience.ResiliencePolicy(**policy), clock=clock.now, sleep=clock.sleep,
+                            rng=random.Random(3))
+
+
+def _patch_flaky(monkeypatch, *, calls: list, fail_on: dict[int, TransportError]):
+    """Call #i (0-based, over ALL transport calls) raises fail_on[i]; others return order-encoding vectors."""
+    async def _fake_embed(**kwargs):
+        idx = len(calls)
+        calls.append(kwargs)
+        if idx in fail_on:
+            raise fail_on[idx]
+        inp = kwargs["input"]
+        return SimpleNamespace(
+            data=[{"index": i, "embedding": [float(int(t.split("-")[1]))] * 1024} for i, t in enumerate(inp)],
+            usage=SimpleNamespace(prompt_tokens=10 * len(inp)), _hidden_params={})
+    monkeypatch.setattr(transport, "embed", _fake_embed)
+
+
+def _transient():
+    return TransportError("injected 503", retryable=True, status=503)
+
+
+async def test_attempt_transient_batch_failure_is_retried_once(monkeypatch):
+    calls: list = []
+    _patch_flaky(monkeypatch, calls=calls, fail_on={0: _transient()})
+    res = await gateway.embed(["t-0", "t-1"], provider="openai", model="text-embedding-3-small", api_key=_KEY,
+                              guard=_guard025())
+    assert len(calls) == 2
+    assert [v[0] for v in res.vectors] == [0.0, 1.0]
+    assert res.attempts == 2
+    assert res.usage.input_tokens == 20          # usage only from the SUCCESSFUL batch response (FR-015 basis)
+
+
+async def test_attempt_retry_mid_batches_keeps_order_and_no_duplicates(monkeypatch):
+    calls: list = []
+    # 250 texts → batches of 100/100/50. Transport call #1 (= batch 2, first try) fails transiently.
+    _patch_flaky(monkeypatch, calls=calls, fail_on={1: _transient()})
+    texts = [f"t-{i}" for i in range(250)]
+    res = await gateway.embed(texts, provider="openai", model="text-embedding-3-small", api_key=_KEY,
+                              guard=_guard025())
+    assert [len(c["input"]) for c in calls] == [100, 100, 100, 50]
+    assert [v[0] for v in res.vectors] == [float(i) for i in range(250)]   # exactly once, input order
+    assert res.attempts == 4                                                # summed over batches: 1 + 2 + 1
+    assert res.usage.input_tokens == 2500
+
+
+async def test_attempt_exhaustion_raises_typed_error_with_attempts(monkeypatch):
+    calls: list = []
+    _patch_flaky(monkeypatch, calls=calls, fail_on={i: _transient() for i in range(10)})
+    with pytest.raises(EmbeddingError) as ei:
+        await gateway.embed(["t-0"], provider="openai", model="text-embedding-3-small", api_key=_KEY,
+                            guard=_guard025())
+    assert len(calls) == 3
+    assert ei.value.type == "provider_error" and ei.value.retryable is True and ei.value.attempts == 3
+
+
+async def test_attempt_non_transient_is_not_retried(monkeypatch):
+    calls: list = []
+    _patch_flaky(monkeypatch, calls=calls, fail_on={0: TransportError("bad key", retryable=False, status=401)})
+    clock = _Clock()
+    with pytest.raises(EmbeddingError) as ei:
+        await gateway.embed(["t-0"], provider="openai", model="text-embedding-3-small", api_key=_KEY,
+                            guard=_guard025(clock))
+    assert len(calls) == 1 and clock.waits == []
+    assert ei.value.retryable is False and ei.value.attempts == 1
+
+
+async def test_attempt_clean_embed_reports_one_attempt_per_batch(monkeypatch):
+    calls: list = []
+    _patch_flaky(monkeypatch, calls=calls, fail_on={})
+    texts = [f"t-{i}" for i in range(150)]
+    res = await gateway.embed(texts, provider="openai", model="text-embedding-3-small", api_key=_KEY,
+                              guard=_guard025())
+    assert res.attempts == 2          # 2 batches, no retries → Σ(attempts) = 2, retries contribution = 0
+
+
+async def test_attempt_huge_retry_after_is_capped_on_embed(monkeypatch):
+    calls: list = []
+    err = _transient()
+    err.retry_after = 3600.0
+    _patch_flaky(monkeypatch, calls=calls, fail_on={0: err})
+    clock = _Clock()
+    await gateway.embed(["t-0"], provider="openai", model="text-embedding-3-small", api_key=_KEY,
+                        guard=_guard025(clock))
+    assert clock.waits == [8.0]
+
+
+def test_attempt_ir_defaults_are_backward_compatible():
+    assert EmbeddingError("x", type="provider_error").attempts == 1
+    res = EmbeddingResult(vectors=(), usage=NormalizedUsage(0, 0), cost_usd=Decimal("0"), cost_is_estimate=False)
+    assert res.attempts == 1

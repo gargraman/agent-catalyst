@@ -30,7 +30,7 @@ pytestmark = pytest.mark.integration
 
 
 def _capturing_gateway(captured: list):
-    async def _stream(req, *, api_key, profile=None, timeout=None):
+    async def _stream(req, *, api_key, profile=None, timeout=None, **_resilience):
         captured.append(api_key)
         yield text_ev("ok")
         yield usage_ev()
@@ -67,7 +67,7 @@ async def test_eval_run_uses_stored_provider_key(monkeypatch):
                                              "rationale": "great"})
     captured: list = []
 
-    async def _cap(req, *, api_key, profile=None, timeout=None):
+    async def _cap(req, *, api_key, profile=None, timeout=None, **_resilience):
         captured.append(api_key)
         async for ev in routed(req, api_key=api_key, profile=profile, timeout=timeout):
             yield ev
@@ -110,7 +110,7 @@ async def test_invoke_resolves_own_workspace_key_only(monkeypatch):
 
 # ---- invoke fails closed (no stream/provider call) when a configured key can't resolve -----------
 async def test_invoke_fails_closed_config_error_when_key_unresolvable(monkeypatch):
-    async def _boom(req, *, api_key, profile=None, timeout=None):
+    async def _boom(req, *, api_key, profile=None, timeout=None, **_resilience):
         raise AssertionError("gateway must not be called when key resolution fails")
         yield  # pragma: no cover
     monkeypatch.setattr(gateway, "stream", _boom)

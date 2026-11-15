@@ -68,6 +68,41 @@ ac_deadline_exceeded_total = Counter(
 )
 
 
+
+# Feature 025 — provider resilience (contract api §4). Labels are registry ids only (no tenant data, FR-013).
+ac_provider_retries_total = Counter(
+    "ac_provider_retries_total", "Provider call retries (before each retry wait), by provider/model/traffic class",
+    ["provider", "model", "class"], registry=REGISTRY,
+)
+ac_breaker_transitions_total = Counter(
+    "ac_breaker_transitions_total", "Circuit-breaker state changes observed by this instance",
+    ["provider", "model", "class", "to"], registry=REGISTRY,
+)
+ac_breaker_refusals_total = Counter(
+    "ac_breaker_refusals_total", "Calls refused by an open circuit breaker (zero transport calls)",
+    ["provider", "model", "class"], registry=REGISTRY,
+)
+ac_breaker_degraded_total = Counter(
+    "ac_breaker_degraded_total", "Breaker decisions taken on the local store because the shared store failed (alert)",
+    registry=REGISTRY,
+)
+
+
+def record_resilience_event(name: str, labels: dict) -> None:
+    """Runtime Guard observer → Prometheus. Best-effort: a metrics failure never alters a call."""
+    try:
+        if name == "retry":
+            ac_provider_retries_total.labels(labels["provider"], labels["model"], labels["cls"]).inc()
+        elif name == "breaker_transition":
+            ac_breaker_transitions_total.labels(labels["provider"], labels["model"], labels["cls"], labels["to"]).inc()
+        elif name == "breaker_refused":
+            ac_breaker_refusals_total.labels(labels["provider"], labels["model"], labels["cls"]).inc()
+        elif name == "breaker_degraded":
+            ac_breaker_degraded_total.inc()
+    except Exception as e:  # noqa: BLE001
+        _log.debug("resilience metric %s failed: %s", name, e)
+
+
 ac_retrieval_seconds = Histogram(
     "ac_retrieval_seconds", "Wall time of the pre-turn retrieval step per run that had knowledge bound (feature 024)",
     ["source"], buckets=(0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10), registry=REGISTRY,

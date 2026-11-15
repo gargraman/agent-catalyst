@@ -132,6 +132,9 @@ async def process_job(job_id, *, repo: IngestRepo, storage, embedder: Embedder,
             try:
                 res = await embedder([d.text for d in batch])
             except EmbeddingError as exc:
+                if exc.type == "provider_unavailable":   # 025 FR-012: breaker open — typed, retryable, no chunks
+                    raise _Fail(_err("provider_unavailable", "embedding provider temporarily unavailable (circuit open)",
+                                     True)) from None
                 raise _Fail(_err("embedding_failed", f"embedding provider call failed ({exc.type})",
                                  bool(exc.retryable))) from None
             except FileNotFoundError:

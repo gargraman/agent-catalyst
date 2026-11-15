@@ -32,6 +32,7 @@ from api.settings import get_settings
 from api.storage import get_storage
 from runtime.providers import gateway
 from runtime.providers.ir import EmbeddingError
+from api.resilience_wiring import get_guard
 from runtime.providers.profiles import resolve_embedding_profile_by_model
 
 log = logging.getLogger("ac.ingest")
@@ -83,7 +84,8 @@ async def _embedder_for(ws: str, model: str):
         if key_error is not None:
             raise key_error
         return await gateway.embed(texts, provider=profile.provider, model=profile.model, api_key=api_key,
-                                   region=settings.aws_region if profile.provider == "bedrock" else None)
+                                   region=settings.aws_region if profile.provider == "bedrock" else None,
+                                   guard=get_guard(), traffic_class="batch")   # 025: ingestion is BATCH traffic
 
     return embed, max(1, profile.max_batch or 100)
 

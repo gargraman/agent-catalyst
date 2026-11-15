@@ -52,6 +52,7 @@ async def persist_run_record(session: AsyncSession, workspace_id: str, rec) -> N
         outcome=outcome,
         source=rec.source or "playground",
         correlation_id=rec.correlation_id or "",
+        retry_count=int(getattr(rec, "retries", 0) or 0),
     ))
     await session.flush()
     # F12 (feature 010): count one completed run by outcome + source. Best-effort & approximate — a metrics

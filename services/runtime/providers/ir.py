@@ -67,12 +67,15 @@ class EmbeddingResult:
     cost_usd: "Decimal"
     cost_is_estimate: bool
     provider_request_id: str | None = None
+    attempts: int = 1                    # feature 025: transport attempts summed over batches (retries = attempts − batches)
 
 
 class EmbeddingError(Exception):
     """Typed, key-scrubbed embedding failure (contracts/runtime.md §8)."""
 
-    def __init__(self, message: str, *, type: str, retryable: bool = False):  # noqa: A002 — contract field name
+    def __init__(self, message: str, *, type: str, retryable: bool = False,  # noqa: A002 — contract field name
+                 attempts: int = 1):
         super().__init__(message)
         self.type = type
         self.retryable = retryable
+        self.attempts = attempts         # feature 025: transport attempts made before giving up (summed over batches)

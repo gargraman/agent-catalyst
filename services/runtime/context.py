@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Awaitable, Callable, Union
 
 if TYPE_CHECKING:
+    from runtime.providers.resilience import Guard
     from runtime.retrieval.port import KnowledgeAccess
     from runtime.run import ModelCallRecord, RunRecord
 
@@ -46,3 +47,5 @@ class RunContext:
     embedding_api_key: str | None = None      # resolved by the API like the chat key (014); provider may differ
     embedding_region: str | None = None       # Bedrock (customer-data provider) region; key-less AWS credential chain
     record_detection: Callable[[dict], Union[Awaitable[None], None]] | None = None  # injection detections (US3), no text
+    # feature 025: provider resilience (retry / breaker / bulkhead). None ⇒ the process-default guard.
+    guard: "Guard | None" = None

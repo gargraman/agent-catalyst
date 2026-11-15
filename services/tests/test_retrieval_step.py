@@ -49,7 +49,7 @@ class FakeKnowledge:
 def embeds(monkeypatch):
     calls = []
 
-    async def _embed(texts, *, provider, model, api_key, timeout=None, region=None):
+    async def _embed(texts, *, provider, model, api_key, timeout=None, region=None, **_resilience):
         calls.append({"texts": texts, "provider": provider, "model": model, "api_key": api_key, "region": region})
         return EmbeddingResult(vectors=tuple(tuple([0.1] * 1024) for _ in texts), usage=NormalizedUsage(5, 0),
                                cost_usd=Decimal("0.000001"), cost_is_estimate=True)

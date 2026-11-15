@@ -69,7 +69,7 @@ class MemoryKnowledge:
 
 @pytest.fixture
 def fake_embed(monkeypatch):
-    async def _embed(texts, *, provider, model, api_key, timeout=None, region=None):
+    async def _embed(texts, *, provider, model, api_key, timeout=None, region=None, **_resilience):
         return EmbeddingResult(vectors=tuple(_embed_text(t) for t in texts), usage=NormalizedUsage(1, 0),
                                cost_usd=Decimal(0), cost_is_estimate=True)
     monkeypatch.setattr(gateway, "embed", _embed)

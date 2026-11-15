@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class RunOut(BaseModel):
@@ -17,11 +17,17 @@ class RunOut(BaseModel):
     model: str
     usage: dict
     latency_ms: int
-    cost_usd: float
+    cost_usd: float = Field(description=(
+        "Run cost in USD computed from provider-reported usage only (feature 025, FR-015): failed provider attempts "
+        "that reported no usage are unpriced and disclosed through `retries` — this is not a claim of the exact "
+        "provider charge."))
     outcome: str
     source: str
     correlation_id: str
     created_at: datetime.datetime
+    retries: int = Field(default=0, description=(
+        "Provider retries this run spent (transport attempts beyond the first, over model turns and embedding "
+        "calls). Cost reflects reported usage only, so retried attempts with no reported usage add no cost."))
 
 
 class SeriesOut(BaseModel):

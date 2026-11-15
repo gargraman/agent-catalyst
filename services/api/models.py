@@ -481,3 +481,5 @@ class Run(Base, WorkspaceScoped):
     source: Mapped[str] = mapped_column(Text, default="playground")
     correlation_id: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime.datetime] = mapped_column(server_default=func.now())
+    # feature 025 (migration 0014): provider retries spent by this run — disclosed, never priced (FR-015)
+    retry_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")

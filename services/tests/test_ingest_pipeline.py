@@ -351,3 +351,25 @@ async def test_extract_and_chunk_run_off_the_event_loop(monkeypatch):
     ctx, data = _ctx()
     await _run(ctx, data)
     assert "_extract_and_chunk" in seen
+
+
+# ---- feature 025 T019 (US2, FR-012): an ingestion embedding refused by the breaker -------------------------------
+class RefusedEmbedder:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def __call__(self, texts):
+        self.calls += 1
+        raise EmbeddingError("provider temporarily unavailable (circuit open)", type="provider_unavailable",
+                             retryable=True, attempts=0)
+
+
+async def test_unavailable_breaker_refusal_fails_job_retryable_without_chunks():
+    ctx, data = _ctx(active_generation=0)
+    repo, emb, _ = await _run(ctx, data, embedder=RefusedEmbedder(), batch_size=2)
+    assert emb.calls == 1                                                # stops at the first refused batch
+    assert repo.inserted == {}
+    assert repo.last("finalize_ready") is None
+    fail = repo.last("finalize_failed")[1]
+    assert fail["error"]["code"] == "provider_unavailable"
+    assert fail["error"]["retryable"] is True

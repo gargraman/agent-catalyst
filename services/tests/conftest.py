@@ -148,3 +148,27 @@ async def mk_version(conn, agent_id, ws, label: str = "v1"):
         {"a": str(agent_id), "w": str(ws), "l": label},
     )
     return r.scalar_one()
+
+
+# ---- feature 025: a fresh process-default resilience Guard per test ------------------------------------------------
+# The default Guard is module-level state (breaker store in US2) — reset it so no test inherits another's breaker
+# state, and give it an instant sleep so a retried transport failure in an unrelated test costs no wall time. Tests
+# that assert on waits inject their own Guard (fake clock) and are unaffected.
+@pytest.fixture(autouse=True)
+def _fresh_default_guard():
+    from runtime.providers import resilience
+
+    async def _instant(_seconds: float) -> None:
+        return None
+
+    from api import resilience_wiring
+
+    resilience.reset_default_guard()
+    resilience._DEFAULT_GUARD = resilience.Guard(resilience.ResiliencePolicy(), sleep=_instant)
+    # 025 US2: the API's process Guard (fresh breaker state per test; backoff costs no wall time)
+    resilience_wiring.reset_for_tests()
+    real_sleep, resilience_wiring._sleep = resilience_wiring._sleep, _instant
+    yield
+    resilience_wiring._sleep = real_sleep
+    resilience_wiring.reset_for_tests()
+    resilience.reset_default_guard()

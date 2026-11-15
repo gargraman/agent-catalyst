@@ -116,7 +116,7 @@ async def test_pre_call_rejections_emit_no_records(monkeypatch, snap_kw, inputs)
 
 
 async def test_retired_model_emits_no_record(monkeypatch):
-    async def _retired(req, *, api_key, profile=None, timeout=None):
+    async def _retired(req, *, api_key, profile=None, timeout=None, **_resilience):
         raise gateway.ModelRetiredError("retired")
         yield  # pragma: no cover
     monkeypatch.setattr(gateway, "stream", _retired)

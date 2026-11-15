@@ -17,6 +17,7 @@ from dataclasses import dataclass, replace
 
 from runtime.guardrails import injection
 from runtime.providers import gateway
+from runtime.providers.resilience import traffic_class
 from runtime.providers.profiles import Substitution
 from runtime.retrieval.render import render_context
 from runtime.run import BindingSummary, Citation
@@ -41,6 +42,7 @@ class RetrievalStepResult:
     kb_names: tuple = ()          # ((kb_id, name), …) — kept so `shrink` can re-render
     embedding_calls: tuple = ()   # ((provider, model, latency_ms), …) aligned with `embeddings` — per-call records
     detections: tuple = ()        # US3: one dict per withheld passage — ids + categories only, never text
+    failed_embed_retries: int = 0  # feature 025: retries spent on embeddings that ultimately failed (still honest)
 
 
 def _cfg(ref) -> dict:
@@ -84,6 +86,7 @@ async def retrieve(query: str, refs, ctx, *, sink: list | None = None) -> Retrie
     vectors: dict[tuple[str, str], list[float]] = {}
     failed: dict[tuple[str, str], str] = {}
     embeddings = []
+    failed_retries = 0
     for key in dict.fromkeys((r.embedding_provider, r.embedding_model) for r in refs):
         provider, model = key
         keyless = provider in _KEYLESS_PROVIDERS
@@ -94,14 +97,18 @@ async def retrieve(query: str, refs, ctx, *, sink: list | None = None) -> Retrie
         try:
             res = await gateway.embed([query], provider=provider, model=model,
                                       api_key=None if keyless else ctx.embedding_api_key,
-                                      region=ctx.embedding_region if keyless else None)
+                                      region=ctx.embedding_region if keyless else None,
+                                      guard=getattr(ctx, "guard", None), traffic_class=traffic_class(ctx.source))
             embeddings.append(res)
             calls.append((provider, model, int((time.perf_counter() - t0) * 1000)))
             if sink is not None:
                 sink.append((res, calls[-1]))
             vectors[key] = list(res.vectors[0])
-        except Exception:  # noqa: BLE001 — EmbeddingError, unknown profile, anything: degrade, never fail the run
-            failed[key] = "embedding_failed"
+        except Exception as exc:  # noqa: BLE001 — EmbeddingError, unknown profile, anything: degrade, never fail the run
+            # 025: a breaker refusal is named honestly; everything else stays the 024 vocabulary
+            failed[key] = ("provider_unavailable" if getattr(exc, "type", None) == "provider_unavailable"
+                           else "embedding_failed")
+            failed_retries += max(int(getattr(exc, "attempts", 1) or 1) - 1, 0)
 
     # 2. search each binding
     summaries: dict[str, BindingSummary] = {}
@@ -169,7 +176,7 @@ async def retrieve(query: str, refs, ctx, *, sink: list | None = None) -> Retrie
             used.append(p)
             spent += p.token_count
     result = RetrievalStepResult("", (), (), tuple(summaries[r.kb_id] for r in refs), subs, tuple(embeddings),
-                                 searches, names, tuple(calls), tuple(detections))
+                                 searches, names, tuple(calls), tuple(detections), failed_retries)
     return shrink(result, len(used), passages=tuple(used))
 
 

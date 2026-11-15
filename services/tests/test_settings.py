@@ -246,3 +246,41 @@ def test_compose_dev_stack_uses_localstack_s3_for_uploads():
     from pathlib import Path
     compose = (Path(__file__).resolve().parents[2] / "deploy" / "compose.yaml").read_text()
     assert "AC_STORAGE_PROVIDER: s3" in compose
+
+
+# ---- feature 025 T021 (US2): resilience tunables (contract api §3) -------------------------------------------------
+_RES_ENV = {
+    "AC_PROVIDER_MAX_ATTEMPTS": ("provider_max_attempts", "max_attempts", 3),
+    "AC_PROVIDER_BACKOFF_BASE_S": ("provider_backoff_base_s", "backoff_base_s", 0.5),
+    "AC_PROVIDER_WAIT_CAP_S": ("provider_wait_cap_s", "per_wait_cap_s", 8.0),
+    "AC_BREAKER_FAILURE_THRESHOLD": ("breaker_failure_threshold", "failure_threshold", 5),
+    "AC_BREAKER_COOLDOWN_S": ("breaker_cooldown_s", "cooldown_s", 30.0),
+    "AC_BATCH_CONCURRENCY": ("batch_concurrency", "batch_concurrency", 4),
+}
+
+
+def test_resilience_settings_defaults(monkeypatch):
+    for env in _RES_ENV:
+        monkeypatch.delenv(env, raising=False)
+    s = Settings()
+    for env, (field, _, default) in _RES_ENV.items():
+        assert getattr(s, field) == default, env
+
+
+def test_resilience_settings_map_onto_policy(monkeypatch):
+    from api.resilience_wiring import policy_from_settings
+    values = {"AC_PROVIDER_MAX_ATTEMPTS": "2", "AC_PROVIDER_BACKOFF_BASE_S": "0.25", "AC_PROVIDER_WAIT_CAP_S": "4",
+              "AC_BREAKER_FAILURE_THRESHOLD": "7", "AC_BREAKER_COOLDOWN_S": "12.5", "AC_BATCH_CONCURRENCY": "2"}
+    for k, v in values.items():
+        monkeypatch.setenv(k, v)
+    pol = policy_from_settings(Settings())
+    assert (pol.max_attempts, pol.backoff_base_s, pol.per_wait_cap_s, pol.failure_threshold, pol.cooldown_s,
+            pol.batch_concurrency) == (2, 0.25, 4.0, 7, 12.5, 2)
+
+
+@pytest.mark.parametrize("env", sorted(_RES_ENV))
+@pytest.mark.parametrize("bad", ["0", "-1"])
+def test_resilience_settings_reject_non_positive(monkeypatch, env, bad):
+    monkeypatch.setenv(env, bad)
+    with pytest.raises(ValidationError):
+        Settings()

@@ -142,6 +142,14 @@ class Settings(BaseSettings):
     # Heartbeat lease (research D5): a job whose heartbeat is older than stale_after is reaped as interrupted.
     ingest_stale_after_s: int = Field(default=120, ge=30, alias="AC_INGEST_STALE_AFTER_S")
     ingest_heartbeat_s: int = Field(default=15, ge=1, alias="AC_INGEST_HEARTBEAT_S")
+    # Provider resilience (feature 025, contract api §3): retry / breaker / batch bulkhead. Every value must be > 0 —
+    # bad config fails settings load (startup), never the first request. max_attempts=1 is the retry kill switch.
+    provider_max_attempts: int = Field(default=3, gt=0, alias="AC_PROVIDER_MAX_ATTEMPTS")
+    provider_backoff_base_s: float = Field(default=0.5, gt=0, alias="AC_PROVIDER_BACKOFF_BASE_S")
+    provider_wait_cap_s: float = Field(default=8.0, gt=0, alias="AC_PROVIDER_WAIT_CAP_S")
+    breaker_failure_threshold: int = Field(default=5, gt=0, alias="AC_BREAKER_FAILURE_THRESHOLD")
+    breaker_cooldown_s: float = Field(default=30.0, gt=0, alias="AC_BREAKER_COOLDOWN_S")
+    batch_concurrency: int = Field(default=4, gt=0, alias="AC_BATCH_CONCURRENCY")
     # Orphaned stored-object sweep (analyze H5): only objects older than this are eligible — an upload's object is
     # written just before its row commits, so a short grace could delete a live in-flight upload.
     storage_orphan_grace_s: int = Field(default=3600, ge=300, alias="AC_STORAGE_ORPHAN_GRACE_S")

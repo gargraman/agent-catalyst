@@ -29,7 +29,8 @@ def _run_out(r: Run) -> RunOut:
     return RunOut(id=str(r.id), agent_id=str(r.agent_id) if r.agent_id else None,
                   version_id=str(r.version_id) if r.version_id else None, model=r.model,
                   usage=r.usage, latency_ms=r.latency_ms, cost_usd=float(r.cost_usd), outcome=r.outcome,
-                  source=r.source, correlation_id=r.correlation_id, created_at=r.created_at)
+                  source=r.source, correlation_id=r.correlation_id, created_at=r.created_at,
+                  retries=int(r.retry_count or 0))
 
 
 @router.get("/runs", dependencies=[Depends(require_permission("view"))])

@@ -52,7 +52,7 @@ def test_pairwise_order_is_seeded_and_reproducible():
 
 
 def test_unparseable_judge_output_fails_closed_low_confidence(monkeypatch):
-    async def _stream(req, *, api_key, profile=None, timeout=None):
+    async def _stream(req, *, api_key, profile=None, timeout=None, **_resilience):
         yield text_ev("not json {{{")               # judge emitted garbage
         yield usage_ev(priced_usage(cost_usd=0.0001))
         yield stop_ev()
@@ -70,7 +70,7 @@ def test_unparseable_judge_output_fails_closed_low_confidence(monkeypatch):
 def test_judge_makes_no_live_call(monkeypatch):
     """SC-005/FR-019 — if the transport is never patched to a live client, the mock proves no real call.
     Here a boom stream asserts the judge only ever touches the mocked gateway, never a live provider."""
-    async def _boom(req, *, api_key, profile=None, timeout=None):
+    async def _boom(req, *, api_key, profile=None, timeout=None, **_resilience):
         raise AssertionError("no live provider call — gateway must be the mocked one")
         yield  # pragma: no cover
     monkeypatch.setattr(gateway, "stream", _boom)

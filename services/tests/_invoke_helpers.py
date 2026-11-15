@@ -140,7 +140,7 @@ def usage_ev(usage: NormalizedUsage | None = None, *, subs=(), estimate=True) ->
 
 def make_gateway(events, *, per_event_delay: float = 0.0):
     """Build a drop-in replacement for gateway.stream yielding the given events (optionally slowly)."""
-    async def _stream(req, *, api_key, profile=None, timeout=None):
+    async def _stream(req, *, api_key, profile=None, timeout=None, **_resilience):
         for ev in events:
             if per_event_delay:
                 await asyncio.sleep(per_event_delay)
@@ -154,7 +154,7 @@ def make_multi_turn_gateway(turns, *, per_event_delay: float = 0.0):
     `turns` is a list of event-lists; the Nth call to stream yields turns[N]. Calls beyond the list repeat
     the last turn. `calls` records how many times the gateway was invoked (assert correction-turn counts)."""
     state = {"n": 0}
-    async def _stream(req, *, api_key, profile=None, timeout=None):
+    async def _stream(req, *, api_key, profile=None, timeout=None, **_resilience):
         i = min(state["n"], len(turns) - 1)
         state["n"] += 1
         for ev in turns[i]:

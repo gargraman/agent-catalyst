@@ -53,7 +53,7 @@ class FakeKnowledge:
 def captured(monkeypatch):
     reqs: list = []
 
-    def _stream(req, *, api_key, profile=None, timeout=None):
+    def _stream(req, *, api_key, profile=None, timeout=None, **_resilience):
         reqs.append(req)
 
         async def _gen():
@@ -63,7 +63,7 @@ def captured(monkeypatch):
             yield stop_ev()
         return _gen()
 
-    async def _embed(texts, *, provider, model, api_key, timeout=None, region=None):
+    async def _embed(texts, *, provider, model, api_key, timeout=None, region=None, **_resilience):
         return EmbeddingResult(vectors=tuple(tuple([0.2] * 1024) for _ in texts), usage=NormalizedUsage(9, 0),
                                cost_usd=EMBED_COST, cost_is_estimate=True)
     monkeypatch.setattr(gateway, "stream", _stream)

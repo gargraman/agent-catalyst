@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from api import call_log, sse
+from api.resilience_wiring import get_guard
 from api.access_policy import PolicyPrincipal
 from api.auth import denyset
 from api.correlation import Correlation, correlation
@@ -96,7 +97,7 @@ async def _run_invoke(*, session: AsyncSession, ws: str, ap: PolicyPrincipal, ag
 
     runs: list = []
     run_id = uuid.uuid4().hex
-    ctx = RunContext(workspace_id=ws, source=source, api_key=api_key,
+    ctx = RunContext(workspace_id=ws, source=source, api_key=api_key, guard=get_guard(),  # 025: process Guard
                      record_run=runs.append, correlation_id=corr, run_id=run_id, deadline_s=30.0)
     # Feature 023: one call-log line per model call (metadata by default; redacted text only when effective).
     _, content_logging = await call_log.effective_content_logging(session, ws)

@@ -28,7 +28,7 @@ def _counting_judge_gateway(judge_behaviors):
     "raise" → provider exception). The last behavior repeats if there are more calls than entries."""
     state = {"i": -1}
 
-    async def _stream(req, *, api_key, profile=None, timeout=None):
+    async def _stream(req, *, api_key, profile=None, timeout=None, **_resilience):
         if getattr(req, "model", None) == JUDGE_MODEL:
             state["i"] += 1
             beh = judge_behaviors[min(state["i"], len(judge_behaviors) - 1)]
@@ -190,3 +190,21 @@ def test_total_judge_outage_is_low_confidence_not_fail(monkeypatch):
                                _policy(), make_context(), workspace_id="ws_1"))
     assert res.verdict == "low_confidence"
     assert "judge" in res.reason.lower()
+
+
+# ---- T028 (feature 025, US3): eval traffic is `batch` — candidate AND judge (research D6, spec FR-010) -------------
+def test_traffic_eval_candidate_and_judge_calls_are_batch(monkeypatch):
+    seen: list = []
+
+    async def spy(req, *, api_key, profile=None, timeout=None, guard=None, traffic_class="live", **_):
+        seen.append((req.model, traffic_class))
+        async for ev in inner(req, api_key=api_key, profile=profile, timeout=timeout):
+            yield ev
+    inner = make_routed_gateway()
+    monkeypatch.setattr(gateway, "stream", spy)
+    # The caller's ctx says "playground": the runner must still class the whole eval run as batch.
+    asyncio.run(run_eval(_cases(3), candidate_snapshot(), _baseline(3, cost_usd=0.003),
+                         _policy(), make_context(source="playground"), workspace_id="ws_1"))
+    models = {m for m, _ in seen}
+    assert JUDGE_MODEL in models and len(models) >= 2                  # both candidate and judge calls were made
+    assert {cls for _, cls in seen} == {"batch"}

@@ -39,6 +39,7 @@ from runtime.io import (
     validate_input,
 )
 from runtime.providers import gateway
+from runtime.providers.resilience import traffic_class
 from runtime.providers.ir import EventType, NormalizedStreamEvent, NormalizedUsage
 from runtime.providers.profiles import Substitution, _profile_from_json
 from runtime.providers.validation import (
@@ -95,6 +96,7 @@ class _Turn:
     first_token_ms: int | None = None
     provider_request_id: str | None = None
     done: bool = False                     # the gateway stream ran to completion (not cut / disconnected)
+    attempts: int = 0                      # feature 025: transport attempts the gateway reported for this turn
 
 
 def _turn_cost(turn: "_Turn") -> Decimal:
@@ -149,6 +151,11 @@ def _build_run(snapshot, ctx, correlation_id, outcome, state, latency_ms) -> Run
         flags = [b.degraded_reason for b in rr.summaries if b.degraded_reason] + state.retrieval_flags
         retrieval = RetrievalSummary(bindings=rr.summaries, searches=rr.searches, embed_calls=len(embeds),
                                      retrieval_ms=state.retrieval_ms, degraded=tuple(dict.fromkeys(flags)))
+    # Feature 025 (FR-015): retries are disclosed, never priced — failed attempts reported no usage.
+    retries = sum(max(t.attempts - 1, 0) for t in state.turns)
+    retries += sum(max(int(getattr(e, "attempts", 1) or 1) - 1, 0) for e in embeds)
+    if state.retrieval is not None:
+        retries += int(getattr(state.retrieval, "failed_embed_retries", 0) or 0)
     mc = snapshot.model_config or {}
     return RunRecord(
         run_id=state.run_id or ctx.run_id or uuid.uuid4().hex,   # caller-supplied id wins (set into state)
@@ -177,6 +184,7 @@ def _build_run(snapshot, ctx, correlation_id, outcome, state, latency_ms) -> Run
         # 023 US3: first token of the first turn — only set in pass-through (validated turns are buffered).
         first_token_ms=state.turns[0].first_token_ms if state.turns else None,
         retrieval=retrieval,
+        retries=retries,
     )
 
 
@@ -272,7 +280,8 @@ async def _collect_turn(req, ctx, profile, deadline, t: _Turn) -> _Turn:
     """Consume ONE full gateway turn into the given buffered _Turn (no yielding — validated mode). Mirrors the
     pass-through event handling so a turn's usage/substitutions/error are captured identically. The _Turn is
     supplied by the caller so a turn cut mid-stream (deadline) still leaves its partial state for its record."""
-    async for ev in gateway.stream(req, api_key=ctx.api_key, profile=profile, timeout=deadline):
+    async for ev in gateway.stream(req, api_key=ctx.api_key, profile=profile, timeout=deadline,
+                                   guard=ctx.guard, traffic_class=traffic_class(ctx.source)):
         et = ev.type
         if et is EventType.TEXT_DELTA:
             t.text += ev.data.get("text", "")
@@ -287,14 +296,26 @@ async def _collect_turn(req, ctx, profile, deadline, t: _Turn) -> _Turn:
             t.provider_request_id = ev.data.get("provider_request_id")
             t.substitutions = tuple(ev.data.get("substitutions", ()))
             t.cost_is_estimate = bool(ev.data.get("cost_is_estimate", False))
+            t.attempts = int(ev.data.get("attempts", 1) or 1)
         elif et is EventType.ERROR:
             t.error = ev.data.get("error") or {}
+            t.attempts = int(ev.data.get("attempts", 1) or 1)
             err_subs = t.error.get("substitutions")
             if err_subs:
                 t.substitutions = tuple(err_subs)
     t.done = True
     t.t_end = time.perf_counter()
     return t
+
+
+def _error_outcome(etype) -> Outcome:
+    """Gateway ERROR type → run outcome (contract runtime-resilience §8). A failure after the first surfaced event
+    stays PROVIDER_ERROR (FR-005); DEGRADED is reserved for usage-less streams."""
+    if etype == "degraded":
+        return Outcome.DEGRADED
+    if etype == "provider_unavailable":
+        return Outcome.PROVIDER_UNAVAILABLE
+    return Outcome.PROVIDER_ERROR
 
 
 def _call_record(snapshot, ctx, run: RunRecord, provider_corr: str, seq: int, t: _Turn,
@@ -495,7 +516,8 @@ async def _pipeline(snapshot, inputs, ctx, state: _State):
             if not validated:
                 # ---- PASS-THROUGH (M2a behavior, unchanged) ----
                 turn = _start_turn(state, req, correction=False, render=ctx.record_call is not None)
-                async for ev in gateway.stream(req, api_key=ctx.api_key, profile=profile, timeout=deadline):
+                async for ev in gateway.stream(req, api_key=ctx.api_key, profile=profile, timeout=deadline,
+                                               guard=ctx.guard, traffic_class=traffic_class(ctx.source)):
                     if ev.type is EventType.TEXT_DELTA:
                         if turn.first_token_ms is None:   # 023 US3: first streamed token of this turn
                             turn.first_token_ms = int((time.perf_counter() - turn.t_start) * 1000)
@@ -516,14 +538,16 @@ async def _pipeline(snapshot, inputs, ctx, state: _State):
                         turn.provider_request_id = ev.data.get("provider_request_id")
                         state.substitutions = tuple(ev.data.get("substitutions", ()))
                         state.cost_is_estimate = bool(ev.data.get("cost_is_estimate", False))
+                        turn.attempts = int(ev.data.get("attempts", 1) or 1)
                     elif ev.type is EventType.ERROR:
                         state.error = ev.data.get("error") or {}
                         turn.error = state.error
+                        turn.attempts = int(ev.data.get("attempts", 1) or 1)
                         err_subs = state.error.get("substitutions")
                         if err_subs:
                             state.substitutions = tuple(err_subs)
                         etype = state.error.get("type")
-                        outcome = Outcome.DEGRADED if etype == "degraded" else Outcome.PROVIDER_ERROR
+                        outcome = _error_outcome(etype)
                     yield ev
                 turn.done = True
                 turn.t_end = time.perf_counter()
@@ -544,7 +568,7 @@ async def _pipeline(snapshot, inputs, ctx, state: _State):
                     if turn.error:
                         state.error = turn.error
                         etype = turn.error.get("type")
-                        outcome = Outcome.DEGRADED if etype == "degraded" else Outcome.PROVIDER_ERROR
+                        outcome = _error_outcome(etype)
                         if state.retrieval is not None and not state.citations_emitted:
                             yield _citations_event(state)
                         if state.usage is not None:

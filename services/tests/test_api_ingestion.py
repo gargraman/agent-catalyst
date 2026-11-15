@@ -44,11 +44,15 @@ class EmbedStub:
     def __init__(self):
         self.calls = 0
         self.fail_next: Exception | None = None
+        self.fail_repeat = 1          # feature 025: raise fail_next on this many consecutive calls (gateway retries)
 
     async def __call__(self, **kwargs):
         self.calls += 1
         if self.fail_next is not None:
-            exc, self.fail_next = self.fail_next, None
+            exc = self.fail_next
+            self.fail_repeat -= 1
+            if self.fail_repeat <= 0:
+                self.fail_next, self.fail_repeat = None, 1
             raise exc
         inp = kwargs["input"]
         return SimpleNamespace(
@@ -352,6 +356,7 @@ async def test_retry_failed_retryable_job_completes_and_ready_doc_is_not_retryab
     ws = await seed_workspace()
     kb = await seed_kb(ws)
     embed.fail_next = TransportError("upstream 503", retryable=True, status=503)
+    embed.fail_repeat = 3   # feature 025: a transient error now gets retried — fail all 3 gateway attempts
     async with client() as c:
         r = await _upload(c, ws, kb, "faq.txt", _file("faq.txt"))
         await _drain()

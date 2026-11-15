@@ -86,7 +86,7 @@ async def test_parity_retrieval_summary_and_citations(monkeypatch):
         async def search(self, r, qvec, *, top_k, threshold):
             return SearchOutcome("ok", (passage,))
 
-    async def _embed(texts, *, provider, model, api_key, timeout=None, region=None):
+    async def _embed(texts, *, provider, model, api_key, timeout=None, region=None, **_resilience):
         return EmbeddingResult(vectors=((0.1,) * 1024,), usage=NormalizedUsage(3, 0), cost_usd=Decimal("0.000002"),
                                cost_is_estimate=True)
     monkeypatch.setattr(gateway, "embed", _embed)

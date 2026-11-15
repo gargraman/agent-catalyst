@@ -11,7 +11,7 @@ from tests._invoke_helpers import make_context, make_gateway, make_snapshot, tex
 
 def test_slow_stream_stops_at_deadline_with_partial(monkeypatch):
     # US3/AC1-2 (FR-009, SC-003): a stream slower than the deadline → timeout outcome + best-effort partial.
-    async def slow_stream(req, *, api_key, profile=None, timeout=None):
+    async def slow_stream(req, *, api_key, profile=None, timeout=None, **_resilience):
         yield text_ev("partial")
         await asyncio.sleep(1.0)      # far beyond the deadline
         yield usage_ev()

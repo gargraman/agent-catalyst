@@ -22,6 +22,7 @@ class Outcome(str, Enum):
     CONTEXT_OVERFLOW = "context_overflow" # request exceeds the model context budget (no provider call)
     CONFIG_ERROR = "config_error"         # snapshot names an unknown/retired model (fail closed)
     PROVIDER_ERROR = "provider_error"     # gateway surfaced a normalized provider failure
+    PROVIDER_UNAVAILABLE = "provider_unavailable"  # circuit breaker open — refused with zero provider calls (025)
     TIMEOUT = "timeout"                   # deadline reached before terminal stop
     DEGRADED = "degraded"                 # stream ended with no usage report (gateway degraded ERROR)
     OUTPUT_INVALID = "output_invalid"     # json output could not be made schema-valid within budget (M2b, F1/F2)
@@ -96,6 +97,7 @@ class RunRecord:
     error: dict | None = None                     # normalized, api_key-scrubbed (P8)
     first_token_ms: int | None = None             # first TEXT_DELTA of the first pass-through turn (023 US3); None in validated mode
     retrieval: "RetrievalSummary | None" = None   # feature 024: ids/counts/scores only — never passage text
+    retries: int = 0                              # feature 025: Σ(attempts−1) over model turns + embedding calls (FR-015)
 
 
 @dataclass(frozen=True)

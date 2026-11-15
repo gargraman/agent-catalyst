@@ -21,7 +21,7 @@ INPUTS = {"message": "go"}
 
 
 def _delayed_gateway(delay: float):
-    async def _stream(req, *, api_key, profile=None, timeout=None):
+    async def _stream(req, *, api_key, profile=None, timeout=None, **_resilience):
         await asyncio.sleep(delay)
         yield text_ev("hi")
         yield usage_ev()
