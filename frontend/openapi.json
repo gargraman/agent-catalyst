@@ -486,6 +486,23 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/VersionCreate"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
         "responses": {
           "201": {
             "description": "Successful Response",
@@ -3356,15 +3373,581 @@
         }
       }
     },
+    "/api/v1/knowledge-bases/{kb_id}/documents": {
+      "post": {
+        "tags": [
+          "knowledge"
+        ],
+        "summary": "Upload Document",
+        "operationId": "upload_document_api_v1_knowledge_bases__kb_id__documents_post",
+        "parameters": [
+          {
+            "name": "kb_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Kb Id"
+            }
+          },
+          {
+            "name": "workspace",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Workspace"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          },
+          {
+            "name": "X-Workspace-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_upload_document_api_v1_knowledge_bases__kb_id__documents_post"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UploadAccepted"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "knowledge"
+        ],
+        "summary": "List Documents",
+        "operationId": "list_documents_api_v1_knowledge_bases__kb_id__documents_get",
+        "parameters": [
+          {
+            "name": "kb_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Kb Id"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "workspace",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Workspace"
+            }
+          },
+          {
+            "name": "X-Workspace-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_DocumentOut_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/knowledge-bases/{kb_id}/documents/{doc_id}": {
+      "get": {
+        "tags": [
+          "knowledge"
+        ],
+        "summary": "Get Document",
+        "operationId": "get_document_api_v1_knowledge_bases__kb_id__documents__doc_id__get",
+        "parameters": [
+          {
+            "name": "kb_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Kb Id"
+            }
+          },
+          {
+            "name": "doc_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Doc Id"
+            }
+          },
+          {
+            "name": "workspace",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Workspace"
+            }
+          },
+          {
+            "name": "X-Workspace-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DocumentOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "knowledge"
+        ],
+        "summary": "Delete Document",
+        "operationId": "delete_document_api_v1_knowledge_bases__kb_id__documents__doc_id__delete",
+        "parameters": [
+          {
+            "name": "kb_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Kb Id"
+            }
+          },
+          {
+            "name": "doc_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Doc Id"
+            }
+          },
+          {
+            "name": "workspace",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Workspace"
+            }
+          },
+          {
+            "name": "X-Workspace-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace-Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/knowledge-bases/{kb_id}/documents/{doc_id}/retry": {
+      "post": {
+        "tags": [
+          "knowledge"
+        ],
+        "summary": "Retry Document",
+        "operationId": "retry_document_api_v1_knowledge_bases__kb_id__documents__doc_id__retry_post",
+        "parameters": [
+          {
+            "name": "kb_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Kb Id"
+            }
+          },
+          {
+            "name": "doc_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Doc Id"
+            }
+          },
+          {
+            "name": "workspace",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Workspace"
+            }
+          },
+          {
+            "name": "X-Workspace-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace-Id"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UploadAccepted"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/knowledge-bases/{kb_id}/reingest": {
+      "post": {
+        "tags": [
+          "knowledge"
+        ],
+        "summary": "Reingest Kb",
+        "operationId": "reingest_kb_api_v1_knowledge_bases__kb_id__reingest_post",
+        "parameters": [
+          {
+            "name": "kb_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Kb Id"
+            }
+          },
+          {
+            "name": "workspace",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Workspace"
+            }
+          },
+          {
+            "name": "X-Workspace-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace-Id"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReingestAccepted"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/ingestion-jobs": {
       "get": {
         "tags": [
           "knowledge"
         ],
         "summary": "List Ingestion Jobs",
-        "description": "Honest deferred (FR-009): real ingestion (documents/embeddings) is M7. No fabricated jobs are returned.",
+        "description": "Real jobs (feature 024), only for KBs the caller can USE (no existence leak).",
         "operationId": "list_ingestion_jobs_api_v1_ingestion_jobs_get",
         "parameters": [
+          {
+            "name": "kb_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Kb Id"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Limit"
+            }
+          },
           {
             "name": "workspace",
             "in": "query",
@@ -3405,6 +3988,80 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Page_IngestionJobOut_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/ingestion-jobs/{job_id}": {
+      "get": {
+        "tags": [
+          "knowledge"
+        ],
+        "summary": "Get Ingestion Job",
+        "operationId": "get_ingestion_job_api_v1_ingestion_jobs__job_id__get",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          },
+          {
+            "name": "workspace",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Workspace"
+            }
+          },
+          {
+            "name": "X-Workspace-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IngestionJobOut"
                 }
               }
             }
@@ -5214,6 +5871,20 @@
         ],
         "title": "BaselineIn"
       },
+      "Body_upload_document_api_v1_knowledge_bases__kb_id__documents_post": {
+        "properties": {
+          "file": {
+            "type": "string",
+            "contentMediaType": "application/octet-stream",
+            "title": "File"
+          }
+        },
+        "type": "object",
+        "required": [
+          "file"
+        ],
+        "title": "Body_upload_document_api_v1_knowledge_bases__kb_id__documents_post"
+      },
       "CaseIn": {
         "properties": {
           "id": {
@@ -5354,6 +6025,86 @@
           "candidate"
         ],
         "title": "DimensionOut"
+      },
+      "DocumentOut": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "kb_id": {
+            "type": "string",
+            "title": "Kb Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "media_type": {
+            "type": "string",
+            "title": "Media Type"
+          },
+          "size_bytes": {
+            "type": "integer",
+            "title": "Size Bytes"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "chunk_count": {
+            "type": "integer",
+            "title": "Chunk Count"
+          },
+          "live": {
+            "type": "boolean",
+            "title": "Live"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "injection_flags": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Injection Flags"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "kb_id",
+          "name",
+          "media_type",
+          "size_bytes",
+          "status",
+          "chunk_count",
+          "live",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "DocumentOut",
+        "description": "A KB document. Internal fields (storage key, content hash, dedup key) are never exposed."
       },
       "EvalRunIn": {
         "properties": {
@@ -5530,6 +6281,74 @@
           "chunks": {
             "type": "integer",
             "title": "Chunks"
+          },
+          "kb_id": {
+            "type": "string",
+            "title": "Kb Id"
+          },
+          "document_id": {
+            "type": "string",
+            "title": "Document Id"
+          },
+          "kind": {
+            "type": "string",
+            "title": "Kind"
+          },
+          "progress": {
+            "$ref": "#/components/schemas/JobProgress"
+          },
+          "skipped_unchanged": {
+            "type": "boolean",
+            "title": "Skipped Unchanged"
+          },
+          "cost_usd": {
+            "type": "string",
+            "title": "Cost Usd"
+          },
+          "cost_is_estimate": {
+            "type": "boolean",
+            "title": "Cost Is Estimate"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
           }
         },
         "type": "object",
@@ -5539,9 +6358,18 @@
           "kb",
           "status",
           "docs",
-          "chunks"
+          "chunks",
+          "kb_id",
+          "document_id",
+          "kind",
+          "progress",
+          "skipped_unchanged",
+          "cost_usd",
+          "cost_is_estimate",
+          "created_at"
         ],
-        "title": "IngestionJobOut"
+        "title": "IngestionJobOut",
+        "description": "Feature 024: real ingestion jobs. The first six fields keep the pre-024 shape (data.ts IngestionJob)."
       },
       "InvokeIn": {
         "properties": {
@@ -5565,6 +6393,24 @@
         "type": "object",
         "title": "InvokeIn"
       },
+      "JobProgress": {
+        "properties": {
+          "done": {
+            "type": "integer",
+            "title": "Done"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          }
+        },
+        "type": "object",
+        "required": [
+          "done",
+          "total"
+        ],
+        "title": "JobProgress"
+      },
       "KnowledgeBaseCreate": {
         "properties": {
           "slug": {
@@ -5582,7 +6428,7 @@
           "embedding_dim": {
             "type": "integer",
             "title": "Embedding Dim",
-            "default": 1536
+            "default": 1024
           },
           "chunk_config": {
             "additionalProperties": true,
@@ -5657,6 +6503,39 @@
           },
           "access_policy": {
             "$ref": "#/components/schemas/AccessPolicy"
+          },
+          "document_count": {
+            "type": "integer",
+            "title": "Document Count",
+            "default": 0
+          },
+          "chunk_count": {
+            "type": "integer",
+            "title": "Chunk Count",
+            "default": 0
+          },
+          "last_ingested_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Ingested At"
+          },
+          "embedding_provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Embedding Provider"
           }
         },
         "type": "object",
@@ -6180,6 +7059,33 @@
         ],
         "title": "Page[AgentOut]"
       },
+      "Page_DocumentOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/DocumentOut"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "title": "Page[DocumentOut]"
+      },
       "Page_IngestionJobOut_": {
         "properties": {
           "items": {
@@ -6566,6 +7472,97 @@
           "status"
         ],
         "title": "PublishOut"
+      },
+      "ReingestAccepted": {
+        "properties": {
+          "enqueued": {
+            "type": "integer",
+            "title": "Enqueued"
+          },
+          "skipped_active": {
+            "type": "integer",
+            "title": "Skipped Active"
+          }
+        },
+        "type": "object",
+        "required": [
+          "enqueued",
+          "skipped_active"
+        ],
+        "title": "ReingestAccepted"
+      },
+      "RetrievalBindingOut": {
+        "properties": {
+          "kb_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kb Id"
+          },
+          "kb_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kb Name"
+          },
+          "injection": {
+            "type": "string",
+            "title": "Injection"
+          },
+          "retrieval_config": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Retrieval Config"
+          },
+          "embedding_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Embedding Model"
+          },
+          "kb_index_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kb Index Version"
+          },
+          "restricted": {
+            "type": "boolean",
+            "title": "Restricted"
+          }
+        },
+        "type": "object",
+        "required": [
+          "kb_id",
+          "kb_name",
+          "injection",
+          "retrieval_config",
+          "embedding_model",
+          "kb_index_version",
+          "restricted"
+        ],
+        "title": "RetrievalBindingOut",
+        "description": "Feature 024. A binding the viewer may not USE renders masked: no KB id/name/model/version (analyze H2)."
       },
       "RevokeUserIn": {
         "properties": {
@@ -7272,6 +8269,22 @@
         "type": "object",
         "title": "ToolPatch"
       },
+      "UploadAccepted": {
+        "properties": {
+          "document": {
+            "$ref": "#/components/schemas/DocumentOut"
+          },
+          "job": {
+            "$ref": "#/components/schemas/IngestionJobOut"
+          }
+        },
+        "type": "object",
+        "required": [
+          "document",
+          "job"
+        ],
+        "title": "UploadAccepted"
+      },
       "ValidationError": {
         "properties": {
           "loc": {
@@ -7312,6 +8325,39 @@
         ],
         "title": "ValidationError"
       },
+      "VersionCreate": {
+        "properties": {
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Label"
+          },
+          "retrieval_bindings": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Retrieval Bindings"
+          }
+        },
+        "type": "object",
+        "title": "VersionCreate",
+        "description": "Feature 024 (research D12). Optional body of POST /agents/{id}/versions. `retrieval_bindings` omitted (or\nnull) \u21d2 the latest version's bindings are COPIED (G2); `[]` \u21d2 none. Items are validated in the router so a bad\nbinding is a 400 input.invalid naming the field (not a framework 422)."
+      },
       "VersionOut": {
         "properties": {
           "id": {
@@ -7342,6 +8388,13 @@
             "type": "string",
             "format": "date-time",
             "title": "Created At"
+          },
+          "retrieval_bindings": {
+            "items": {
+              "$ref": "#/components/schemas/RetrievalBindingOut"
+            },
+            "type": "array",
+            "title": "Retrieval Bindings"
           }
         },
         "type": "object",
@@ -7550,6 +8603,14 @@
           "remainingUsd": {
             "type": "number",
             "title": "Remainingusd"
+          },
+          "breakdown": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Breakdown",
+            "default": {}
           }
         },
         "type": "object",

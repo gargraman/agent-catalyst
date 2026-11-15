@@ -562,6 +562,76 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/knowledge-bases/{kb_id}/documents": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Documents */
+        get: operations["list_documents_api_v1_knowledge_bases__kb_id__documents_get"];
+        put?: never;
+        /** Upload Document */
+        post: operations["upload_document_api_v1_knowledge_bases__kb_id__documents_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/knowledge-bases/{kb_id}/documents/{doc_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Document */
+        get: operations["get_document_api_v1_knowledge_bases__kb_id__documents__doc_id__get"];
+        put?: never;
+        post?: never;
+        /** Delete Document */
+        delete: operations["delete_document_api_v1_knowledge_bases__kb_id__documents__doc_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/knowledge-bases/{kb_id}/documents/{doc_id}/retry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Retry Document */
+        post: operations["retry_document_api_v1_knowledge_bases__kb_id__documents__doc_id__retry_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/knowledge-bases/{kb_id}/reingest": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Reingest Kb */
+        post: operations["reingest_kb_api_v1_knowledge_bases__kb_id__reingest_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/ingestion-jobs": {
         parameters: {
             query?: never;
@@ -571,9 +641,26 @@ export interface paths {
         };
         /**
          * List Ingestion Jobs
-         * @description Honest deferred (FR-009): real ingestion (documents/embeddings) is M7. No fabricated jobs are returned.
+         * @description Real jobs (feature 024), only for KBs the caller can USE (no existence leak).
          */
         get: operations["list_ingestion_jobs_api_v1_ingestion_jobs_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/ingestion-jobs/{job_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Ingestion Job */
+        get: operations["get_ingestion_job_api_v1_ingestion_jobs__job_id__get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1050,6 +1137,11 @@ export interface components {
                 [key: string]: string;
             };
         };
+        /** Body_upload_document_api_v1_knowledge_bases__kb_id__documents_post */
+        Body_upload_document_api_v1_knowledge_bases__kb_id__documents_post: {
+            /** File */
+            file: string;
+        };
         /** CaseIn */
         CaseIn: {
             /** Id */
@@ -1090,6 +1182,46 @@ export interface components {
             baseline?: number | null;
             /** Delta */
             delta?: number | null;
+        };
+        /**
+         * DocumentOut
+         * @description A KB document. Internal fields (storage key, content hash, dedup key) are never exposed.
+         */
+        DocumentOut: {
+            /** Id */
+            id: string;
+            /** Kb Id */
+            kb_id: string;
+            /** Name */
+            name: string;
+            /** Media Type */
+            media_type: string;
+            /** Size Bytes */
+            size_bytes: number;
+            /** Status */
+            status: string;
+            /** Chunk Count */
+            chunk_count: number;
+            /** Live */
+            live: boolean;
+            /** Error */
+            error?: {
+                [key: string]: unknown;
+            } | null;
+            /** Injection Flags */
+            injection_flags?: {
+                [key: string]: number;
+            };
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
         };
         /** EvalRunIn */
         EvalRunIn: {
@@ -1152,7 +1284,10 @@ export interface components {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
         };
-        /** IngestionJobOut */
+        /**
+         * IngestionJobOut
+         * @description Feature 024: real ingestion jobs. The first six fields keep the pre-024 shape (data.ts IngestionJob).
+         */
         IngestionJobOut: {
             /** Id */
             id: string;
@@ -1166,6 +1301,32 @@ export interface components {
             docs: number;
             /** Chunks */
             chunks: number;
+            /** Kb Id */
+            kb_id: string;
+            /** Document Id */
+            document_id: string;
+            /** Kind */
+            kind: string;
+            progress: components["schemas"]["JobProgress"];
+            /** Skipped Unchanged */
+            skipped_unchanged: boolean;
+            /** Cost Usd */
+            cost_usd: string;
+            /** Cost Is Estimate */
+            cost_is_estimate: boolean;
+            /** Error */
+            error?: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Started At */
+            started_at?: string | null;
+            /** Finished At */
+            finished_at?: string | null;
         };
         /** InvokeIn */
         InvokeIn: {
@@ -1175,6 +1336,13 @@ export interface components {
             };
             /** Version Id */
             version_id?: string | null;
+        };
+        /** JobProgress */
+        JobProgress: {
+            /** Done */
+            done: number;
+            /** Total */
+            total: number;
         };
         /** KnowledgeBaseCreate */
         KnowledgeBaseCreate: {
@@ -1186,7 +1354,7 @@ export interface components {
             embedding_model: string;
             /**
              * Embedding Dim
-             * @default 1536
+             * @default 1024
              */
             embedding_dim: number;
             /**
@@ -1229,6 +1397,20 @@ export interface components {
              */
             created_at: string;
             access_policy: components["schemas"]["AccessPolicy"];
+            /**
+             * Document Count
+             * @default 0
+             */
+            document_count: number;
+            /**
+             * Chunk Count
+             * @default 0
+             */
+            chunk_count: number;
+            /** Last Ingested At */
+            last_ingested_at?: string | null;
+            /** Embedding Provider */
+            embedding_provider?: string | null;
         };
         /** KnowledgeBasePatch */
         KnowledgeBasePatch: {
@@ -1415,6 +1597,13 @@ export interface components {
             /** Next Cursor */
             next_cursor?: string | null;
         };
+        /** Page[DocumentOut] */
+        Page_DocumentOut_: {
+            /** Items */
+            items: components["schemas"]["DocumentOut"][];
+            /** Next Cursor */
+            next_cursor?: string | null;
+        };
         /** Page[IngestionJobOut] */
         Page_IngestionJobOut_: {
             /** Items */
@@ -1557,6 +1746,35 @@ export interface components {
              * @default Publish is advisory in this release: the eval verdict is reported but does NOT gate publishing until the judge is κ-calibrated (owner decision #3).
              */
             advisory_note: string;
+        };
+        /** ReingestAccepted */
+        ReingestAccepted: {
+            /** Enqueued */
+            enqueued: number;
+            /** Skipped Active */
+            skipped_active: number;
+        };
+        /**
+         * RetrievalBindingOut
+         * @description Feature 024. A binding the viewer may not USE renders masked: no KB id/name/model/version (analyze H2).
+         */
+        RetrievalBindingOut: {
+            /** Kb Id */
+            kb_id: string | null;
+            /** Kb Name */
+            kb_name: string | null;
+            /** Injection */
+            injection: string;
+            /** Retrieval Config */
+            retrieval_config: {
+                [key: string]: unknown;
+            };
+            /** Embedding Model */
+            embedding_model: string | null;
+            /** Kb Index Version */
+            kb_index_version: number | null;
+            /** Restricted */
+            restricted: boolean;
         };
         /**
          * RevokeUserIn
@@ -1848,6 +2066,11 @@ export interface components {
                 [key: string]: unknown;
             } | null;
         };
+        /** UploadAccepted */
+        UploadAccepted: {
+            document: components["schemas"]["DocumentOut"];
+            job: components["schemas"]["IngestionJobOut"];
+        };
         /** ValidationError */
         ValidationError: {
             /** Location */
@@ -1860,6 +2083,20 @@ export interface components {
             input?: unknown;
             /** Context */
             ctx?: Record<string, never>;
+        };
+        /**
+         * VersionCreate
+         * @description Feature 024 (research D12). Optional body of POST /agents/{id}/versions. `retrieval_bindings` omitted (or
+         *     null) ⇒ the latest version's bindings are COPIED (G2); `[]` ⇒ none. Items are validated in the router so a bad
+         *     binding is a 400 input.invalid naming the field (not a framework 422).
+         */
+        VersionCreate: {
+            /** Label */
+            label?: string | null;
+            /** Retrieval Bindings */
+            retrieval_bindings?: {
+                [key: string]: unknown;
+            }[] | null;
         };
         /** VersionOut */
         VersionOut: {
@@ -1880,6 +2117,8 @@ export interface components {
              * Format: date-time
              */
             created_at: string;
+            /** Retrieval Bindings */
+            retrieval_bindings?: components["schemas"]["RetrievalBindingOut"][];
         };
         /**
          * WorkspaceMembershipOut
@@ -1956,6 +2195,13 @@ export interface components {
             capUsd: number;
             /** Remainingusd */
             remainingUsd: number;
+            /**
+             * Breakdown
+             * @default {}
+             */
+            breakdown: {
+                [key: string]: string;
+            };
         };
     };
     responses: never;
@@ -2188,7 +2434,11 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["VersionCreate"] | null;
+            };
+        };
         responses: {
             /** @description Successful Response */
             201: {
@@ -3459,9 +3709,230 @@ export interface operations {
             };
         };
     };
+    list_documents_api_v1_knowledge_bases__kb_id__documents_get: {
+        parameters: {
+            query?: {
+                status?: string | null;
+                limit?: number | null;
+                workspace?: string | null;
+            };
+            header?: {
+                "X-Workspace-Id"?: string | null;
+            };
+            path: {
+                kb_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_DocumentOut_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    upload_document_api_v1_knowledge_bases__kb_id__documents_post: {
+        parameters: {
+            query?: {
+                workspace?: string | null;
+            };
+            header?: {
+                "Idempotency-Key"?: string | null;
+                "X-Workspace-Id"?: string | null;
+            };
+            path: {
+                kb_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["Body_upload_document_api_v1_knowledge_bases__kb_id__documents_post"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UploadAccepted"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_document_api_v1_knowledge_bases__kb_id__documents__doc_id__get: {
+        parameters: {
+            query?: {
+                workspace?: string | null;
+            };
+            header?: {
+                "X-Workspace-Id"?: string | null;
+            };
+            path: {
+                kb_id: string;
+                doc_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DocumentOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_document_api_v1_knowledge_bases__kb_id__documents__doc_id__delete: {
+        parameters: {
+            query?: {
+                workspace?: string | null;
+            };
+            header?: {
+                "X-Workspace-Id"?: string | null;
+            };
+            path: {
+                kb_id: string;
+                doc_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    retry_document_api_v1_knowledge_bases__kb_id__documents__doc_id__retry_post: {
+        parameters: {
+            query?: {
+                workspace?: string | null;
+            };
+            header?: {
+                "X-Workspace-Id"?: string | null;
+            };
+            path: {
+                kb_id: string;
+                doc_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UploadAccepted"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reingest_kb_api_v1_knowledge_bases__kb_id__reingest_post: {
+        parameters: {
+            query?: {
+                workspace?: string | null;
+            };
+            header?: {
+                "X-Workspace-Id"?: string | null;
+            };
+            path: {
+                kb_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReingestAccepted"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_ingestion_jobs_api_v1_ingestion_jobs_get: {
         parameters: {
             query?: {
+                kb_id?: string | null;
+                status?: string | null;
+                limit?: number | null;
                 workspace?: string | null;
             };
             header?: {
@@ -3479,6 +3950,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Page_IngestionJobOut_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_ingestion_job_api_v1_ingestion_jobs__job_id__get: {
+        parameters: {
+            query?: {
+                workspace?: string | null;
+            };
+            header?: {
+                "X-Workspace-Id"?: string | null;
+            };
+            path: {
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IngestionJobOut"];
                 };
             };
             /** @description Validation Error */
