@@ -85,6 +85,7 @@ async def _embedder_for(ws: str, model: str):
             raise key_error
         return await gateway.embed(texts, provider=profile.provider, model=profile.model, api_key=api_key,
                                    region=settings.aws_region if profile.provider == "bedrock" else None,
+                                   timeout=settings.ingest_embed_timeout_s,   # 025: wire-bounded — never holds a slot forever
                                    guard=get_guard(), traffic_class="batch")   # 025: ingestion is BATCH traffic
 
     return embed, max(1, profile.max_batch or 100)

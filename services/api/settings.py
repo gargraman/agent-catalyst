@@ -142,6 +142,9 @@ class Settings(BaseSettings):
     # Heartbeat lease (research D5): a job whose heartbeat is older than stale_after is reaped as interrupted.
     ingest_stale_after_s: int = Field(default=120, ge=30, alias="AC_INGEST_STALE_AFTER_S")
     ingest_heartbeat_s: int = Field(default=15, ge=1, alias="AC_INGEST_HEARTBEAT_S")
+    # 025 US3 review: per-attempt wire bound for ingestion embeddings. Ingestion has no outer deadline, so without it a
+    # hung provider call would hold a batch bulkhead slot forever (the heartbeat keeps the reaper from failing it).
+    ingest_embed_timeout_s: float = Field(default=60.0, gt=0, alias="AC_INGEST_EMBED_TIMEOUT_S")
     # Provider resilience (feature 025, contract api §3): retry / breaker / batch bulkhead. Every value must be > 0 —
     # bad config fails settings load (startup), never the first request. max_attempts=1 is the retry kill switch.
     provider_max_attempts: int = Field(default=3, gt=0, alias="AC_PROVIDER_MAX_ATTEMPTS")

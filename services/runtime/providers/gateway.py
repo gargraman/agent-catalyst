@@ -119,67 +119,70 @@ async def stream(
     guard = guard or resilience.default_guard()
     labels = _labels(req.provider, req.model, traffic_class)
     started = guard.clock()
-    # Breaker admission once per call, AFTER the config checks above (S10: they never touch the breaker).
-    admission = await guard.admit(req.provider, req.model, traffic_class, timeout)
-    if admission is Admission.REFUSED:      # S9: fail fast, zero transport calls
-        yield NormalizedStreamEvent(EventType.ERROR, {"error": dict(_UNAVAILABLE), "attempts": 0})
-        return
-    was_trial = admission is Admission.TRIAL
-    attempt = 0
-    while True:
-        attempt += 1
-        wire_timeout = timeout if attempt == 1 else guard.remaining(started, timeout)
-        stream_iter = adapter.stream(req, api_key=api_key, profile=profile, timeout=wire_timeout)
-        saw_usage = False
-        saw_error = False
-        surfaced = False
-        failure: TransportError | None = None
+    # 025 US3: a batch call holds one (provider, model) slot across admission + every attempt (K1); live never waits.
+    async with guard.bulkhead(req.provider, req.model, traffic_class) as queued:
+        first_timeout = guard.after_queue(timeout, queued)   # queue time is spent from the call's deadline
+        # Breaker admission once per call, AFTER the config checks above (S10: they never touch the breaker).
+        admission = await guard.admit(req.provider, req.model, traffic_class, first_timeout)
+        if admission is Admission.REFUSED:      # S9: fail fast, zero transport calls
+            yield NormalizedStreamEvent(EventType.ERROR, {"error": dict(_UNAVAILABLE), "attempts": 0})
+            return
+        was_trial = admission is Admission.TRIAL
+        attempt = 0
         while True:
-            try:
-                event = await stream_iter.__anext__()
-            except StopAsyncIteration:
-                break
-            except TransportError as exc:  # ONLY transport failures normalize; our own bugs propagate (P8/F3)
-                failure = exc
-                break
+            attempt += 1
+            wire_timeout = first_timeout if attempt == 1 else guard.remaining(started, timeout)
+            stream_iter = adapter.stream(req, api_key=api_key, profile=profile, timeout=wire_timeout)
+            saw_usage = False
+            saw_error = False
+            surfaced = False
+            failure: TransportError | None = None
+            while True:
+                try:
+                    event = await stream_iter.__anext__()
+                except StopAsyncIteration:
+                    break
+                except TransportError as exc:  # ONLY transport failures normalize; our own bugs propagate (P8/F3)
+                    failure = exc
+                    break
 
-            # Post-processing deliberately OUTSIDE the except: a failure here is our bug, not a provider error.
-            if event.type is EventType.USAGE:
-                saw_usage = True
-                usage = event.data["usage"]
-                # OUR cost, from OUR profile (never litellm's). NormalizedUsage.cost_usd is a float by IR
-                # design — a convenience/display value; the authoritative numeric(12,6) Decimal is applied at
-                # persistence (M2) via quantize_usd straight off compute_cost, not round-tripped from this float.
-                priced = replace(usage, cost_usd=float(quantize_usd(compute_cost(profile, usage))))
-                substitutions = _merge_substitutions(preflight, event.data.get("substitutions", []))
-                data = {**event.data, "usage": priced, "substitutions": substitutions, "attempts": attempt}
-                if getattr(profile, "provisional", False):
-                    data["cost_is_estimate"] = True
-                event = NormalizedStreamEvent(EventType.USAGE, data)
-            elif event.type is EventType.ERROR:
-                saw_error = True  # the adapter surfaced its own failure — don't append a spurious degraded (F2)
-                event = NormalizedStreamEvent(EventType.ERROR, {**event.data, "attempts": attempt})
-            elif event.type in _SURFACED:
-                surfaced = True
-            yield event
+                # Post-processing deliberately OUTSIDE the except: a failure here is our bug, not a provider error.
+                if event.type is EventType.USAGE:
+                    saw_usage = True
+                    usage = event.data["usage"]
+                    # OUR cost, from OUR profile (never litellm's). NormalizedUsage.cost_usd is a float by IR
+                    # design — a convenience/display value; the authoritative numeric(12,6) Decimal is applied at
+                    # persistence (M2) via quantize_usd straight off compute_cost, not round-tripped from this float.
+                    priced = replace(usage, cost_usd=float(quantize_usd(compute_cost(profile, usage))))
+                    substitutions = _merge_substitutions(preflight, event.data.get("substitutions", []))
+                    data = {**event.data, "usage": priced, "substitutions": substitutions, "attempts": attempt}
+                    if getattr(profile, "provisional", False):
+                        data["cost_is_estimate"] = True
+                    event = NormalizedStreamEvent(EventType.USAGE, data)
+                elif event.type is EventType.ERROR:
+                    saw_error = True  # the adapter surfaced its own failure — don't append a spurious degraded (F2)
+                    event = NormalizedStreamEvent(EventType.ERROR, {**event.data, "attempts": attempt})
+                elif event.type in _SURFACED:
+                    surfaced = True
+                yield event
 
-        if failure is None:
-            # The provider answered (usage, adapter ERROR or degraded end) — healthy from the breaker's view.
-            await guard.record(req.provider, req.model, traffic_class, success=True, was_trial=was_trial)
-            break
-        if failure.retryable:               # only transient failures count (S3: non-transient leaves the breaker alone)
-            await guard.record(req.provider, req.model, traffic_class, success=False, was_trial=was_trial)
-        # A failed half-open trial re-opened the breaker — do not retry it (owner-approved 2026-11-15).
-        if failure.retryable and not surfaced and not was_trial and attempt < guard.policy.max_attempts:
-            wait = guard.retry_wait(attempt + 1, getattr(failure, "retry_after", None))
-            if guard.fits_deadline(started, wait, timeout):
-                guard.emit("retry", labels)
-                await guard.sleep(wait)
-                continue
-        error = _normalize_error(failure, api_key)
-        error["attempts"] = attempt
-        yield NormalizedStreamEvent(EventType.ERROR, {"error": error, "attempts": attempt})
-        return
+            if failure is None:
+                # The provider answered (usage, adapter ERROR or degraded end) — healthy from the breaker's view.
+                await guard.record(req.provider, req.model, traffic_class, success=True, was_trial=was_trial)
+                break
+            if failure.retryable:               # only transient failures count (S3: non-transient leaves the breaker alone)
+                await guard.record(req.provider, req.model, traffic_class, success=False, was_trial=was_trial)
+            # A failed half-open trial re-opened the breaker — do not retry it (owner-approved 2026-11-15).
+            if failure.retryable and not surfaced and not was_trial and attempt < guard.policy.max_attempts:
+                wait = guard.retry_wait(attempt + 1, getattr(failure, "retry_after", None))
+                if guard.fits_deadline(started, wait, timeout):
+                    guard.emit("retry", labels)
+                    await guard.sleep(wait)
+                    continue
+            error = _normalize_error(failure, api_key)
+            error["attempts"] = attempt
+            yield NormalizedStreamEvent(EventType.ERROR, {"error": error, "attempts": attempt})
+            return
 
     if not saw_usage and not saw_error:
         # Completed with neither a usage report nor an adapter-surfaced error → degraded, not a silent
@@ -245,30 +248,34 @@ async def embed(
             kwargs["dimensions"] = profile.dimension
         if timeout is not None:
             kwargs["timeout"] = timeout
-        admission = await guard.admit(provider, model, traffic_class, timeout)
-        if admission is Admission.REFUSED:  # §5: refusal ⇒ typed, retryable EmbeddingError, zero transport calls
-            raise EmbeddingError(_UNAVAILABLE["message"], type="provider_unavailable", retryable=True,
-                                 attempts=total_attempts)
-        was_trial = admission is Admission.TRIAL
-        attempt = 0
-        while True:
-            attempt += 1
-            try:
-                resp = await transport.embed(**kwargs)
-                await guard.record(provider, model, traffic_class, success=True, was_trial=was_trial)
-                break
-            except TransportError as exc:
-                if exc.retryable:
-                    await guard.record(provider, model, traffic_class, success=False, was_trial=was_trial)
-                if exc.retryable and not was_trial and attempt < guard.policy.max_attempts:
-                    wait = guard.retry_wait(attempt + 1, getattr(exc, "retry_after", None))
-                    if guard.fits_deadline(started, wait, timeout):
-                        guard.emit("retry", labels)
-                        await guard.sleep(wait)
-                        continue
-                err = _normalize_error(exc, api_key or "")
-                raise EmbeddingError(err["message"], type=err["type"], retryable=err["retryable"],
-                                     attempts=total_attempts + attempt) from None
+        async with guard.bulkhead(provider, model, traffic_class) as queued:   # 025 US3: capped per batch request (K1)
+            first_timeout = guard.after_queue(timeout, queued)
+            if first_timeout is not None:
+                kwargs["timeout"] = first_timeout
+            admission = await guard.admit(provider, model, traffic_class, first_timeout)
+            if admission is Admission.REFUSED:  # §5: refusal ⇒ typed, retryable EmbeddingError, zero transport calls
+                raise EmbeddingError(_UNAVAILABLE["message"], type="provider_unavailable", retryable=True,
+                                     attempts=total_attempts)
+            was_trial = admission is Admission.TRIAL
+            attempt = 0
+            while True:
+                attempt += 1
+                try:
+                    resp = await transport.embed(**kwargs)
+                    await guard.record(provider, model, traffic_class, success=True, was_trial=was_trial)
+                    break
+                except TransportError as exc:
+                    if exc.retryable:
+                        await guard.record(provider, model, traffic_class, success=False, was_trial=was_trial)
+                    if exc.retryable and not was_trial and attempt < guard.policy.max_attempts:
+                        wait = guard.retry_wait(attempt + 1, getattr(exc, "retry_after", None))
+                        if guard.fits_deadline(started, wait, timeout):
+                            guard.emit("retry", labels)
+                            await guard.sleep(wait)
+                            continue
+                    err = _normalize_error(exc, api_key or "")
+                    raise EmbeddingError(err["message"], type=err["type"], retryable=err["retryable"],
+                                         attempts=total_attempts + attempt) from None
         total_attempts += attempt
         items = sorted((_embedding_item(d) for d in resp.data), key=lambda t: (t[0] is None, t[0] or 0))
         if len(items) != len(batch):

@@ -13,6 +13,7 @@ from dataclasses import replace
 from typing import Sequence
 
 from runtime.invoke import invoke_result
+from runtime.providers import resilience
 
 from evals.breaker import CircuitBreaker
 from evals.deterministic import run_deterministic
@@ -59,30 +60,14 @@ async def run_eval(
     # is nothing to bypass — the eval source is the signal a future cache will read to avoid masking drift).
     eval_ctx = replace(ctx, source="eval")
 
+    # 025 US3 (option A): one eval-case slot per candidate (provider, model), shared across every concurrent eval run in
+    # the process and taken BEFORE invoke, so platform queueing is never charged to the case deadline (drift honesty).
+    guard = getattr(ctx, "guard", None) or resilience.default_guard()
+    mc = candidate_snapshot.model_config
     case_scores: list[CaseScore] = []
     for case in cases:
-        # 1) Candidate output via the SAME runtime (P6). allow_cache=off ≡ eval source (see above).
-        cand = await invoke_result(candidate_snapshot, {"message": case.input}, eval_ctx)
-        cand_cost = cand.run.cost_usd if cand.run is not None else None
-        cand_latency = cand.run.latency_ms if cand.run is not None else None
-
-        # 2) Deterministic pre-filter — a hard fail forces FAIL and NEVER reaches the judge (FR-007/SC-002).
-        det = run_deterministic(cand.text, case.det_spec())
-        if det.hard_fail:
-            case_scores.append(CaseScore(case.id, det, None, 0.0, cand_cost, cand_latency, failed=True))
-            continue
-
-        # 3) Advisory judge via the instance breaker (F8). Baseline per-case output drives the pairwise call.
-        # The judge is ADVISORY and must never crash the run: a breaker-open or any judge/transport error
-        # degrades to a fail-closed (low_confidence) verdict for this case, exactly like unparseable judge JSON.
-        baseline_out = baseline.per_case.get(case.id, "")
-        try:
-            jv = await breaker.call(judge_case, case, baseline_out, cand.text, eval_ctx, rng=rng)
-        except Exception as exc:  # CircuitOpenError or a judge/transport failure — never abort the suite
-            jv = _fail_closed(f"judge unavailable ({type(exc).__name__}) — advisory score skipped")
-        quality = score_quality(jv.rubric_scores, case.rubric_weights())
-        case_scores.append(
-            CaseScore(case.id, det, jv, quality, cand_cost, cand_latency, failed=not det.passed))
+        async with guard.case_slot(mc["provider"], mc["model"]):
+            case_scores.append(await _score_case(case, candidate_snapshot, baseline, eval_ctx, breaker, rng))
 
     # ---- aggregate -------------------------------------------------------------------------------
     n = len(case_scores)
@@ -147,3 +132,27 @@ async def run_eval(
         workspace_id=workspace_id,
         judge_version=JUDGE_VERSION,
     )
+
+
+async def _score_case(case: EvalCase, candidate_snapshot, baseline: BaselineAggregate, eval_ctx,
+                      breaker: CircuitBreaker, rng) -> CaseScore:
+    # 1) Candidate output via the SAME runtime (P6). allow_cache=off ≡ eval source (see above).
+    cand = await invoke_result(candidate_snapshot, {"message": case.input}, eval_ctx)
+    cand_cost = cand.run.cost_usd if cand.run is not None else None
+    cand_latency = cand.run.latency_ms if cand.run is not None else None
+
+    # 2) Deterministic pre-filter — a hard fail forces FAIL and NEVER reaches the judge (FR-007/SC-002).
+    det = run_deterministic(cand.text, case.det_spec())
+    if det.hard_fail:
+        return CaseScore(case.id, det, None, 0.0, cand_cost, cand_latency, failed=True)
+
+    # 3) Advisory judge via the instance breaker (F8). Baseline per-case output drives the pairwise call.
+    # The judge is ADVISORY and must never crash the run: a breaker-open or any judge/transport error
+    # degrades to a fail-closed (low_confidence) verdict for this case, exactly like unparseable judge JSON.
+    baseline_out = baseline.per_case.get(case.id, "")
+    try:
+        jv = await breaker.call(judge_case, case, baseline_out, cand.text, eval_ctx, rng=rng)
+    except Exception as exc:  # CircuitOpenError or a judge/transport failure — never abort the suite
+        jv = _fail_closed(f"judge unavailable ({type(exc).__name__}) — advisory score skipped")
+    quality = score_quality(jv.rubric_scores, case.rubric_weights())
+    return CaseScore(case.id, det, jv, quality, cand_cost, cand_latency, failed=not det.passed)

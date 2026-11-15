@@ -102,8 +102,8 @@ independently and US4's preflight can never block US1.
 - [X] T029 [P] [US3] Red: create `services/tests/test_resilience_parity.py` — one fault script (fail×1 then success) through playground, published (`source="api"`), channel (`source="channel"`), and an eval case → identical `RunRecord.retries`, outcome, `cost_usd`; only the class differs (FR-014/P6). Focused: `pytest -q tests/test_resilience_parity.py`
 
 ### Green (US3)
-- [ ] T030 [US3] Green: in `services/runtime/providers/resilience.py` add the per-(provider, model) lazy `asyncio.Semaphore(batch_concurrency)` map, acquired before admission and held across the attempt loop for class `batch` only (observer `batch_wait` with seconds waited), and the cross-check `also_check=BreakerKey(p, m, "live")` for batch admissions. Focused: T027
-- [ ] T031 [US3] Green: `services/api/ingest_executor.py` pass `traffic_class="batch"`; confirm `evals/runner.py` + `evals/judge.py` go through `invoke`/gateway with the eval ctx (`source="eval"` → batch) — change code only if T028 is Red for a real gap. Keep `evals/breaker.py` unchanged (research D7). Focused: T028, T029
+- [X] T030 [US3] Green: in `services/runtime/providers/resilience.py` add the per-(provider, model) lazy `asyncio.Semaphore(batch_concurrency)` map, acquired before admission and held across the attempt loop for class `batch` only (observer `batch_wait` with seconds waited), and the cross-check `also_check=BreakerKey(p, m, "live")` for batch admissions. Focused: T027
+- [X] T031 [US3] Green: `services/api/ingest_executor.py` pass `traffic_class="batch"`; confirm `evals/runner.py` + `evals/judge.py` go through `invoke`/gateway with the eval ctx (`source="eval"` → batch) — change code only if T028 is Red for a real gap. Keep `evals/breaker.py` unchanged (research D7). Focused: T028, T029
 
 **Checkpoint US3**: quickstart §1 US3-1…US3-3 and §2 parity pass.
 
@@ -276,6 +276,42 @@ on confirmation implement T013 → T014 → T015 → T016, re-running the focuse
   - Design pins added by the tests: `batch_wait` emitted on EVERY batch acquisition (zero waits included, so the histogram
     has honest percentiles), labels exactly {provider, model, seconds}; the semaphore is per Guard per (provider, model);
     a waiter cancelled while queued must not leak a slot; embeddings are capped per batch request.
+- US3 Green (2026-11-15) — T030–T031:
+  - T030 `resilience.py`: `Guard.bulkhead(provider, model, cls)` async context manager — lazy per-(p, m)
+    `asyncio.Semaphore(batch_concurrency)`, batch only, `batch_wait{provider, model, seconds}` on every acquisition.
+    `gateway.stream` holds it across admission + the whole attempt loop (the usage-less "degraded" tail runs after
+    release — no provider call there); `gateway.embed` holds it per batch request. The live cross-check
+    (`also_check=BreakerKey(p, m, "live")`) already shipped in T022. K3 relies on invoke's outer `asyncio.timeout` —
+    no gateway-level queue timeout. `api/metrics.py`: `ac_batch_queue_wait_seconds{provider, model}` histogram fed
+    from the `batch_wait` observer event.
+  - T031: no code change — ingestion already passes `traffic_class="batch"` (T025); eval candidate + judge go through
+    invoke with `source="eval"` ⇒ batch; T028/T029 green before and after. `evals/breaker.py` untouched (D7).
+  - Focused: `test_resilience_bulkhead.py` 10/10 (7 Red → Green); with T028/T029 files + purity 41 passed.
+  - Full: fast 916 passed / 1 skipped / 1 failed (pre-existing `test_heldout_gate_sc004`); integration 365 passed /
+    4 skipped / 0 failed.
+  - Known limits (not new): effective cap = cap × replicas (D6); attempt-1 wire timeout is still the full `timeout`
+    even after a queue wait — the run's outer deadline is the authoritative bound.
+- US3 review follow-up (2026-11-15, `/code-review high --fix` + owner chose option A):
+  - Review auto-fixes (verified: fast + integration green): bulkhead semaphores re-keyed per event loop; both
+    `gateway.stream` call sites in `runtime/invoke.py` wrapped in `contextlib.aclosing` (slot released on early exit).
+  - Finding: gateway queue wait sat INSIDE invoke's `asyncio.timeout(deadline)` → under concurrent eval runs, cases
+    TIMEOUT for platform reasons and drift blames the version. Note: `run_eval` was already sequential per run, so the
+    contention is ACROSS concurrent runs (+ ingestion). Fix (option A): `Guard.case_slot(provider, model)` — a SEPARATE
+    semaphore map (sharing the bulkhead's would deadlock), cap = `batch_concurrency`, shared across all runs in the
+    process; `run_eval` holds it around each case (candidate + judge) BEFORE invoke. Observer `eval_case_wait` →
+    `ac_eval_case_wait_seconds{provider, model}`. Per-case body extracted to `evals/runner._score_case` (no logic change).
+  - First-attempt wire timeout (stream + embed) and breaker trial TTL now deduct bulkhead queue time
+    (`Guard.after_queue`, floored at `min_attempt_budget_s`); an uncontended acquire reports exactly 0 wait, so
+    `test_gateway.py`'s exact-`timeout` pin holds.
+  - Ingestion embeddings are wire-bounded: `AC_INGEST_EMBED_TIMEOUT_S` (default 60, `> 0`) → `gateway.embed(timeout=…)`.
+  - Red: `tests/test_resilience_eval_slots.py` 8 failed for the intended reasons (real TIMEOUTs across 3 concurrent
+    runs; no `case_slot`; no metric; wire timeout 5.0 after a 0.19 s queue; no `timeout` kwarg / setting) → Green 8/8,
+    stable ×3.
+  - Full: fast 924 passed / 1 skipped / 1 failed (pre-existing `test_heldout_gate_sc004`); integration 365 passed /
+    4 skipped / 0 failed.
+  - Still open (not Must): stream/embed duplicate the slot→admit→attempt scaffold (Polish refactor candidate);
+    ingestion and eval retrieval embeds share the embed bulkhead with no fairness (v1.x); judge calls on a model
+    other than the candidate's still use only the gateway bulkhead.
 - Fixtures changed in T040: _pending_
 - T046 final counts: _pending_
 - Not verified (carried from quickstart): real provider Retry-After shapes, real 429 bursts, threshold suitability, multi-replica beyond simulated instances.

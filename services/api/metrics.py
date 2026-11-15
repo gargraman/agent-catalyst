@@ -86,6 +86,16 @@ ac_breaker_degraded_total = Counter(
     "ac_breaker_degraded_total", "Breaker decisions taken on the local store because the shared store failed (alert)",
     registry=REGISTRY,
 )
+ac_batch_queue_wait_seconds = Histogram(
+    "ac_batch_queue_wait_seconds", "Time a batch (eval/ingestion) provider call waited for a bulkhead slot (025 US3)",
+    ["provider", "model"], buckets=(0, 0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 30, 60), registry=REGISTRY,
+)
+
+
+ac_eval_case_wait_seconds = Histogram(
+    "ac_eval_case_wait_seconds", "Time an eval case waited for a per-model case slot before invoke (025 US3, option A)",
+    ["provider", "model"], buckets=(0, 0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 30, 60, 120), registry=REGISTRY,
+)
 
 
 def record_resilience_event(name: str, labels: dict) -> None:
@@ -99,6 +109,10 @@ def record_resilience_event(name: str, labels: dict) -> None:
             ac_breaker_refusals_total.labels(labels["provider"], labels["model"], labels["cls"]).inc()
         elif name == "breaker_degraded":
             ac_breaker_degraded_total.inc()
+        elif name == "eval_case_wait":
+            ac_eval_case_wait_seconds.labels(labels["provider"], labels["model"]).observe(labels["seconds"])
+        elif name == "batch_wait":
+            ac_batch_queue_wait_seconds.labels(labels["provider"], labels["model"]).observe(labels["seconds"])
     except Exception as e:  # noqa: BLE001
         _log.debug("resilience metric %s failed: %s", name, e)
 

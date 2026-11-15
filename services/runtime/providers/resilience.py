@@ -1,7 +1,7 @@
 """Provider resilience (feature 025): bounded retry, circuit breaker, live/batch bulkhead.
 
-Built so far: types (T008), bounded retry via `Guard` (T013), circuit breaker + `LocalBreakerStore` (T022); the batch
-bulkhead (T030) lands in US3.
+Built: types (T008), bounded retry via `Guard` (T013), circuit breaker + `LocalBreakerStore` (T022), and the batch
+bulkhead `Guard.bulkhead` (T030).
 Pure library — no redis/prometheus/FastAPI imports; shared
 state is injected through the `BreakerStore` protocol (research D13).
 """
@@ -11,8 +11,9 @@ import asyncio
 import enum
 import random
 import time
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Literal, Optional, Protocol, runtime_checkable
+from typing import Any, AsyncIterator, Awaitable, Callable, Literal, Optional, Protocol, runtime_checkable
 
 
 TrafficClass = Literal["live", "batch"]
@@ -148,7 +149,7 @@ class Guard:
     """Composes policy + (US2) breaker store + (US3) batch bulkhead for one process (data-model §A6).
 
     Callers never use it directly — `gateway.stream` / `gateway.embed` do. `clock`, `sleep` and `rng` are injectable so
-    tests run in ~0 wall time. The breaker store defaults to a `LocalBreakerStore`; bulkhead hooks arrive in T030."""
+    tests run in ~0 wall time. The breaker store defaults to a `LocalBreakerStore`; batch slots are a lazy per-(provider, model) semaphore map."""
 
     def __init__(self, policy: ResiliencePolicy | None = None, store: "BreakerStore | None" = None,
                  local_store: "BreakerStore | None" = None, observer: Observer | None = None,
@@ -164,6 +165,10 @@ class Guard:
         self.clock = clock
         self.sleep = sleep
         self.rng = rng or random.Random()
+        # Two independent semaphore maps (kind -> (provider, model) -> Semaphore): the gateway "batch" bulkhead and the
+        # eval "case" slot. They MUST stay separate — a case holding a slot while its own call needs one would deadlock.
+        self._slots: dict[str, dict[tuple[str, str], asyncio.Semaphore]] = {}
+        self._slots_loop: asyncio.AbstractEventLoop | None = None
 
     def emit(self, name: str, labels: dict) -> None:
         """Telemetry never alters a call (contract §7; 023 FR-009 precedent): observer exceptions are swallowed."""
@@ -221,6 +226,58 @@ class Guard:
                 self.emit("breaker_transition", {**labels, "to": "closed"})
         elif await self._store_call("record_failure", key, was_trial=was_trial):
             self.emit("breaker_transition", {**labels, "to": "open"})
+
+    # ---- bulkhead (T030) — batch concurrency cap per (provider, model) (contract §4 K1–K3, research D6) ------------
+    def _semaphore(self, kind: str, provider: str, model: str) -> asyncio.Semaphore:
+        loop = asyncio.get_running_loop()
+        if self._slots_loop is not loop:          # the Guard is process-global; a Semaphore binds to ONE loop
+            self._slots, self._slots_loop = {}, loop
+        return self._slots.setdefault(kind, {}).setdefault(
+            (provider, model), asyncio.Semaphore(self.policy.batch_concurrency))
+
+    @asynccontextmanager
+    async def _hold(self, kind: str, event: str, provider: str, model: str) -> AsyncIterator[float]:
+        """Acquire one `kind` slot; emit `event` with the seconds waited (EVERY acquisition, zeros included, so the
+        histogram's percentiles are honest) and yield that wait to the caller."""
+        sem = self._semaphore(kind, provider, model)
+        contended = sem.locked()                  # free slot ⇒ no wait: report exactly 0, not clock jitter
+        queued_at = self.clock()
+        async with sem:
+            waited = max(0.0, self.clock() - queued_at) if contended else 0.0
+            self.emit(event, {"provider": provider, "model": model, "seconds": waited})
+            yield waited
+
+    @asynccontextmanager
+    async def bulkhead(self, provider: str, model: str, cls: TrafficClass) -> AsyncIterator[float]:
+        """Hold one batch slot for the whole call (admission + attempt loop); yields the seconds spent queued so the
+        caller can deduct it from the first attempt's wire timeout. Live traffic never touches it (K2) and yields 0.
+
+        Waiting is unbounded HERE: the caller's outer deadline (invoke's `asyncio.timeout`) cancels a queued acquire
+        and ends the run as TIMEOUT (K3); ingestion bounds the slot holder by its wire timeout
+        (`AC_INGEST_EMBED_TIMEOUT_S`). `asyncio.Semaphore` releases nothing a cancelled waiter never held.
+        Eval runs take a `case_slot` BEFORE invoke, so their gateway calls are normally uncontended (option A).
+        The cap is per process — effective cap = cap × replicas (research D6, documented)."""
+        if cls != "batch":
+            yield 0.0
+            return
+        async with self._hold("batch", "batch_wait", provider, model) as waited:
+            yield waited
+
+    @asynccontextmanager
+    async def case_slot(self, provider: str, model: str) -> AsyncIterator[float]:
+        """Eval-case admission (025 US3 follow-up, option A): at most `batch_concurrency` eval cases per candidate
+        (provider, model) run at once ACROSS all concurrent eval runs in this process. Held by `run_eval` around the
+        whole case (candidate + judge) and taken BEFORE invoke starts, so queueing is never charged to the case's
+        deadline — a TIMEOUT in a drift report is then the agent's, not the platform's."""
+        async with self._hold("case", "eval_case_wait", provider, model) as waited:
+            yield waited
+
+    def after_queue(self, timeout: float | None, queued: float) -> float | None:
+        """First-attempt wire timeout after a bulkhead wait: queue time is deducted (floored at the attempt budget).
+        A call that never queued keeps EXACTLY `timeout` (no clock jitter on the common path)."""
+        if timeout is None or queued <= 0:
+            return timeout
+        return max(timeout - queued, self.policy.min_attempt_budget_s)
 
     def remaining(self, started: float, deadline_s: float | None) -> float | None:
         if deadline_s is None:
