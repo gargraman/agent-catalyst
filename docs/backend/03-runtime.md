@@ -227,6 +227,11 @@ attr. This interacts with COGS: tighter windows = fewer input tokens = lower cos
 
 ## 8. Tool execution (P1 http/builtin; P2 mcp/subagent)
 
+> **As built (2026-11-15):** no tool executes yet. The runtime is a plain async pipeline (not LangGraph);
+> retrieval ships as **always-on stuffing** inside `runtime.invoke` (feature 024). The retriever-as-tool loop
+> below (`search_knowledge`, 024 US4 / research D10) is **parked (Nice tier)**; `max_tool_calls` is still carried,
+> not enforced.
+
 - **retriever-as-tool** (P1, default for agentic RAG): a `retrieve(query)` tool the model calls when it
   decides it needs context (04 §injection). Executes in-process.
 - **http/builtin tools** (P1): JSON-schema-validated args in, validated results out; **egress
