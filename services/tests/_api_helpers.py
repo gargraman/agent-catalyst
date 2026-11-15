@@ -117,7 +117,7 @@ async def seed_mcp_server(workspace_id: str, name: str = "mcp-a", with_tool: boo
 async def seed_kb(workspace_id: str, slug: str = "kb-a", access_policy: dict | None = None) -> str:
     async with tenant_session(workspace_id) as s:
         kb = KnowledgeBase(workspace_id=uuid.UUID(workspace_id), slug=slug, name=slug.title(),
-                           embedding_model="text-embedding-3-small", embedding_dim=1536,
+                           embedding_model="text-embedding-3-small", embedding_dim=1024,
                            access_policy=access_policy or {"visibility": "workspace"})
         s.add(kb)
         await s.flush()
@@ -278,3 +278,23 @@ def build_jwt_provider(public_pem, *, issuer: str = TEST_ISSUER, audience: str =
     from api.auth.jwt_provider import JwtBearerProvider
     return JwtBearerProvider(id="trellix-iam", issuer=issuer, audience=audience, algorithms=list(algs),
                              leeway=leeway, key_resolver=local_key_resolver(public_pem, known_kids=known_kids))
+
+
+async def seed_ingestion_cost(workspace_id: str, cost_usd, created_at=None) -> str:
+    """Feature 024: seed a finished ingestion job carrying an embedding cost (for month-to-date spend tests). Creates
+    its own KB + document. `created_at` (aware or naive UTC) backdates the job for prior-month window tests."""
+    from api.models import IngestionJob, KbDocument
+    kb_id = await seed_kb(workspace_id, slug=f"cost-kb-{uuid.uuid4().hex[:6]}")
+    async with tenant_session(workspace_id) as s:
+        d = KbDocument(workspace_id=uuid.UUID(workspace_id), kb_id=uuid.UUID(kb_id), name="cost.txt",
+                       media_type="text/plain", size_bytes=1, content_hash="h", storage_key="k", status="ready",
+                       created_by="seed")
+        s.add(d)
+        await s.flush()
+        j = IngestionJob(workspace_id=d.workspace_id, kb_id=d.kb_id, document_id=d.id, kind="upload",
+                         status="ready", cost_usd=cost_usd, cost_is_estimate=True, created_by="seed")
+        if created_at is not None:
+            j.created_at = created_at
+        s.add(j)
+        await s.flush()
+        return str(j.id)

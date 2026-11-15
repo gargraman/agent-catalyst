@@ -28,6 +28,7 @@ from api.deps import (access_principal, assert_within_spend_cap, caller_db, enfo
                       rate_limit, require_caller, require_permission, resolve_workspace, tenant_db)
 from api.provider_keys import resolve_provider_key
 from api.run_sink import persist_run_record
+from api.retrieval_wiring import attach_knowledge, citations_payload
 from api.errors import NotFound
 from api.models import Agent, AgentVersion, RetrievalBinding
 from api.schemas.invoke import InvokeIn
@@ -102,6 +103,9 @@ async def _run_invoke(*, session: AsyncSession, ws: str, ap: PolicyPrincipal, ag
     ctx.record_call = call_log.make_call_sink(workspace_id=ws, api_key=api_key, content_logging=content_logging)
     ctx.content_logging = content_logging
     ctx.provider_correlation_id = provider_corr   # FR-014: providers only ever see a platform-generated id
+    # Feature 024: retrieval on the caller's RLS session with the caller's CURRENT access (both planes, same seam).
+    ka = await attach_knowledge(session, ws, snapshot, ctx, ap)
+    published = source == "published"
 
     recheck_s = get_settings().denyset_stream_recheck_s
     has_deny_target = deny_subject is not None or deny_token_id is not None
@@ -131,6 +135,10 @@ async def _run_invoke(*, session: AsyncSession, ws: str, ap: PolicyPrincipal, ag
                 return
             if ev.type is EventType.ERROR:
                 error_emitted = True
+            if ev.type is EventType.CITATIONS:
+                yield sse.frame("citations", citations_payload(ev.data, denied=ka.denied if ka else set(),
+                                                               published=published))
+                continue
             encoded = sse.encode_event(ev)
             if encoded is not None:
                 yield encoded

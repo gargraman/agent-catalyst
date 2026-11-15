@@ -89,3 +89,26 @@ def test_transport_pins_litellm_to_local_cost_map():
     import os
 
     assert os.environ.get("LITELLM_LOCAL_MODEL_COST_MAP") == "True"
+
+
+def test_transport_bypasses_litellm_mcp_gateway_when_tools_are_bound(monkeypatch):
+    """G8 (feature 024 research D9, reproduced live 2026-11-14): litellm 1.106.x imports its MCP gateway handler —
+    which needs the uninstalled `mcp` package — whenever `tools` is non-empty, so every tool-bound agent failed against
+    a real provider. Tool execution is ours (F3 trust boundary); we never want litellm's MCP gateway. The private
+    `_skip_mcp_handler` kwarg is pinned here; re-verify on any litellm bump."""
+    captured: dict = {}
+
+    async def fake_acompletion(**kwargs):
+        captured.update(kwargs)
+
+        async def gen():
+            if False:
+                yield
+
+        return gen()
+
+    monkeypatch.setattr(litellm, "acompletion", fake_acompletion)
+    tools = [{"type": "function", "function": {"name": "lookup", "parameters": {"type": "object"}}}]
+    _drive(model="gpt-5-mini", messages=[{"role": "user", "content": "hi"}], api_key="k", tools=tools)
+    assert captured.get("_skip_mcp_handler") is True
+    assert captured["tools"] == tools                     # tools still forwarded to the provider

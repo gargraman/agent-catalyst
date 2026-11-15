@@ -211,3 +211,20 @@ def _ok_stream():
         yield usage_ev()
         yield stop_ev()
     return _gen()
+
+
+# ---------------------------------------------------------------- feature 024 (T025): ingestion cost counts
+async def test_ingestion_cost_alone_can_push_workspace_over_cap(monkeypatch):
+    from tests._api_helpers import seed_ingestion_cost
+    ws = await seed_workspace()
+    aid = await seed_agent(ws)
+    await seed_version(ws, aid)
+    await seed_limits(ws, 10)
+    await seed_ingestion_cost(ws, 12.0)                 # no runs at all — embedding spend alone exceeds the cap
+    stream, calls = _tracking_stream()
+    monkeypatch.setattr(gateway, "stream", stream)
+    async with client() as c:
+        r = await c.post(f"/api/v1/agents/{aid}/invoke", headers=dev_headers(workspace=ws),
+                         json={"inputs": {"message": "hi"}})
+    assert r.status_code == 402 and r.json()["error"]["code"] == "budget.exceeded"
+    assert calls["n"] == 0

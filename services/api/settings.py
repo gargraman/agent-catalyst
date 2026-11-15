@@ -12,7 +12,7 @@ request (09 §7 / 00L §4).
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
@@ -22,6 +22,8 @@ _DEV_SYNC = "postgresql+psycopg://ac:ac_dev_pw@localhost:5433/agent_catalyst"
 _DEV_APP = "postgresql+asyncpg://ac_app:ac_app_pw@localhost:5433/agent_catalyst"
 # Dev-only fingerprint root key (feature 023). Public by design — rejected under AC_ENV=prod.
 _DEV_FINGERPRINT_KEY = "ac-dev-telemetry-fingerprint-key-not-secret"
+# Providers that have embedding profiles (feature 024). Extend together with runtime/providers/profiles_data.
+_EMBEDDING_PROVIDERS = frozenset({"openai", "bedrock"})
 
 
 class Settings(BaseSettings):
@@ -130,6 +132,48 @@ class Settings(BaseSettings):
     aws_region: str = Field(default="us-east-1", alias="AC_AWS_REGION")
     secrets_prefix: str = Field(default="ac", alias="AC_SECRETS_PREFIX")  # secret-name namespace root
 
+    # --- Document storage + ingestion (feature 024 / M7, research D5/D6) --------------------------
+    # Uploaded files: `local` = in-process memory (unit/dev only — lost on restart), `s3` = AWS S3 / LocalStack S3
+    # (never MinIO, feature 022). Reuses the AWS endpoint/region above.
+    storage_provider: Literal["local", "s3"] = Field(default="local", alias="AC_STORAGE_PROVIDER")
+    uploads_bucket: str = Field(default="ac-uploads", alias="AC_UPLOADS_BUCKET")
+    ingest_max_file_bytes: int = Field(default=20 * 1024 * 1024, gt=0, alias="AC_INGEST_MAX_FILE_BYTES")  # 20 MiB
+    ingest_concurrency: int = Field(default=2, ge=1, le=16, alias="AC_INGEST_CONCURRENCY")
+    # Heartbeat lease (research D5): a job whose heartbeat is older than stale_after is reaped as interrupted.
+    ingest_stale_after_s: int = Field(default=120, ge=30, alias="AC_INGEST_STALE_AFTER_S")
+    ingest_heartbeat_s: int = Field(default=15, ge=1, alias="AC_INGEST_HEARTBEAT_S")
+    # Orphaned stored-object sweep (analyze H5): only objects older than this are eligible — an upload's object is
+    # written just before its row commits, so a short grace could delete a live in-flight upload.
+    storage_orphan_grace_s: int = Field(default=3600, ge=300, alias="AC_STORAGE_ORPHAN_GRACE_S")
+    # Embedding-provider policy (decision 2026-11-14, docs/scope.md): customer KB content is embedded ONLY on Bedrock in
+    # prod; OpenAI direct is dev-only. Enforced at KB create/patch. Unset → prod: {bedrock}; any other env: {openai, bedrock}.
+    # The KB's provider itself is derived from its model's profile, never from here (analyze M3).
+    embedding_allowed_providers: str | None = Field(default=None, alias="AC_EMBEDDING_ALLOWED_PROVIDERS")
+
+    @field_validator("embedding_allowed_providers")
+    @classmethod
+    def _known_embedding_providers(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        names = {p.strip() for p in v.split(",") if p.strip()}
+        unknown = names - _EMBEDDING_PROVIDERS
+        if not names or unknown:
+            raise ValueError(f"AC_EMBEDDING_ALLOWED_PROVIDERS has unknown/empty providers: {sorted(unknown) or v!r}")
+        return v
+
+    @property
+    def embedding_providers_allowed(self) -> frozenset[str]:
+        if self.embedding_allowed_providers is not None:
+            return frozenset(p.strip() for p in self.embedding_allowed_providers.split(",") if p.strip())
+        return frozenset({"bedrock"}) if self.env == "prod" else frozenset({"openai", "bedrock"})
+
+    @model_validator(mode="after")
+    def _heartbeat_well_inside_lease(self) -> "Settings":
+        # At least two heartbeats must fit in the lease, or a live job on a slow tick could be reaped.
+        if self.ingest_heartbeat_s >= self.ingest_stale_after_s / 2:
+            raise ValueError("AC_INGEST_HEARTBEAT_S must be < AC_INGEST_STALE_AFTER_S / 2")
+        return self
+
     # --- Auth / IdP (feature 012) ---------------------------------------------------------------
     # Deployment profile. Defaults to `prod` so an UNCONFIGURED process is fail-closed: the unverified
     # dev auth provider is only usable when `AC_ENV` is explicitly a non-prod value (FR-008). Local dev and
@@ -205,6 +249,13 @@ class Settings(BaseSettings):
         """True when the deployment profile forces content logging on. EXACTLY `dev` only (023 analysis S1): a shared
         non-prod env such as staging may hold real data, so it behaves like prod and needs the audited opt-in."""
         return self.env == "dev" and self.telemetry_log_content_in_dev
+
+    @model_validator(mode="after")
+    def _durable_storage_required_in_prod(self) -> "Settings":
+        # `local` storage is process memory: uploads vanish on restart and are invisible to other replicas.
+        if self.env == "prod" and self.storage_provider != "s3":
+            raise ValueError("AC_STORAGE_PROVIDER must be 's3' under AC_ENV=prod (local storage is not durable)")
+        return self
 
     @model_validator(mode="after")
     def _fingerprint_key_required_in_prod(self) -> "Settings":

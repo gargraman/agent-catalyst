@@ -65,3 +65,46 @@ async def test_parity_tool_valid(monkeypatch):
     res = await invoke_result(snap(), INPUTS, make_context())
     assert s_run.outcome is res.run.outcome
     assert [t["name"] for t in s_tools] == [t["name"] for t in res.tool_calls] == ["search"]
+
+
+# ---- feature 024 (T042): retrieval parity across entry points (FR-019) ---------------------------------------
+async def test_parity_retrieval_summary_and_citations(monkeypatch):
+    from decimal import Decimal
+
+    from runtime.providers.ir import EmbeddingResult, NormalizedUsage
+    from runtime.retrieval.port import Passage, SearchOutcome
+    from runtime.snapshot import RetrievalRef
+    from tests._invoke_helpers import make_gateway
+
+    ref = RetrievalRef(kb_id="kb-p", embedding_model="text-embedding-3-small",
+                       retrieval_config={"top_k": 6, "similarity_threshold": 0.2, "max_ctx_tokens": 2000},
+                       injection="always_on", kb_index_version=2, embedding_provider="openai", kb_name="P")
+    passage = Passage(chunk_id="c-p", kb_id="kb-p", document_id="d-p", document_name="p.md", text="fact",
+                      token_count=3, score=0.7, meta={"page": 1, "heading": None})
+
+    class K:
+        async def search(self, r, qvec, *, top_k, threshold):
+            return SearchOutcome("ok", (passage,))
+
+    async def _embed(texts, *, provider, model, api_key, timeout=None, region=None):
+        return EmbeddingResult(vectors=((0.1,) * 1024,), usage=NormalizedUsage(3, 0), cost_usd=Decimal("0.000002"),
+                               cost_is_estimate=True)
+    monkeypatch.setattr(gateway, "embed", _embed)
+    events = [text_ev("ok"), usage_ev(), stop_ev()]
+    snap = make_snapshot(retrieval=(ref,))
+
+    monkeypatch.setattr(gateway, "stream", make_gateway(events))
+    ctx_s = make_context(knowledge=K(), embedding_api_key="k")
+    streamed = [ev async for ev in runtime_invoke(snap, INPUTS, ctx_s)]
+    s_run = ctx_s.record_run.runs[-1]
+    hits = [e for e in streamed if e.type is EventType.CITATIONS]
+    assert len(hits) == 1, "expected one CITATIONS event"
+    s_cits = hits[0].data["citations"]
+
+    monkeypatch.setattr(gateway, "stream", make_gateway(events))
+    res = await invoke_result(snap, INPUTS, make_context(knowledge=K(), embedding_api_key="k"))
+    import dataclasses
+    assert [dataclasses.asdict(c) for c in res.citations] == s_cits
+    strip = lambda r: dataclasses.replace(r, retrieval_ms=0)  # noqa: E731 — wall time legitimately differs
+    assert strip(s_run.retrieval) == strip(res.run.retrieval)
+    assert s_run.cost_usd == res.run.cost_usd

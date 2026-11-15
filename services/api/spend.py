@@ -15,7 +15,7 @@ from decimal import Decimal
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from api.models import Run, WorkspaceSettings
+from api.models import IngestionJob, Run, WorkspaceSettings
 
 # Mirrors frontend/src/lib/data.ts `defaultLimits().monthlySpendUsd`. An unset cap is a finite default,
 # never "unlimited" (fail-closed spirit).
@@ -29,19 +29,27 @@ def _month_start_utc(now: datetime.datetime | None = None) -> datetime.datetime:
     return datetime.datetime(now.year, now.month, 1)  # naive, at UTC month boundary
 
 
-async def month_to_date_spend(session: AsyncSession, workspace_id: str) -> Decimal:
-    """Sum of recorded run cost for the workspace since the start of the current calendar month (UTC).
+async def month_to_date_breakdown(session: AsyncSession, workspace_id: str) -> tuple[Decimal, Decimal]:
+    """(runs, ingestion) recorded cost for the workspace since the start of the current calendar month (UTC).
 
-    Double-scoped: the RLS GUC on `session` plus an explicit `workspace_id` predicate. Raises on a ledger/DB
-    failure — callers must NOT swallow it (fail-closed per FR-009): a refused computation must not become a
-    paid call.
+    Feature 024: ingestion embedding cost (`ingestion_jobs.cost_usd`) is real spend and counts toward the same cap.
+    Double-scoped (RLS GUC + explicit workspace predicate). Raises on a ledger/DB failure — never swallowed (FR-009).
+    `runs.created_at` is naive UTC; `ingestion_jobs.created_at` is timestamptz — each compared in its own form.
     """
-    stmt = select(func.coalesce(func.sum(Run.cost_usd), 0)).where(
-        Run.workspace_id == uuid.UUID(workspace_id),
-        Run.created_at >= _month_start_utc(),
-    )
-    total = (await session.execute(stmt)).scalar_one()
-    return Decimal(str(total))
+    ws = uuid.UUID(workspace_id)
+    start = _month_start_utc()
+    runs = (await session.execute(select(func.coalesce(func.sum(Run.cost_usd), 0)).where(
+        Run.workspace_id == ws, Run.created_at >= start))).scalar_one()
+    ingestion = (await session.execute(select(func.coalesce(func.sum(IngestionJob.cost_usd), 0)).where(
+        IngestionJob.workspace_id == ws,
+        IngestionJob.created_at >= start.replace(tzinfo=datetime.timezone.utc)))).scalar_one()
+    return Decimal(str(runs)), Decimal(str(ingestion))
+
+
+async def month_to_date_spend(session: AsyncSession, workspace_id: str) -> Decimal:
+    """Month-to-date spend = runs + ingestion (feature 009 + 024). Fail-closed: raises, callers must not swallow."""
+    runs, ingestion = await month_to_date_breakdown(session, workspace_id)
+    return runs + ingestion
 
 
 async def active_cap_usd(session: AsyncSession, workspace_id: str) -> Decimal:

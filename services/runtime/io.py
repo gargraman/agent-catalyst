@@ -112,3 +112,28 @@ def build_normalized_request(snapshot, inputs) -> NormalizedRequest:
         reasoning=mc.get("reasoning"),
         cache_hints=cache_hints,
     )
+
+
+
+# ---- feature 024: retrieved-context placement (research D13) ---------------------------------------------------
+def latest_user_text(messages) -> str:
+    """Text of the latest user message — the always-on retrieval query. "" when there is none."""
+    for m in reversed(list(messages or ())):
+        if isinstance(m, dict) and m.get("role") == "user":
+            c = m.get("content")
+            if isinstance(c, str):
+                return c
+            if isinstance(c, list):
+                return " ".join(p.get("text", "") for p in c if isinstance(p, dict) and isinstance(p.get("text"), str))
+    return ""
+
+
+def insert_context_message(messages, rendered: str) -> list:
+    """Insert the rendered retrieved context as a user-role message immediately BEFORE the latest user message (the
+    system prompt is never touched, so retrieved data can't masquerade as system instructions). No-op when empty."""
+    msgs = list(messages or ())
+    if not rendered:
+        return msgs
+    idx = next((i for i in range(len(msgs) - 1, -1, -1)
+                if isinstance(msgs[i], dict) and msgs[i].get("role") == "user"), len(msgs))
+    return msgs[:idx] + [{"role": "user", "content": rendered}] + msgs[idx:]

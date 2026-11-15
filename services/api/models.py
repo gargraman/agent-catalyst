@@ -14,6 +14,7 @@ from sqlalchemy import false as sa_false
 from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, MetaData, Numeric, String, Text, Uuid, func
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, declared_attr, mapped_column, relationship
+from sqlalchemy.types import UserDefinedType
 
 from runtime.hashing import compute_snapshot_hash
 from runtime.snapshot import RetrievalRef, SkillRef, ToolRef, VersionSnapshot
@@ -35,6 +36,16 @@ _AGENT_STATUS = Enum("draft", "published", "archived", "eval_failing", name="age
 _TOOL_KIND = Enum("http", "builtin", "subagent", "mcp", name="tool_kind", create_type=False)
 _TOOL_RISK_TIER = Enum("read", "write", "destructive", name="tool_risk_tier", create_type=False)
 _PROVIDER_KEY_STATUS = Enum("active", "expiring", "revoked", name="provider_key_status", create_type=False)  # 0007
+
+
+def _embedding_provider(model: str) -> str:
+    """Provider of a KB's embedding model, from its capability PROFILE (feature 024, analyze M3 — never settings).
+    "" for a legacy model with no profile; the runtime then degrades that binding instead of guessing a provider."""
+    from runtime.providers.profiles import resolve_embedding_profile_by_model
+    try:
+        return resolve_embedding_profile_by_model(model).provider
+    except FileNotFoundError:
+        return ""
 
 
 def _opt_str(x) -> str | None:
@@ -138,6 +149,9 @@ class AgentVersion(Base, WorkspaceScoped):
                     retrieval_config=b.retrieval_config,
                     injection=b.injection,
                     kb_index_version=b.kb_index_version,
+                    # feature 024: derived, NOT hashed (compute_snapshot_hash builds its payload from columns only)
+                    embedding_provider=_embedding_provider(b.kb.embedding_model),
+                    kb_name=b.kb.name,
                 )
                 for b in sorted(self.retrieval_bindings, key=lambda b: str(b.kb_id))
             ),
@@ -181,6 +195,8 @@ class KnowledgeBase(Base, WorkspaceScoped):
     access_policy: Mapped[dict] = mapped_column(JSONB, default=lambda: {"visibility": "workspace"})
     archived_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True))  # soft-archive (feature 006, FR-003)
     created_at: Mapped[datetime.datetime] = mapped_column(server_default=func.now())
+    last_ingested_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True))  # 0013 (feature 024)
+    documents: Mapped[list["KbDocument"]] = relationship(back_populates="kb", passive_deletes=True)
 
 
 class RetrievalBinding(Base, WorkspaceScoped):
@@ -192,6 +208,98 @@ class RetrievalBinding(Base, WorkspaceScoped):
     retrieval_config: Mapped[dict] = mapped_column(JSONB)
     injection: Mapped[str] = mapped_column(Text, default="tool")
     kb: Mapped["KnowledgeBase"] = relationship()
+
+
+# --------------------------------------------------------------------------------------------------
+# RAG storage (migration 0013, feature 024 / M7) — data-model.md §2–§4
+# --------------------------------------------------------------------------------------------------
+class Vector1024(UserDefinedType):
+    """pgvector `vector(1024)` without the `pgvector` Python package: bind renders the text literal '[f1,f2,…]' and
+    results parse it back. Length is enforced by the column type (and by gateway.embed before it gets here)."""
+
+    cache_ok = True
+
+    def get_col_spec(self, **kw) -> str:
+        return "vector(1024)"
+
+    def bind_processor(self, dialect):
+        def process(value):
+            if value is None:
+                return None
+            return "[" + ",".join(repr(float(x)) for x in value) + "]"
+        return process
+
+    def result_processor(self, dialect, coltype):
+        def process(value):
+            if value is None or isinstance(value, (list, tuple)):
+                return value
+            return [float(x) for x in str(value).strip("[]").split(",") if x]
+        return process
+
+
+class KbDocument(Base, WorkspaceScoped):
+    __tablename__ = "kb_documents"
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, server_default=func.gen_random_uuid())
+    kb_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("knowledge_bases.id"))
+    name: Mapped[str] = mapped_column(Text)
+    media_type: Mapped[str] = mapped_column(Text)
+    size_bytes: Mapped[int] = mapped_column(Integer)
+    content_hash: Mapped[str] = mapped_column(Text)        # never returned to clients
+    storage_key: Mapped[str] = mapped_column(Text)         # never returned to clients
+    source_kind: Mapped[str] = mapped_column(Text, default="upload")
+    status: Mapped[str] = mapped_column(Text)              # queued | processing | ready | failed | stale
+    active_generation: Mapped[int] = mapped_column(Integer, default=0)
+    chunk_count: Mapped[int] = mapped_column(Integer, default=0)
+    dedup_key: Mapped[str | None] = mapped_column(Text)
+    injection_flags: Mapped[dict] = mapped_column(JSONB, default=dict)
+    error: Mapped[dict | None] = mapped_column(JSONB)
+    created_by: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    kb: Mapped["KnowledgeBase"] = relationship(back_populates="documents")
+    chunks: Mapped[list["KbChunk"]] = relationship(
+        back_populates="document", cascade="all, delete-orphan", passive_deletes=True)
+    jobs: Mapped[list["IngestionJob"]] = relationship(
+        back_populates="document", cascade="all, delete-orphan", passive_deletes=True)
+
+
+class KbChunk(Base, WorkspaceScoped):
+    __tablename__ = "kb_chunks"
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, server_default=func.gen_random_uuid())
+    kb_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    document_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("kb_documents.id", ondelete="CASCADE"))
+    generation: Mapped[int] = mapped_column(Integer)
+    ordinal: Mapped[int] = mapped_column(Integer)
+    text: Mapped[str] = mapped_column(Text)                # customer-confidential
+    token_count: Mapped[int] = mapped_column(Integer)
+    embedding: Mapped[list[float]] = mapped_column(Vector1024())
+    embedding_model: Mapped[str] = mapped_column(Text)
+    meta: Mapped[dict] = mapped_column(JSONB, default=dict)
+    injection_categories: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list)
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    document: Mapped["KbDocument"] = relationship(back_populates="chunks")
+
+
+class IngestionJob(Base, WorkspaceScoped):
+    __tablename__ = "ingestion_jobs"
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, server_default=func.gen_random_uuid())
+    kb_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("knowledge_bases.id"))
+    document_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("kb_documents.id", ondelete="CASCADE"))
+    kind: Mapped[str] = mapped_column(Text)                # upload | retry | reingest
+    status: Mapped[str] = mapped_column(Text)              # queued | processing | ready | failed
+    progress_done: Mapped[int] = mapped_column(Integer, default=0)
+    progress_total: Mapped[int] = mapped_column(Integer, default=0)
+    skipped_unchanged: Mapped[bool] = mapped_column(Boolean, default=False)
+    cost_usd: Mapped[float] = mapped_column(Numeric(12, 6), default=0)
+    cost_is_estimate: Mapped[bool] = mapped_column(Boolean, default=False)
+    error: Mapped[dict | None] = mapped_column(JSONB)
+    owner: Mapped[str | None] = mapped_column(Text)
+    heartbeat_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True))
+    created_by: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    started_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True))
+    document: Mapped["KbDocument"] = relationship(back_populates="jobs")
 
 
 class SkillBinding(Base, WorkspaceScoped):

@@ -15,11 +15,12 @@ COPY pyproject.toml alembic.ini ./
 COPY api ./api
 COPY runtime ./runtime
 COPY evals ./evals
+COPY ingestion ./ingestion
 COPY migrations ./migrations
 
 # Install the API extra (fastapi, uvicorn, sqlalchemy, asyncpg, psycopg, alembic, redis, litellm,
 # prometheus-client, pyjwt[crypto]) + the first-party packages (api/runtime/evals) into site-packages.
-RUN pip install ".[api]"
+RUN pip install ".[api,ingest]"
 
 # Drop privileges — never run the service as root.
 RUN useradd --create-home --uid 10001 appuser

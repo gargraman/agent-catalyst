@@ -1,0 +1,20 @@
+{"id": "h01", "question": "What is the yearly leave allowance in days?", "expected_document": "handbook.md", "expected_substring": "Annual leave is 27 days"}
+{"id": "h02", "question": "Between which hours must staff be available each day?", "expected_document": "handbook.md", "expected_substring": "Core hours are 10:00 to 16:00"}
+{"id": "h03", "question": "After how many years do I get a new laptop?", "expected_document": "handbook.md", "expected_substring": "Laptops are refreshed every three years"}
+{"id": "h04", "question": "What happens to my equipment when I leave the company?", "expected_document": "handbook.md", "expected_substring": "Return equipment on your last day"}
+{"id": "h05", "question": "I forgot my password, what should I do?", "expected_document": "faq.txt", "expected_substring": "self-service portal"}
+{"id": "h06", "question": "What is the street address of the office?", "expected_document": "faq.txt", "expected_substring": "1 Example Street"}
+{"id": "h07", "question": "What is the quarterly travel limit my manager can approve?", "expected_document": "faq.txt", "expected_substring": "line manager approves travel"}
+{"id": "h08", "question": "Where should expense claims be submitted?", "expected_document": "policy.pdf", "expected_substring": "submit claims through the finance portal"}
+{"id": "h09", "question": "What is the deadline for submitting an expense claim after a purchase?", "expected_document": "policy.pdf", "expected_substring": "due within 30 days"}
+{"id": "h10", "question": "What happens if I submit an expense claim late?", "expected_document": "policy.pdf", "expected_substring": "written approval from the finance director"}
+{"id": "h11", "question": "Which equipment is handed to a new starter on day one?", "expected_document": "guide.docx", "expected_substring": "laptop and a security key"}
+{"id": "h12", "question": "What must I complete before requesting production access?", "expected_document": "guide.docx", "expected_substring": "mandatory security training"}
+{"id": "h13", "question": "For how many weeks is a new starter paired with a buddy?", "expected_document": "guide.docx", "expected_substring": "for six weeks"}
+{"id": "h14", "question": "What health benefits does the company provide to staff?", "expected_document": "page.html", "expected_substring": "private health cover"}
+{"id": "h15", "question": "What percentage of salary does the employer pay into the pension?", "expected_document": "page.html", "expected_substring": "6 percent of base salary"}
+{"id": "h16", "question": "Is there a bicycle scheme and who is eligible?", "expected_document": "page.html", "expected_substring": "available after probation"}
+{"id": "h17", "question": "How is leave calculated for part-time employees?", "expected_document": "handbook.md", "expected_substring": "pro-rated for part-time staff"}
+{"id": "h18", "question": "On what floor of the building is the office?", "expected_document": "faq.txt", "expected_substring": "fourth floor"}
+{"id": "h19", "question": "What evidence do I need to keep for a business expense?", "expected_document": "policy.pdf", "expected_substring": "Keep every receipt"}
+{"id": "h20", "question": "Which team does my onboarding buddy come from?", "expected_document": "guide.docx", "expected_substring": "buddy from a different team"}

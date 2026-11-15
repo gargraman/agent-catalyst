@@ -25,7 +25,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install -e '.[api,test]'
+      - run: pip install -e '.[api,ingest,test]'
       - name: Unit tests (integration auto-deselected — no DB)
         run: pytest -q -m "not integration"
       - name: Runtime purity — runtime/ imports no FastAPI/HTTP (P6 single-library invariant)
@@ -66,7 +66,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install -e '.[api,test]'
+      - run: pip install -e '.[api,ingest,test]'
       - name: Alembic migrate to head (as superuser — creates RLS policies + ac_app role)
         run: alembic upgrade head
       - name: Integration tests (RLS, immutability triggers, tenant session, ORM, snapshot, API, auth, health)
@@ -82,7 +82,7 @@ jobs:
           python-version: "3.12"
       - name: Install (api)
         working-directory: services
-        run: pip install -e '.[api]'
+        run: pip install -e '.[api,ingest]'
       - name: Emit OpenAPI (schema generates cleanly)
         run: python scripts/emit_openapi.py
 

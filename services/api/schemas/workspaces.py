@@ -41,6 +41,7 @@ class WorkspaceSpendOut(BaseModel):
     monthToDateUsd: float
     capUsd: float
     remainingUsd: float
+    breakdown: dict[str, str] = {}   # feature 024: {"runs", "ingestion"} as 6-dp strings summing to monthToDateUsd
 
 
 class WorkspaceOut(BaseModel):

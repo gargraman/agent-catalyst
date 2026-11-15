@@ -19,6 +19,7 @@ _EVENT_NAME = {
     EventType.TOOL_CALL_END: "tool_call_end",
     EventType.USAGE: "usage",
     EventType.ERROR: "error",
+    EventType.CITATIONS: "citations",   # feature 024 — the router shapes it per plane (api.retrieval_wiring)
 }
 
 
@@ -42,6 +43,8 @@ def _payload(ev) -> dict:
             "cost_usd": float(cost) if cost is not None else None,
             "cost_is_estimate": bool(ev.data.get("cost_is_estimate", False)),
         }
+    if t is EventType.CITATIONS:
+        return {"knowledge_used": bool(ev.data.get("knowledge_used")), "citations": list(ev.data.get("citations", ()))}
     if t is EventType.ERROR:
         err = ev.data.get("error") or {}
         return {"code": err.get("type", "error"), "message": err.get("message", "")}  # scrubbed

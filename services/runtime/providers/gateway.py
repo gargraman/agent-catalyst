@@ -14,8 +14,22 @@ from typing import AsyncIterator
 
 from runtime.providers.base import adapter_for
 from runtime.providers.cost import compute_cost, quantize_usd
-from runtime.providers.ir import EventType, NormalizedRequest, NormalizedStreamEvent
-from runtime.providers.profiles import CapabilityProfile, Substitution, resolve_profile
+from runtime.providers import transport
+from runtime.providers._common import _response_request_id
+from runtime.providers.ir import (
+    EmbeddingError,
+    EmbeddingResult,
+    EventType,
+    NormalizedRequest,
+    NormalizedStreamEvent,
+    NormalizedUsage,
+)
+from runtime.providers.profiles import (
+    CapabilityProfile,
+    Substitution,
+    resolve_embedding_profile,
+    resolve_profile,
+)
 from runtime.providers.transport import TransportError
 
 
@@ -122,3 +136,74 @@ async def stream(
             # extras ride the USAGE event, so they are unavailable on a usage-less stream.
             error["substitutions"] = list(preflight)
         yield NormalizedStreamEvent(EventType.ERROR, {"error": error})
+
+
+def _embedding_item(item) -> tuple[int | None, list[float]]:
+    """litellm 1.106.6 returns `data[i]` as a dict (spike T005); tolerate attribute access too."""
+    if isinstance(item, dict):
+        return item.get("index"), item["embedding"]
+    return getattr(item, "index", None), item.embedding
+
+
+async def embed(
+    texts: list[str], *, provider: str, model: str, api_key: str | None, timeout: float | None = None,
+    region: str | None = None,
+) -> EmbeddingResult:
+    """Embed `texts` with OUR cost accounting (feature 024, contracts/runtime.md §8, research D2).
+
+    1. Resolve the EMBEDDING profile — unknown or chat model → FileNotFoundError before any transport call (fail
+       closed; the caller maps it to a config error).
+    2. Batch by the profile's `max_batch`; vectors are returned in input order across batches.
+    3. Usage = Σ `usage.prompt_tokens`; cost = compute_cost(profile, usage) quantized ONCE (never per batch, never
+       litellm's response_cost — R3). `cost_is_estimate` mirrors the profile's `provisional` flag.
+    4. Every vector must have the profile's `dimension`, else EmbeddingError("dimension_mismatch") — storing a wrong
+       length would corrupt the index (the column is vector(1024), research D3). When the profile declares
+       `features.dimensions_param`, the deployment dimension is REQUESTED (`dimensions=`), e.g. text-embedding-3-small
+       natively emits 1536 and is asked for 1024.
+    5. Transport failures → EmbeddingError(type="provider_error", retryable=…), message scrubbed of the api key.
+
+    Bedrock (the customer-data provider, decision 2026-11-14) authenticates with the process's AWS credential chain:
+    `api_key` is None, `region` becomes litellm's `aws_region_name`, and no api key is ever sent.
+    """
+    profile = resolve_embedding_profile(provider, model)
+    batch_size = max(1, profile.max_batch or len(texts) or 1)
+    vectors: list[tuple[float, ...]] = []
+    input_tokens = 0
+    request_id: str | None = None
+    for start in range(0, len(texts), batch_size):
+        batch = texts[start:start + batch_size]
+        kwargs: dict = {"model": f"{provider}/{model}", "input": batch}
+        if api_key:
+            kwargs["api_key"] = api_key
+        if region:
+            kwargs["aws_region_name"] = region
+        if profile.feature("dimensions_param") and profile.dimension:
+            kwargs["dimensions"] = profile.dimension
+        if timeout is not None:
+            kwargs["timeout"] = timeout
+        try:
+            resp = await transport.embed(**kwargs)
+        except TransportError as exc:
+            err = _normalize_error(exc, api_key or "")
+            raise EmbeddingError(err["message"], type=err["type"], retryable=err["retryable"]) from None
+        items = sorted((_embedding_item(d) for d in resp.data), key=lambda t: (t[0] is None, t[0] or 0))
+        if len(items) != len(batch):
+            raise EmbeddingError(f"provider returned {len(items)} vectors for {len(batch)} inputs",
+                                 type="count_mismatch", retryable=True)
+        for _, vec in items:
+            if profile.dimension is not None and len(vec) != profile.dimension:
+                raise EmbeddingError(f"vector length {len(vec)} != profile dimension {profile.dimension}",
+                                     type="dimension_mismatch")
+            vectors.append(tuple(float(x) for x in vec))
+        usage = getattr(resp, "usage", None)
+        input_tokens += int(getattr(usage, "prompt_tokens", 0) or 0)
+        if request_id is None:
+            request_id = _response_request_id(resp)
+    usage_total = NormalizedUsage(input_tokens=input_tokens, output_tokens=0)
+    return EmbeddingResult(
+        vectors=tuple(vectors),
+        usage=usage_total,
+        cost_usd=quantize_usd(compute_cost(profile, usage_total)),
+        cost_is_estimate=profile.provisional,
+        provider_request_id=request_id,
+    )

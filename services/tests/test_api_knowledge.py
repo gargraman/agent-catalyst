@@ -15,14 +15,14 @@ from tests._api_helpers import (
 pytestmark = pytest.mark.integration
 
 _KB = {"slug": "triage-kb", "name": "Triage KB", "embedding_model": "text-embedding-3-small",
-       "embedding_dim": 1536, "chunk_config": {"size": 800, "overlap": 100}}
+       "embedding_dim": 1024, "chunk_config": {"size": 800, "overlap": 100}}
 
 
 async def test_create_list_get_and_scope():
     ws = await seed_workspace()
     async with client() as c:
         r = await c.post("/api/v1/knowledge-bases", headers=dev_headers(workspace=ws), json=_KB)
-        assert r.status_code == 201 and r.json()["ingestion_status"] == "deferred"
+        assert r.status_code == 201 and r.json()["ingestion_status"] == "empty"   # feature 024: derived, was "deferred"
         kid = r.json()["id"]
         lst = (await c.get("/api/v1/knowledge-bases", headers=dev_headers(workspace=ws))).json()
     assert any(k["id"] == kid for k in lst["items"])
@@ -57,12 +57,12 @@ async def test_archive_restore_and_duplicate_slug():
     assert all(k["id"] != kid for k in hidden["items"]) and any(k["id"] == kid for k in shown["items"])
 
 
-async def test_ingestion_jobs_is_honest_deferred():
+async def test_ingestion_jobs_empty_for_kb_without_documents():
     ws = await seed_workspace()
     async with client() as c:
         await c.post("/api/v1/knowledge-bases", headers=dev_headers(workspace=ws), json=_KB)
         jobs = (await c.get("/api/v1/ingestion-jobs", headers=dev_headers(workspace=ws))).json()
-    assert jobs["items"] == []                              # no fabricated ingestion (FR-009)
+    assert jobs["items"] == []                              # real jobs only; none fabricated (FR-009)
 
 
 async def _needs_reeval(ws: str, agent_id: str) -> bool:

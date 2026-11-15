@@ -149,3 +149,26 @@ async def test_kb_index_version_excluded_from_hash():
         av = await _load(s, av_id)
         h2 = av.to_snapshot().snapshot_hash
     assert h1 == h2, "kb_index_version must not affect snapshot_hash (04 §9)"
+
+
+# ---- feature 024 (T045): derived RetrievalRef fields — provider from the PROFILE, display name; never hashed ----
+async def test_retrieval_ref_carries_profile_provider_and_kb_name():
+    ws_id, kb_id = await _ws_and_kb()
+    async with tenant_session(ws_id) as s:
+        av_id = await _seed_version(s, ws_id, kb_id)
+    async with tenant_session(ws_id) as s:
+        ref = (await _load(s, av_id)).to_snapshot().retrieval[0]
+    assert ref.embedding_provider == "openai" and ref.kb_name == "KB"
+
+
+async def test_kb_name_and_provider_change_do_not_change_the_hash():
+    ws_id, kb_id = await _ws_and_kb()
+    async with tenant_session(ws_id) as s:
+        av_id = await _seed_version(s, ws_id, kb_id)
+    async with tenant_session(ws_id) as s:
+        before = (await _load(s, av_id)).to_snapshot().snapshot_hash
+        kb = await s.get(KnowledgeBase, kb_id)
+        kb.name = "Renamed KB"                                   # cosmetic: must not fork version identity
+    async with tenant_session(ws_id) as s:
+        after = (await _load(s, av_id)).to_snapshot()
+    assert after.snapshot_hash == before and after.retrieval[0].kb_name == "Renamed KB"

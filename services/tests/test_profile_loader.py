@@ -46,3 +46,40 @@ def test_resolve_unknown_model_fails_closed():
     # FR-008: no guessed model/pricing — a clear, caller-visible error, not a silent default
     with pytest.raises((FileNotFoundError, LookupError, ValueError)):
         resolve_profile("openai", "does-not-exist")
+
+
+# ---- feature 024 (T083): embedding profiles resolved by model (the KB names a model; provider comes from its profile)
+def test_resolve_embedding_profile_by_model_openai_and_bedrock():
+    from runtime.providers.profiles import resolve_embedding_profile_by_model
+    o = resolve_embedding_profile_by_model("text-embedding-3-small")
+    b = resolve_embedding_profile_by_model("amazon.titan-embed-text-v2:0")
+    assert (o.provider, o.kind, o.dimension) == ("openai", "embedding", 1024)
+    assert (b.provider, b.kind, b.dimension) == ("bedrock", "embedding", 1024)
+    assert o.feature("dimensions_param") and b.feature("dimensions_param")
+    assert o.provisional and b.provisional
+
+
+@pytest.mark.parametrize("model", ["gpt-5", "nope"])
+def test_resolve_embedding_profile_by_model_fails_closed(model):
+    from runtime.providers.profiles import resolve_embedding_profile_by_model
+    with pytest.raises(FileNotFoundError):
+        resolve_embedding_profile_by_model(model)
+
+
+def test_embedding_profile_index_is_read_once(monkeypatch):
+    """Code review 2026-11-15 #8: resolve_embedding_profile_by_model sits on every invoke (to_snapshot per binding) and
+    every KB list row — it must not glob + parse the whole profiles dir each call."""
+    from pathlib import Path
+    from runtime.providers import profiles
+    profiles.resolve_embedding_profile_by_model("text-embedding-3-small")      # warm
+    globs = []
+    real = Path.glob
+
+    def _spy(self, pattern):
+        globs.append(str(self))
+        return real(self, pattern)
+    monkeypatch.setattr(Path, "glob", _spy)
+    for _ in range(5):
+        profiles.resolve_embedding_profile_by_model("text-embedding-3-small")
+        profiles.embedding_profiles()
+    assert globs == []

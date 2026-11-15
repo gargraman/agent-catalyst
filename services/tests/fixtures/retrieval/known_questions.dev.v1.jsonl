@@ -1,0 +1,20 @@
+{"id": "d01", "question": "How many days of annual leave does an employee get?", "expected_document": "handbook.md", "expected_substring": "Annual leave is 27 days"}
+{"id": "d02", "question": "What are the core working hours?", "expected_document": "handbook.md", "expected_substring": "Core hours are 10:00 to 16:00"}
+{"id": "d03", "question": "How often are laptops refreshed?", "expected_document": "handbook.md", "expected_substring": "Laptops are refreshed every three years"}
+{"id": "d04", "question": "When must I return company equipment?", "expected_document": "handbook.md", "expected_substring": "Return equipment on your last day"}
+{"id": "d05", "question": "How do I reset my password?", "expected_document": "faq.txt", "expected_substring": "self-service portal"}
+{"id": "d06", "question": "Where is the office located?", "expected_document": "faq.txt", "expected_substring": "1 Example Street"}
+{"id": "d07", "question": "Who approves travel requests?", "expected_document": "faq.txt", "expected_substring": "line manager approves travel"}
+{"id": "d08", "question": "How do I claim business expenses?", "expected_document": "policy.pdf", "expected_substring": "submit claims through the finance portal"}
+{"id": "d09", "question": "When are expense claims due?", "expected_document": "policy.pdf", "expected_substring": "due within 30 days"}
+{"id": "d10", "question": "Who must approve a late expense claim?", "expected_document": "policy.pdf", "expected_substring": "written approval from the finance director"}
+{"id": "d11", "question": "What do new starters receive on their first morning?", "expected_document": "guide.docx", "expected_substring": "laptop and a security key"}
+{"id": "d12", "question": "What training is required before production access?", "expected_document": "guide.docx", "expected_substring": "mandatory security training"}
+{"id": "d13", "question": "How long does the buddy programme last?", "expected_document": "guide.docx", "expected_substring": "for six weeks"}
+{"id": "d14", "question": "Does the company offer private health cover?", "expected_document": "page.html", "expected_substring": "private health cover"}
+{"id": "d15", "question": "What is the employer pension contribution?", "expected_document": "page.html", "expected_substring": "6 percent of base salary"}
+{"id": "d16", "question": "When can I join the cycle to work scheme?", "expected_document": "page.html", "expected_substring": "available after probation"}
+{"id": "d17", "question": "Is annual leave pro-rated for part-time staff?", "expected_document": "handbook.md", "expected_substring": "pro-rated for part-time staff"}
+{"id": "d18", "question": "Which floor is the office on?", "expected_document": "faq.txt", "expected_substring": "fourth floor"}
+{"id": "d19", "question": "Should I keep receipts for expenses?", "expected_document": "policy.pdf", "expected_substring": "Keep every receipt"}
+{"id": "d20", "question": "Is my onboarding buddy from my own team?", "expected_document": "guide.docx", "expected_substring": "buddy from a different team"}

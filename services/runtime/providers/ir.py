@@ -6,6 +6,7 @@ above the gateway imports a provider SDK type. These are pure, frozen data contr
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from decimal import Decimal
 from enum import Enum
 
 
@@ -37,6 +38,7 @@ class EventType(str, Enum):
     USAGE = "usage"
     STOP = "stop"
     ERROR = "error"
+    CITATIONS = "citations"              # feature 024: once, after the final content, before USAGE (bound KBs only)
 
 
 @dataclass(frozen=True)
@@ -55,3 +57,22 @@ class NormalizedUsage:
     cache_write_tokens: int = 0          # cache SEEDING — cache_write premium (07)
     reasoning_tokens: int = 0            # a SUBSET of output_tokens (not additive)
     cost_usd: float = 0.0                # WE compute this (cost.py), not the provider/LiteLLM
+
+
+# ---- feature 024 (M7): embedding path (gateway.embed, contracts/runtime.md §8) ----
+@dataclass(frozen=True)
+class EmbeddingResult:
+    vectors: tuple[tuple[float, ...], ...]
+    usage: NormalizedUsage
+    cost_usd: "Decimal"
+    cost_is_estimate: bool
+    provider_request_id: str | None = None
+
+
+class EmbeddingError(Exception):
+    """Typed, key-scrubbed embedding failure (contracts/runtime.md §8)."""
+
+    def __init__(self, message: str, *, type: str, retryable: bool = False):  # noqa: A002 — contract field name
+        super().__init__(message)
+        self.type = type
+        self.retryable = retryable

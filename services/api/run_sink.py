@@ -36,6 +36,9 @@ async def persist_run_record(session: AsyncSession, workspace_id: str, rec) -> N
     # M2b (feature 007, FR-014): self-correction count persisted alongside the token metrics — no migration,
     # it rides the existing usage JSONB (identity + metrics only, no raw content — FR-019 / 006 SC-009).
     usage["correction_turns"] = int(getattr(rec, "correction_turns", 0) or 0)
+    # Feature 024: retrieval facts — ids / counts / scores / statuses only, never passage text or the query.
+    if getattr(rec, "retrieval", None) is not None:
+        usage["retrieval"] = dataclasses.asdict(rec.retrieval)
     session.add(Run(
         workspace_id=uuid.UUID(workspace_id),
         agent_id=_uuid_or_none(rec.agent_id),

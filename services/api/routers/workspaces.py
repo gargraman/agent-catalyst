@@ -82,9 +82,11 @@ async def get_spend(ws: str = Depends(resolve_workspace),
                     session: AsyncSession = Depends(tenant_db)) -> WorkspaceSpendOut:
     """Feature 009 (M6/US3): month-to-date spend vs the active monthly cap, from the same durable helpers the
     spend-cap gate enforces (one source of truth — SC-004). Workspace-scoped; `view` permission."""
-    spent = await spend.month_to_date_spend(session, ws)
+    runs, ingestion = await spend.month_to_date_breakdown(session, ws)
+    spent = runs + ingestion
     cap = await spend.active_cap_usd(session, ws)
-    return WorkspaceSpendOut(monthToDateUsd=float(spent), capUsd=float(cap), remainingUsd=float(cap - spent))
+    return WorkspaceSpendOut(monthToDateUsd=float(spent), capUsd=float(cap), remainingUsd=float(cap - spent),
+                             breakdown={"runs": f"{runs:.6f}", "ingestion": f"{ingestion:.6f}"})
 
 
 @router.get("/settings", dependencies=[Depends(require_permission("view"))])

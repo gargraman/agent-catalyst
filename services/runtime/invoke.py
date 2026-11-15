@@ -26,12 +26,15 @@ import json
 import sys
 import time
 import uuid
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 from decimal import Decimal
 
+from runtime.retrieval.render import CONTEXT_PREFIX
 from runtime.io import (
     build_correction_messages,
     build_normalized_request,
+    insert_context_message,
+    latest_user_text,
     tool_schemas_from_snapshot,
     validate_input,
 )
@@ -44,7 +47,8 @@ from runtime.providers.validation import (
     validate_output,
     validate_tool_call,
 )
-from runtime.run import InvokeResult, ModelCallRecord, Outcome, RunRecord
+from runtime.retrieval.step import RetrievalStepResult, retrieve, shrink
+from runtime.run import BindingSummary, InvokeResult, ModelCallRecord, Outcome, RetrievalSummary, RunRecord
 from runtime.tokens import count_tokens
 
 
@@ -61,6 +65,15 @@ class _State:
     correction_turns: int = 0
     run: RunRecord | None = None
     turns: list = field(default_factory=list)   # every model turn actually sent to the gateway (023 per-call records)
+    # feature 024 (M7) — always-on retrieval
+    retrieval: RetrievalStepResult | None = None
+    retrieval_ms: int = 0
+    retrieval_query: str = ""
+    retrieval_subs: tuple = ()
+    retrieval_flags: list = field(default_factory=list)   # run-level degraded markers, e.g. "context_trimmed"
+    citations: tuple = ()
+    citations_emitted: bool = False
+    run_id: str = ""              # minted once per run at pipeline start (US3 detections need it before _build_run)
 
 
 @dataclass
@@ -97,6 +110,10 @@ def _render_input(req) -> str:
         parts = []
         for m in req.messages or ():
             c = m.get("content") if isinstance(m, dict) else m
+            if isinstance(c, str) and c.startswith(CONTEXT_PREFIX):
+                # 024: retrieved KB passages are customer-confidential and never logged, even under the 023 opt-in
+                parts.append(f"[retrieved context withheld: {len(c)} chars]")
+                continue
             parts.append(c if isinstance(c, str) else json.dumps(c, sort_keys=True, default=str))
         return "\n".join(parts)
     except Exception:  # noqa: BLE001
@@ -119,10 +136,22 @@ def _build_run(snapshot, ctx, correlation_id, outcome, state, latency_ms) -> Run
     usage = state.usage
     # Carried, not recomputed (FR-014). The run cost is the Decimal SUM of the per-turn gateway costs, so the
     # per-call records sum to it exactly (023 FR-005) — a float sum then Decimal would drift (0.1 + 0.2).
-    cost = sum((_turn_cost(t) for t in state.turns), Decimal(0)) if usage is not None else None
+    # Feature 024: + every query-embedding cost (embeddings are model calls too; SC-007 cost invariant).
+    turn_cost = sum((_turn_cost(t) for t in state.turns), Decimal(0)) if usage is not None else None
+    embeds = state.retrieval.embeddings if state.retrieval is not None else ()
+    embed_cost = sum((Decimal(e.cost_usd) for e in embeds), Decimal(0))
+    cost = (turn_cost or Decimal(0)) + embed_cost if (turn_cost is not None or embeds) else None
+    estimate = state.cost_is_estimate or any(e.cost_is_estimate for e in embeds)
+    subs = state.substitutions + tuple(x for x in state.retrieval_subs if x not in state.substitutions)
+    retrieval = None
+    if state.retrieval is not None:
+        rr = state.retrieval
+        flags = [b.degraded_reason for b in rr.summaries if b.degraded_reason] + state.retrieval_flags
+        retrieval = RetrievalSummary(bindings=rr.summaries, searches=rr.searches, embed_calls=len(embeds),
+                                     retrieval_ms=state.retrieval_ms, degraded=tuple(dict.fromkeys(flags)))
     mc = snapshot.model_config or {}
     return RunRecord(
-        run_id=ctx.run_id or uuid.uuid4().hex,   # honor a caller-supplied run id (frame consistency); else mint
+        run_id=state.run_id or ctx.run_id or uuid.uuid4().hex,   # caller-supplied id wins (set into state)
         correlation_id=correlation_id,
         workspace_id=ctx.workspace_id or snapshot.workspace_id,
         agent_id=snapshot.agent_id,
@@ -141,13 +170,58 @@ def _build_run(snapshot, ctx, correlation_id, outcome, state, latency_ms) -> Run
         correction_turns=state.correction_turns,
         usage=usage,
         cost_usd=cost,
-        cost_is_estimate=state.cost_is_estimate,
-        substitutions=state.substitutions,
+        cost_is_estimate=estimate,
+        substitutions=subs,
         stop_reason=state.stop_reason,
         error=state.error,
         # 023 US3: first token of the first turn — only set in pass-through (validated turns are buffered).
         first_token_ms=state.turns[0].first_token_ms if state.turns else None,
+        retrieval=retrieval,
     )
+
+
+async def _emit_detections(ctx, snapshot, state: "_State", rres) -> None:
+    """US3: one record per withheld passage via `ctx.record_detection` — ids + categories only. Best-effort: a failing
+    sink never affects the run (contracts/runtime.md §7)."""
+    if ctx.record_detection is None:
+        return
+    for d in getattr(rres, "detections", ()) or ():
+        try:
+            out = ctx.record_detection({"run_id": state.run_id,
+                                        "workspace_id": ctx.workspace_id or snapshot.workspace_id, **d})
+            if inspect.isawaitable(out):
+                await out
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _citations_event(state: _State) -> NormalizedStreamEvent:
+    """Once per run, after the final content and before USAGE (contracts/runtime.md §5). References only — never
+    passage text. `knowledge_status` per binding; the API masks denied KBs and drops it on the published plane."""
+    state.citations_emitted = True
+    rr = state.retrieval
+    return NormalizedStreamEvent(EventType.CITATIONS, {
+        "knowledge_used": bool(state.citations),
+        "citations": [asdict(c) for c in state.citations],
+        "knowledge_status": [{"kb_id": b.kb_id, "status": b.status} for b in (rr.summaries if rr else ())],
+    })
+
+
+def _embedding_records(snapshot, ctx, run: RunRecord, provider_corr: str, state: _State) -> list:
+    """One ModelCallRecord(role="embedding") per query-embedding call, numbered AFTER all model turns so model-turn
+    numbering is unchanged (023 key set unchanged). Text only in-process; the API sink decides what leaves."""
+    rr = state.retrieval
+    if rr is None:
+        return []
+    base = len(state.turns)
+    return [ModelCallRecord(
+        run_id=run.run_id, correlation_id=run.correlation_id, provider_correlation_id=provider_corr,
+        workspace_id=run.workspace_id, agent_id=snapshot.agent_id, version_id=snapshot.version_id,
+        source=ctx.source, role="embedding", call_seq=base + i, correction=False, provider=prov, model=model,
+        prompt_version=snapshot.prompt_hash, input_text=state.retrieval_query, output_text="", latency_ms=lat,
+        first_token_ms=None, cost_usd=Decimal(res.cost_usd), cost_known=True, success=True, error_code=None,
+        provider_request_id=res.provider_request_id)
+        for i, (res, (prov, model, lat)) in enumerate(zip(rr.embeddings, rr.embedding_calls))]
 
 
 async def _emit(ctx, run: RunRecord) -> None:
@@ -274,6 +348,7 @@ async def _emit_calls(ctx, records) -> None:
 
 
 async def _pipeline(snapshot, inputs, ctx, state: _State):
+    state.run_id = ctx.run_id or uuid.uuid4().hex     # per run — never written back to a (possibly shared) ctx
     """Core generator: yields the surfaced events; builds + emits the RunRecord exactly once at the end."""
     t0 = time.perf_counter()
     correlation_id = ctx.correlation_id or uuid.uuid4().hex
@@ -295,10 +370,11 @@ async def _pipeline(snapshot, inputs, ctx, state: _State):
         # The billable RunRecord goes first: per-call telemetry is best-effort (FR-009) and must never delay or
         # prevent it — so record construction is guarded too, not just the sink call.
         await _emit(ctx, state.run)
-        if state.turns and ctx.record_call is not None:
+        if (state.turns or state.retrieval is not None) and ctx.record_call is not None:
             try:
                 records = [_call_record(snapshot, ctx, state.run, provider_corr, i, t, outcome, now)
                            for i, t in enumerate(state.turns)]
+                records += _embedding_records(snapshot, ctx, state.run, provider_corr, state)
             except Exception:  # noqa: BLE001 — telemetry is best-effort by contract
                 records = []
             await _emit_calls(ctx, records)
@@ -350,15 +426,56 @@ async def _pipeline(snapshot, inputs, ctx, state: _State):
         await _finish(Outcome.CONFIG_ERROR)
         return
 
-    # Context-budget guard — fail closed before any provider call (FR-005, SC-005).
+    # Feature 024 — always-on retrieval, ONCE, before the first model turn (contracts/runtime.md §3). Query = the
+    # latest user message; the rendered context goes in as a user-role message right before it. Bounded by the run
+    # deadline; any problem degrades the bindings, never the run (FR-020). Tool-mode bindings retrieve always-on
+    # (recorded substitution) until the tool loop exists (US4).
+    refs = tuple(snapshot.retrieval or ())
+    base_messages = req.messages
+    if refs:
+        if any(r.injection == "tool" for r in refs):
+            state.retrieval_subs += (Substitution("retrieval_tool", "downgraded",
+                                                  "tool-mode retrieval not available yet; retrieved always-on"),)
+        state.retrieval_query = latest_user_text(base_messages)
+        tr = time.perf_counter()
+        billed: list = []                              # embeddings that completed before any cancellation
+        try:
+            rres = await asyncio.wait_for(retrieve(state.retrieval_query, refs, ctx, sink=billed), timeout=deadline)
+        except TimeoutError:
+            rres = RetrievalStepResult("", (), (), tuple(
+                BindingSummary(r.kb_id, r.kb_index_version, "degraded", degraded_reason="retrieval_timeout")
+                for r in refs), (), tuple(e for e, _ in billed), embedding_calls=tuple(c for _, c in billed))
+        elapsed = time.perf_counter() - tr
+        state.retrieval_ms = int(elapsed * 1000)
+        state.retrieval_subs += tuple(rres.substitutions)
+        state.retrieval = rres
+        await _emit_detections(ctx, snapshot, state, rres)
+        req = replace(req, messages=insert_context_message(base_messages, rres.rendered))
+        deadline = deadline - elapsed                 # retrieval spends from the same wall-clock budget
+        if deadline <= 0:
+            state.error = {"type": "timeout", "retryable": False, "message": "deadline elapsed during retrieval"}
+            await _finish(Outcome.TIMEOUT)
+            return
+
+    # Context-budget guard — fail closed before any provider call (FR-005, SC-005). Feature 024 (owner decision
+    # 2026-11-14): retrieved context is trimmed FIRST — drop the lowest-scoring passages until it fits; only a
+    # request that overflows with zero passages fails.
     limit = (profile.limits or {}).get("context_tokens")
     if limit:
         est = count_tokens(req.model, req.messages, tools=req.tools, system=req.system)
+        while est > limit and state.retrieval is not None and state.retrieval.passages_used:
+            state.retrieval = shrink(state.retrieval, len(state.retrieval.passages_used) - 1)
+            req = replace(req, messages=insert_context_message(base_messages, state.retrieval.rendered))
+            est = count_tokens(req.model, req.messages, tools=req.tools, system=req.system)
+            if "context_trimmed" not in state.retrieval_flags:
+                state.retrieval_flags.append("context_trimmed")
         if est > limit:
             state.error = {"type": "context_overflow", "retryable": False,
                            "message": f"estimated {est} tokens exceeds context budget {limit}"}
             await _finish(Outcome.CONTEXT_OVERFLOW)
             return
+    if state.retrieval is not None:
+        state.citations = state.retrieval.citations
 
     # Trust-boundary mode (M2b): validate when the agent declares JSON output OR binds tools; otherwise
     # pass-through (plain text chat) streams live, unchanged from M2a.
@@ -390,7 +507,10 @@ async def _pipeline(snapshot, inputs, ctx, state: _State):
                         state.tool_calls.append(ev.data)
                     elif ev.type is EventType.STOP:
                         state.stop_reason = ev.data.get("reason")
-                    elif ev.type is EventType.USAGE:
+                    if (state.retrieval is not None and not state.citations_emitted
+                            and ev.type in (EventType.USAGE, EventType.ERROR, EventType.STOP)):
+                        yield _citations_event(state)
+                    if ev.type is EventType.USAGE:
                         state.usage = ev.data.get("usage")
                         turn.usage = state.usage
                         turn.provider_request_id = ev.data.get("provider_request_id")
@@ -407,6 +527,8 @@ async def _pipeline(snapshot, inputs, ctx, state: _State):
                     yield ev
                 turn.done = True
                 turn.t_end = time.perf_counter()
+                if state.retrieval is not None and not state.citations_emitted:
+                    yield _citations_event(state)
             else:
                 # ---- BUFFERED VALIDATED MODE (M2b trust boundary) ----
                 messages = req.messages
@@ -423,6 +545,8 @@ async def _pipeline(snapshot, inputs, ctx, state: _State):
                         state.error = turn.error
                         etype = turn.error.get("type")
                         outcome = Outcome.DEGRADED if etype == "degraded" else Outcome.PROVIDER_ERROR
+                        if state.retrieval is not None and not state.citations_emitted:
+                            yield _citations_event(state)
                         if state.usage is not None:
                             yield _usage_event(state)
                         yield _error_event(turn.error)
@@ -463,6 +587,8 @@ async def _pipeline(snapshot, inputs, ctx, state: _State):
                             yield NormalizedStreamEvent(
                                 EventType.TOOL_CALL_END,
                                 {k: tc[k] for k in ("id", "name", "args") if k in tc})
+                        if state.retrieval is not None and not state.citations_emitted:
+                            yield _citations_event(state)
                         if state.usage is not None:
                             yield _usage_event(state)
                         yield NormalizedStreamEvent(EventType.STOP, {"reason": turn.stop_reason or "stop"})
@@ -483,6 +609,8 @@ async def _pipeline(snapshot, inputs, ctx, state: _State):
                             outcome = Outcome.OUTPUT_INVALID
                             state.error = {"type": "output_invalid", "retryable": False,
                                            "message": output_defect.detail}
+                        if state.retrieval is not None and not state.citations_emitted:
+                            yield _citations_event(state)
                         if state.usage is not None:   # spend still reported on fail-closed (FR-012/P7)
                             yield _usage_event(state)
                         yield _error_event(state.error)
@@ -545,4 +673,5 @@ async def invoke_result(snapshot, inputs, ctx) -> InvokeResult:
         tool_calls=tuple(state.tool_calls),
         reasoning="".join(state.reasoning_parts) or None,
         stop_reason=state.stop_reason,
+        citations=state.citations,
     )

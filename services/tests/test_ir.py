@@ -26,6 +26,7 @@ def test_event_type_values():
     assert {e.value for e in EventType} == {
         "text_delta", "reasoning_delta", "tool_call_start", "tool_call_delta",
         "tool_call_end", "usage", "stop", "error",
+        "citations",   # feature 024 (contracts/runtime.md §5): once, before USAGE, when the version binds KBs
     }
 
 

@@ -30,6 +30,9 @@ class RetrievalRef:
     retrieval_config: dict
     injection: str
     kb_index_version: int  # carried for display/staleness; EXCLUDED from snapshot_hash (04 §9)
+    # feature 024: derived at to_snapshot() time, EXCLUDED from snapshot_hash (derived from already-hashed identity):
+    embedding_provider: str = ""   # from the embedding model's PROFILE (never settings — analyze M3)
+    kb_name: str = ""              # display name used in the rendered context + citations
 
 
 @dataclass(frozen=True)

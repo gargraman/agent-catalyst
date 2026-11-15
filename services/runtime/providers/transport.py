@@ -75,10 +75,35 @@ async def stream_chunks(**kwargs: Any) -> AsyncIterator[Any]:
     kwargs["stream"] = True
     kwargs.setdefault("drop_params", False)
     kwargs.setdefault("stream_options", {"include_usage": True})
+    # G8 (feature 024 research D9): litellm 1.106.x imports its MCP gateway handler (needs the uninstalled `mcp`
+    # package) whenever `tools` is non-empty, failing EVERY tool-bound call. Tool execution is ours (F3); bypass it.
+    # Private kwarg — pinned by tests/test_transport.py; re-verify on any litellm bump.
+    kwargs.setdefault("_skip_mcp_handler", True)
     try:
         response = await litellm.acompletion(**kwargs)
         async for chunk in response:
             yield chunk
+    except TransportError:
+        raise
+    except Exception as exc:  # noqa: BLE001 — the single litellm boundary: normalize ALL provider failures
+        raise TransportError(
+            str(exc), retryable=_is_retryable(exc), status=getattr(exc, "status_code", None)
+        ) from exc
+
+
+async def embed(**kwargs: Any) -> Any:
+    """Call `litellm.aembedding(drop_params=False, **kwargs)` and return its response (feature 024, research D2).
+
+    The embedding counterpart of `stream_chunks`, and like it the single litellm boundary for embeddings: every
+    provider/SDK/network failure is wrapped as `TransportError` with the same retryable classification. litellm also
+    reports its own cost on the response (`_hidden_params["response_cost"]`); the gateway never reads it (R3). In tests
+    this function is replaced wholesale, so litellm is never imported there.
+    """
+    import litellm  # lazy: keeps `import runtime.providers.transport` cheap + purity-safe
+
+    kwargs.setdefault("drop_params", False)
+    try:
+        return await litellm.aembedding(**kwargs)
     except TransportError:
         raise
     except Exception as exc:  # noqa: BLE001 — the single litellm boundary: normalize ALL provider failures

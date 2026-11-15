@@ -89,7 +89,7 @@ services:
 
   # The FastAPI service, built from services/Dockerfile. Dev profile: AC_ENV=dev + AC_AUTH_PROVIDER=dev enable
   # the (unverified) dev auth provider — feature 012 is FAIL-CLOSED by default. A real deployment sets
-  # AC_ENV=prod + AC_AUTH_PROVIDER=trellix-iam (+ AC_IAM_* config) and injects creds from a secret store (Vault).
+  # AC_ENV=prod + AC_AUTH_PROVIDER=trellix-iam (+ AC_IAM_* config) and injects creds from AWS Secrets Manager (feature 014).
   api:
     build:
       context: ../services
@@ -112,9 +112,10 @@ services:
       AC_AWS_REGION: us-east-1
       AWS_ACCESS_KEY_ID: test                # dev-only dummy creds for LocalStack (Secrets Manager + S3) — never real
       AWS_SECRET_ACCESS_KEY: test
-      # Object storage (feature 022): S3 reuses the SAME LocalStack endpoint + AWS creds as secrets above — no new
-      # env needed locally. Wired as INFRASTRUCTURE only; no Settings field reads a bucket name yet. When the
-      # app-side S3 client lands, add AC_S3_BUCKET (e.g. ac-uploads) + boto3 client("s3", endpoint_url=AC_AWS_ENDPOINT_URL).
+      # Object storage (feature 022/024): KB uploads go to LocalStack S3 (same endpoint + dummy creds as secrets
+      # above). Never `local` here — that is process memory and loses uploads on restart.
+      AC_STORAGE_PROVIDER: s3
+      AC_UPLOADS_BUCKET: ac-uploads
     depends_on:
       postgres:
         condition: service_healthy

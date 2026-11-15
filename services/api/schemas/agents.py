@@ -34,6 +34,25 @@ class AgentPatch(BaseModel):
     access_policy: dict | None = None                       # feature 013
 
 
+class RetrievalBindingOut(BaseModel):
+    """Feature 024. A binding the viewer may not USE renders masked: no KB id/name/model/version (analyze H2)."""
+    kb_id: str | None
+    kb_name: str | None
+    injection: str
+    retrieval_config: dict
+    embedding_model: str | None
+    kb_index_version: int | None
+    restricted: bool
+
+
+class VersionCreate(BaseModel):
+    """Feature 024 (research D12). Optional body of POST /agents/{id}/versions. `retrieval_bindings` omitted (or
+    null) ⇒ the latest version's bindings are COPIED (G2); `[]` ⇒ none. Items are validated in the router so a bad
+    binding is a 400 input.invalid naming the field (not a framework 422)."""
+    label: str | None = None
+    retrieval_bindings: list[dict] | None = None
+
+
 class VersionOut(BaseModel):
     id: str
     agent_id: str
@@ -42,6 +61,7 @@ class VersionOut(BaseModel):
     prompt_hash: str
     publishable: bool
     created_at: datetime.datetime
+    retrieval_bindings: list[RetrievalBindingOut] = Field(default_factory=list)   # feature 024
 
 
 # TODO(backend/contract): AgentOut is a thin projection (feature 011 finding F-A). The console renders provider/model,

@@ -6,6 +6,9 @@ the Pydantic schemas and is the source of truth for the generated frontend clien
 """
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
+import logging
+
 from fastapi import FastAPI, Response
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
@@ -15,12 +18,30 @@ from api.csrf import CSRFMiddleware
 from api.settings import get_settings
 from api.errors import AppError, app_error_handler
 from api.routers import (
-    agents, auth, evals, invoke, knowledge, members, provider_keys, runs, skills, tokens, tools, workspaces,
+    agents, auth, documents, evals, invoke, knowledge, members, provider_keys, runs, skills, tokens, tools, workspaces,
 )
 
 
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    """Feature 024 (research D5): one stale-ingestion-job sweep at startup, then the periodic reaper; on shutdown stop
+    the reaper and give in-flight ingestion a bounded drain (anything cut off is reaped as `interrupted` later)."""
+    from api.ingest_executor import get_executor, reap_once
+    try:
+        await reap_once()
+    except Exception:  # noqa: BLE001 — a DB that is not up yet must not block startup; the loop retries
+        logging.getLogger("ac.ingest").warning("startup ingestion sweep failed")
+    ex = get_executor()
+    ex.start_reaper(60.0)
+    try:
+        yield
+    finally:
+        await ex.stop_reaper()
+        await ex.drain(timeout=10.0)
+
+
 def create_app() -> FastAPI:
-    app = FastAPI(title="Agent Catalyst API", version="0.5.0")
+    app = FastAPI(title="Agent Catalyst API", version="0.5.0", lifespan=_lifespan)
     # Typed exception → envelope ({"error": {code, message, detail?}}). Starlette matches subclasses via MRO,
     # so one registration covers every AppError leaf (InputInvalid, AccessDenied, ConflictStale, …).
     app.add_exception_handler(AppError, app_error_handler)
@@ -38,6 +59,7 @@ def create_app() -> FastAPI:
     app.include_router(tools.router)
     app.include_router(skills.router)
     app.include_router(knowledge.router)
+    app.include_router(documents.router)          # feature 024: documents + ingestion jobs
     app.include_router(workspaces.router)
     app.include_router(workspaces.discovery_router)   # GET /api/v1/workspaces — pre-selection discovery (switcher)
     app.include_router(members.router)

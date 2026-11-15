@@ -15,7 +15,7 @@ import json as _json
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, Header, Response
+from fastapi import APIRouter, Body, Depends, Header, Response
 from sqlalchemy import select, text, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -23,28 +23,44 @@ from sqlalchemy.orm import selectinload
 from api.access_policy import PolicyPrincipal, can_use
 from api.deps import (access_principal, ensure_manage, ensure_use, require_permission, idempotency_guard,
                       Principal, rate_limit, resolve_workspace, session_principal, tenant_db)
-from api.errors import ConflictStale, InputInvalid, NotFound
-from api.models import Agent, AgentVersion
+from api.errors import ConflictStale, InputInvalid, KbArchived, NotFound
+from api.models import Agent, AgentVersion, KnowledgeBase, RetrievalBinding
 from runtime.hashing import compute_snapshot_hash
 from runtime.providers.profiles import _PROFILE_DIR
 from api.pagination import Page, clamp_limit, decode_cursor, encode_cursor
 from api.schemas.access_policy import policy_for_store, policy_out, stamp_private_owner, validate_access_policy
-from api.schemas.agents import AgentCreate, AgentOut, AgentPatch, VersionOut
+from api.schemas.agents import AgentCreate, AgentOut, AgentPatch, RetrievalBindingOut, VersionCreate, VersionOut
 
 router = APIRouter(prefix="/api/v1/agents", tags=["agents"])
 
 
-def _version_out(v: AgentVersion) -> VersionOut:
-    return VersionOut(id=str(v.id), agent_id=str(v.agent_id), label=v.label, snapshot_hash=v.snapshot_hash,
-                      prompt_hash=v.prompt_hash, publishable=v.publishable, created_at=v.created_at)
+# Feature 024: every path that renders versions eager-loads bindings + their KB (async: no lazy loads; masking needs
+# the KB's live access policy).
+_VERSIONS = selectinload(Agent.versions).selectinload(AgentVersion.retrieval_bindings).selectinload(RetrievalBinding.kb)
 
 
-def _agent_out(a: Agent) -> AgentOut:
+def _binding_out(b: RetrievalBinding, ap: PolicyPrincipal) -> RetrievalBindingOut:
+    if not can_use(b.kb.access_policy, ap):                  # H2: never reveal a KB the viewer may not use
+        return RetrievalBindingOut(kb_id=None, kb_name=None, injection=b.injection, retrieval_config=b.retrieval_config,
+                                   embedding_model=None, kb_index_version=None, restricted=True)
+    return RetrievalBindingOut(kb_id=str(b.kb_id), kb_name=b.kb.name, injection=b.injection,
+                               retrieval_config=b.retrieval_config, embedding_model=b.kb.embedding_model,
+                               kb_index_version=b.kb_index_version, restricted=False)
+
+
+def _version_out(v: AgentVersion, ap: PolicyPrincipal) -> VersionOut:
+    out = VersionOut(id=str(v.id), agent_id=str(v.agent_id), label=v.label, snapshot_hash=v.snapshot_hash,
+                     prompt_hash=v.prompt_hash, publishable=v.publishable, created_at=v.created_at)
+    out.retrieval_bindings = [_binding_out(b, ap) for b in sorted(v.retrieval_bindings, key=lambda b: str(b.kb_id))]
+    return out
+
+
+def _agent_out(a: Agent, ap: PolicyPrincipal) -> AgentOut:
     return AgentOut(id=str(a.id), name=a.name, status=a.status,
                     active_version_id=str(a.active_version_id) if a.active_version_id else None,
                     workspace_id=str(a.workspace_id), created_at=a.created_at,
                     access_policy=policy_out(a.access_policy),
-                    versions=[_version_out(v) for v in sorted(a.versions, key=lambda v: v.created_at)])
+                    versions=[_version_out(v, ap) for v in sorted(a.versions, key=lambda v: v.created_at)])
 
 
 async def _load_agent(session: AsyncSession, agent_id: str) -> Agent | None:
@@ -52,7 +68,7 @@ async def _load_agent(session: AsyncSession, agent_id: str) -> Agent | None:
         aid = uuid.UUID(agent_id)
     except ValueError:
         return None
-    stmt = select(Agent).where(Agent.id == aid).options(selectinload(Agent.versions))
+    stmt = select(Agent).where(Agent.id == aid).options(_VERSIONS)
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
@@ -133,7 +149,9 @@ async def create_agent(
         await session.flush()
         await session.refresh(agent, ["versions"])
         response.headers["ETag"] = await _etag(session, str(agent.id))
-        return _agent_out(agent)
+        # a brand-new agent has no bindings, so masking cannot apply; the creator's own role is enough here
+        return _agent_out(agent, PolicyPrincipal(role=principal.workspace_claims.get(ws, ""), teams=(),
+                                                 subject=principal.subject))
 
 
 @router.get("", dependencies=[Depends(require_permission("view"))])
@@ -145,7 +163,7 @@ async def list_agents(
     cursor: str | None = None,
 ) -> Page[AgentOut]:
     n = clamp_limit(limit)
-    stmt = select(Agent).options(selectinload(Agent.versions)).order_by(Agent.created_at.desc(), Agent.id.desc())
+    stmt = select(Agent).options(_VERSIONS).order_by(Agent.created_at.desc(), Agent.id.desc())
     cur = decode_cursor(cursor)
     if cur is not None:
         # keyset on the SAME ordering key (created_at, id) as the ORDER BY — a row-value seek, so the next
@@ -162,7 +180,7 @@ async def list_agents(
     # feature 013: omit resources the caller can't USE (P5 no-leak — a hidden row is never listed). Post-filter
     # of the page (G4): a short page is acceptable; keyset pagination still advances by created_at,id.
     rows = [a for a in rows if can_use(a.access_policy, ap)]
-    return Page[AgentOut](items=[_agent_out(a) for a in rows], next_cursor=next_cursor)
+    return Page[AgentOut](items=[_agent_out(a, ap) for a in rows], next_cursor=next_cursor)
 
 
 @router.get("/{agent_id}", dependencies=[Depends(require_permission("view"))])
@@ -179,7 +197,7 @@ async def get_agent(
     # feature 013: deny USE as a 404 byte-identical to the absent-row 404 (P5 no-leak).
     ensure_use(agent.access_policy, ap, not_found=NotFound("agent not found", detail={"agent_id": agent_id}))
     response.headers["ETag"] = await _etag(session, agent_id)
-    return _agent_out(agent)
+    return _agent_out(agent, ap)
 
 
 @router.patch("/{agent_id}", dependencies=[Depends(require_permission("agent.edit")), Depends(rate_limit("default"))])
@@ -237,7 +255,78 @@ async def patch_agent(
         raise NotFound("agent not found", detail={"agent_id": agent_id})
     agent = await _load_agent(session, agent_id)
     response.headers["ETag"] = await _etag(session, agent_id)
-    return _agent_out(agent)
+    return _agent_out(agent, ap)
+
+
+_CFG_KEYS = frozenset({"top_k", "similarity_threshold", "max_ctx_tokens", "hybrid", "reranker", "metadata_filters"})
+_MAX_BINDINGS = 5
+
+
+def _bad(field: str, why: str) -> InputInvalid:
+    return InputInvalid(f"invalid retrieval binding: {why}", detail={"field": field})
+
+
+def _num(v, field: str, lo, hi, *, integer: bool):
+    if isinstance(v, bool) or not isinstance(v, (int,) if integer else (int, float)):
+        raise _bad(field, "must be a number" if not integer else "must be an integer")
+    if not lo <= v <= hi:
+        raise _bad(field, f"must be within {lo}..{hi}")
+    return v
+
+
+def _retrieval_config(raw, i: int) -> dict:
+    """Canonical retrieval_config (data-model §5). Unknown keys are refused, not silently dropped."""
+    f = f"retrieval_bindings[{i}].retrieval_config"
+    if not isinstance(raw, dict):
+        raise _bad(f, "must be an object")
+    unknown = set(raw) - _CFG_KEYS
+    if unknown:
+        raise _bad(f, f"unknown keys {sorted(unknown)}")
+    reranker = raw.get("reranker")
+    filters = raw.get("metadata_filters", {})
+    hybrid = raw.get("hybrid", False)
+    if reranker is not None and not isinstance(reranker, str):
+        raise _bad(f + ".reranker", "must be a string or null")
+    if not isinstance(filters, dict):
+        raise _bad(f + ".metadata_filters", "must be an object")
+    if not isinstance(hybrid, bool):
+        raise _bad(f + ".hybrid", "must be a boolean")
+    return {"top_k": _num(raw.get("top_k", 6), f + ".top_k", 1, 20, integer=True),
+            "similarity_threshold": float(_num(raw.get("similarity_threshold", 0.2), f + ".similarity_threshold",
+                                               0, 1, integer=False)),
+            "max_ctx_tokens": _num(raw.get("max_ctx_tokens", 2000), f + ".max_ctx_tokens", 100, 8000, integer=True),
+            "hybrid": hybrid, "reranker": reranker, "metadata_filters": filters}
+
+
+async def _build_bindings(session: AsyncSession, raw: list, ap: PolicyPrincipal, ws: str) -> list[RetrievalBinding]:
+    if len(raw) > _MAX_BINDINGS:
+        raise _bad("retrieval_bindings", f"at most {_MAX_BINDINGS} knowledge bases per version")
+    seen: set[str] = set()
+    out = []
+    for i, b in enumerate(raw):
+        if not isinstance(b, dict) or set(b) - {"kb_id", "injection", "retrieval_config"}:
+            raise _bad(f"retrieval_bindings[{i}]", "expected {kb_id, injection, retrieval_config}")
+        kb_raw, injection = b.get("kb_id"), b.get("injection", "always_on")
+        if injection not in ("always_on", "tool"):
+            raise _bad(f"retrieval_bindings[{i}].injection", "must be always_on or tool")
+        cfg = _retrieval_config(b.get("retrieval_config", {}), i)
+        try:
+            kid = uuid.UUID(str(kb_raw))
+        except (ValueError, TypeError):
+            raise _bad(f"retrieval_bindings[{i}].kb_id", "must be a knowledge base id") from None
+        if str(kid) in seen:
+            raise _bad(f"retrieval_bindings[{i}].kb_id", "duplicate knowledge base")
+        seen.add(str(kid))
+        not_found = NotFound("knowledge base not found", detail={"kb_id": str(kb_raw)})
+        kb = (await session.execute(select(KnowledgeBase).where(KnowledgeBase.id == kid))).scalar_one_or_none()
+        if kb is None:
+            raise not_found
+        ensure_manage(kb.access_policy, ap, not_found=not_found)        # binding is an edit of the KB's use: 404→403
+        if kb.archived_at is not None:
+            raise KbArchived("the knowledge base is archived", detail={"kb_id": str(kid)})
+        out.append(RetrievalBinding(workspace_id=uuid.UUID(ws), kb_id=kid, kb_index_version=kb.index_version,
+                                    retrieval_config=cfg, injection=injection, kb=kb))
+    return out
 
 
 @router.post("/{agent_id}/versions", status_code=201, dependencies=[Depends(require_permission("agent.edit")), Depends(rate_limit("default"))])
@@ -247,6 +336,7 @@ async def create_version(
     session: AsyncSession = Depends(tenant_db),
     ap: PolicyPrincipal = Depends(access_principal),
     label: str | None = None,
+    body: VersionCreate | None = Body(default=None),
 ) -> VersionOut:
     agent = await _load_agent(session, agent_id)
     if agent is None or not agent.versions:
@@ -255,6 +345,8 @@ async def create_version(
     ensure_manage(agent.access_policy, ap,
                   not_found=NotFound("agent (or its base version) not found", detail={"agent_id": agent_id}))
     latest = sorted(agent.versions, key=lambda v: v.created_at)[-1]
+    if body is not None and body.label is not None:
+        label = body.label
     # Label uniqueness (F5): reject an explicit duplicate; auto-derive the lowest free vN (count+1 breaks once
     # a custom label exists). A durable unique(agent_id,label) constraint is deferred to M4-remainder.
     existing = {v.label for v in agent.versions}
@@ -275,8 +367,16 @@ async def create_version(
         memory_config=latest.memory_config, context_config=latest.context_config,
     )
     # Recompute the authoritative snapshot_hash (same config as latest → same hash, consistent with F4).
-    clone.retrieval_bindings, clone.tool_bindings, clone.skill_bindings = [], [], []
+    # Feature 024 (research D12): bindings authored here; omitted ⇒ COPY the latest version's (G2 — a new version
+    # must not silently drop knowledge). Tool/skill bindings keep their pre-024 behaviour.
+    if body is not None and body.retrieval_bindings is not None:
+        retrieval = await _build_bindings(session, body.retrieval_bindings, ap, ws)
+    else:
+        retrieval = [RetrievalBinding(workspace_id=b.workspace_id, kb_id=b.kb_id, kb_index_version=b.kb_index_version,
+                                      retrieval_config=dict(b.retrieval_config or {}), injection=b.injection, kb=b.kb)
+                     for b in latest.retrieval_bindings]
+    clone.retrieval_bindings, clone.tool_bindings, clone.skill_bindings = retrieval, [], []
     clone.snapshot_hash = compute_snapshot_hash(clone)
     session.add(clone)
     await session.flush()
-    return _version_out(clone)
+    return _version_out(clone, ap)

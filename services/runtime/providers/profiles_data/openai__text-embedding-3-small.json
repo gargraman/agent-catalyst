@@ -1,0 +1,14 @@
+{
+  "provider": "openai",
+  "model": "text-embedding-3-small",
+  "kind": "embedding",
+  "dimension": 1024,
+  "max_batch": 100,
+  "max_input_tokens": 8191,
+  "provisional": true,
+  "availability": "active",
+  "pricing_usd_per_mtok": {"input": 0.02, "output": 0},
+  "limits": {},
+  "features": {"dimensions_param": true},
+  "_note": "DEV-ONLY (decision 2026-11-14: customer KB content is embedded on Bedrock). Requested at dimensions=1024 (native 1536) to match the single deployment dimension — research D3. Provisional pricing (unreconciled)."
+}

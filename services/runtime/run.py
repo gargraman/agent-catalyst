@@ -30,6 +30,43 @@ class Outcome(str, Enum):
 
 
 @dataclass(frozen=True)
+class Citation:
+    """A client-visible reference to a passage the answer used (feature 024, FR-017). Carries no passage text."""
+
+    id: str
+    kb_id: str
+    document_id: str
+    document_name: str
+    chunk_id: str
+    score: float
+    page: int | None = None
+    heading: str | None = None
+
+
+@dataclass(frozen=True)
+class BindingSummary:
+    """Per-binding retrieval facts for one run (data-model §6). `kb_index_version` is what C2's refresh disclosure
+    compares against the KB's current index version."""
+
+    kb_id: str
+    kb_index_version: int
+    status: str                      # used | no_match | unavailable | degraded
+    passages_used: int = 0
+    passages_withheld: int = 0       # flagged by the injection scanner (US3)
+    top_score: float | None = None
+    degraded_reason: str | None = None
+
+
+@dataclass(frozen=True)
+class RetrievalSummary:
+    bindings: tuple[BindingSummary, ...] = ()
+    searches: int = 0
+    embed_calls: int = 0
+    retrieval_ms: int = 0
+    degraded: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class RunRecord:
     """Complete record of one invocation. Superset of the frontend `Run` display type; the M4 sink maps
     it to the stored/returned shape. Produced for EVERY invocation regardless of outcome (FR-011)."""
@@ -58,6 +95,7 @@ class RunRecord:
     stop_reason: str | None = None
     error: dict | None = None                     # normalized, api_key-scrubbed (P8)
     first_token_ms: int | None = None             # first TEXT_DELTA of the first pass-through turn (023 US3); None in validated mode
+    retrieval: "RetrievalSummary | None" = None   # feature 024: ids/counts/scores only — never passage text
 
 
 @dataclass(frozen=True)
@@ -99,3 +137,4 @@ class InvokeResult:
     tool_calls: tuple[dict, ...] = ()
     reasoning: str | None = None
     stop_reason: str | None = None
+    citations: tuple[Citation, ...] = ()        # feature 024: equals the CITATIONS event payload (entry-point parity)

@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Awaitable, Callable, Union
 
 if TYPE_CHECKING:
+    from runtime.retrieval.port import KnowledgeAccess
     from runtime.run import ModelCallRecord, RunRecord
 
 # A sink receives the finished RunRecord. May be sync or async; the runtime awaits it if awaitable.
@@ -39,3 +40,9 @@ class RunContext:
     record_call: CallSink | None = None   # per-model-call sink (023); None → no per-call records
     content_logging: bool = False     # effective content-logging flag, carried for the sink; unused by runtime logic
     provider_correlation_id: str | None = None  # platform-generated id for providers (023 FR-014); never a caller value
+    # feature 024 (M7): retrieval is orchestrated by the runtime over this API-supplied port (research D1). None with
+    # bound KBs ⇒ every binding degrades as "no_knowledge_access" (never a crash, never a silent "used").
+    knowledge: "KnowledgeAccess | None" = None
+    embedding_api_key: str | None = None      # resolved by the API like the chat key (014); provider may differ
+    embedding_region: str | None = None       # Bedrock (customer-data provider) region; key-less AWS credential chain
+    record_detection: Callable[[dict], Union[Awaitable[None], None]] | None = None  # injection detections (US3), no text

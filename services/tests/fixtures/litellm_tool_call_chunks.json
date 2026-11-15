@@ -1,0 +1,122 @@
+{
+  "litellm": "1.106.6",
+  "chunks": [
+    {
+      "finish_reason": null,
+      "tool_calls": [
+        {
+          "index": 0,
+          "id": "call_a",
+          "type": "function",
+          "name": "search_knowledge",
+          "arguments": ""
+        }
+      ],
+      "content": null,
+      "usage": null
+    },
+    {
+      "finish_reason": null,
+      "tool_calls": [
+        {
+          "index": 0,
+          "id": null,
+          "type": "function",
+          "name": null,
+          "arguments": "{\"que"
+        }
+      ],
+      "content": null,
+      "usage": null
+    },
+    {
+      "finish_reason": null,
+      "tool_calls": [
+        {
+          "index": 0,
+          "id": null,
+          "type": "function",
+          "name": null,
+          "arguments": "ry\": \"leave"
+        }
+      ],
+      "content": null,
+      "usage": null
+    },
+    {
+      "finish_reason": null,
+      "tool_calls": [
+        {
+          "index": 1,
+          "id": "call_b",
+          "type": "function",
+          "name": "lookup_order",
+          "arguments": ""
+        }
+      ],
+      "content": null,
+      "usage": null
+    },
+    {
+      "finish_reason": null,
+      "tool_calls": [
+        {
+          "index": 0,
+          "id": null,
+          "type": "function",
+          "name": null,
+          "arguments": " policy\"}"
+        }
+      ],
+      "content": null,
+      "usage": null
+    },
+    {
+      "finish_reason": null,
+      "tool_calls": [
+        {
+          "index": 1,
+          "id": null,
+          "type": "function",
+          "name": null,
+          "arguments": "{\"order_id\":"
+        }
+      ],
+      "content": null,
+      "usage": null
+    },
+    {
+      "finish_reason": null,
+      "tool_calls": [
+        {
+          "index": 1,
+          "id": null,
+          "type": "function",
+          "name": null,
+          "arguments": " \"A-17\"}"
+        }
+      ],
+      "content": null,
+      "usage": null
+    },
+    {
+      "finish_reason": "tool_calls",
+      "tool_calls": null,
+      "content": null,
+      "usage": null
+    },
+    {
+      "finish_reason": null,
+      "tool_calls": null,
+      "content": null,
+      "usage": {
+        "completion_tokens": 12,
+        "prompt_tokens": 30,
+        "total_tokens": 42,
+        "completion_tokens_details": null,
+        "prompt_tokens_details": null,
+        "cost": 1.17e-05
+      }
+    }
+  ]
+}

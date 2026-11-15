@@ -46,6 +46,11 @@ class AccessDenied(AppError):
     http_status, code = 403, "access.denied"
 
 
+class EvalKnowledgeForbidden(AccessDenied):
+    """Feature 024 / analyze H1: the eval caller cannot USE a KB bound to the evaluated version (no run, no cost)."""
+    code = "eval.knowledge_forbidden"
+
+
 class CsrfInvalid(AppError):
     """Double-submit CSRF check failed (feature 019): a cookie-authenticated state-changing request arrived
     without a `csrf` cookie matching its `X-CSRF-Token` header. 403 — a distinct code from `access.denied` so
@@ -108,6 +113,24 @@ class ToolApprovalDenied(ConflictError):
 
 class IdempotencyInProgress(ConflictError):
     code = "idempotency.in_progress"
+
+
+# --- feature 024 (M7 ingestion) ---
+class KbArchived(ConflictError):
+    code = "kb.archived"
+
+
+class DocumentProcessing(ConflictError):
+    """At most one active ingestion job per document (analyze H3; enforced by a partial unique index)."""
+    code = "document.processing"
+
+
+class JobNotRetryable(ConflictError):
+    code = "job.not_retryable"
+
+
+class UploadTooLarge(AppError):
+    http_status, code = 413, "upload.too_large"
 
 
 # --- 5xx ---

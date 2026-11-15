@@ -19,6 +19,7 @@ from api.deps import (access_principal, enforce_spend_cap, ensure_manage, ensure
                       rate_limit, resolve_workspace, tenant_db)
 from api.provider_keys import resolve_provider_key
 from api.run_sink import persist_run_record
+from api.retrieval_wiring import attach_knowledge, ensure_eval_can_use_knowledge
 from api.errors import NotFound
 from api.models import Agent
 from api.routers.agents import _version_belongs
@@ -64,6 +65,8 @@ async def create_eval_run(
     if version is None:
         raise NotFound("agent version not found", detail={"agent_id": agent_id, "version_id": body.version_id})
     candidate_snapshot = version.to_snapshot()
+    # Feature 024 / H1: the caller must be able to USE every bound KB — before any case runs (no run, no cost).
+    await ensure_eval_can_use_knowledge(session, candidate_snapshot, ap)
 
     cases = [
         EvalCase(
@@ -96,6 +99,8 @@ async def create_eval_run(
     ctx.record_call = call_log.make_call_sink(workspace_id=ws, api_key=api_key, content_logging=content_logging)
     ctx.content_logging = content_logging
     ctx.provider_correlation_id = provider_corr   # FR-014: providers only ever see a platform-generated id
+    # The gate above proved access; retrieval reads the frozen snapshot so a mid-run policy change can't fork results.
+    await attach_knowledge(session, ws, candidate_snapshot, ctx, None, bypass_access=True)
 
     result = await run_eval(cases, candidate_snapshot, baseline, policy, ctx, workspace_id=ws)
 

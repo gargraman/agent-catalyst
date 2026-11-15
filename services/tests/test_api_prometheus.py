@@ -86,3 +86,23 @@ async def test_metrics_output_has_no_tenant_or_content(monkeypatch):
     body = r.text
     assert ws not in body                              # no workspace id
     assert "secret-prompt" not in body and "secret-reply" not in body   # no content
+
+
+def test_retrieval_seconds_observed_only_for_runs_with_knowledge():
+    """Feature 024 (T049): `ac_retrieval_seconds{source}` observes `rec.retrieval.retrieval_ms`; a run with no knowledge
+    bound (retrieval None) adds no sample. Aggregate-only — no tenant/KB labels."""
+    from types import SimpleNamespace
+    from runtime.run import RetrievalSummary
+
+    def count():
+        return metrics.REGISTRY.get_sample_value("ac_retrieval_seconds_count", {"source": "eval"}) or 0.0
+
+    def rec(retrieval):
+        return SimpleNamespace(source="eval", latency_ms=10, first_token_ms=None, outcome="success", retrieval=retrieval)
+
+    before = count()
+    metrics.record_run_slis(rec(RetrievalSummary(retrieval_ms=120)))
+    metrics.record_run_slis(rec(None))
+    assert count() == before + 1
+    body = metrics.render()[0].decode()
+    assert "ac_retrieval_seconds_bucket" in body and "kb_id" not in body

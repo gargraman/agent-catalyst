@@ -1,0 +1,35 @@
+{
+  "n": 2,
+  "item_type": "dict",
+  "embedding_len": 1536,
+  "index": [
+    0,
+    1
+  ],
+  "usage": {
+    "completion_tokens": 0,
+    "prompt_tokens": 14,
+    "total_tokens": 14,
+    "completion_tokens_details": null,
+    "prompt_tokens_details": null
+  },
+  "hidden_params_keys": [
+    "_response_ms",
+    "additional_headers",
+    "api_base",
+    "callback_duration_ms",
+    "custom_llm_provider",
+    "litellm_call_id",
+    "litellm_model_name",
+    "litellm_overhead_time_ms",
+    "model_id",
+    "provider_response_model",
+    "response_cost"
+  ],
+  "hidden_additional_headers": {
+    "llm_provider-x-request-id": "req_embed_123",
+    "llm_provider-request-id": "req_embed_123",
+    "request-id": "req_embed_123"
+  },
+  "response_cost_hidden": 2.8e-07
+}

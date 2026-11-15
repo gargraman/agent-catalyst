@@ -109,7 +109,7 @@ async def test_eval_run_denied_fail_closed_no_run_written():
 
 PRIVATE = {"visibility": "private"}      # owner is stamped on create (no owner named by the client)
 _AGENT_BODY = {"provider": "openai", "model": "gpt-5-mini", "io_contract": {"input_schema": {"type": "object"}}}
-_KB_BODY = {"embedding_model": "text-embedding-3-small", "embedding_dim": 1536}
+_KB_BODY = {"embedding_model": "text-embedding-3-small", "embedding_dim": 1024}   # feature 024: deployment dim 1024
 
 
 # ---- US2: private resource reachable only by owner + admin ----------------------------------------

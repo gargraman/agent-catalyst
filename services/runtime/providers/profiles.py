@@ -28,6 +28,11 @@ class CapabilityProfile:
     availability: str = "active"      # active | deprecated | retired (16 §3)
     sunset_at: str | None = None
     provisional: bool = False         # True = pricing unreconciled → cost labeled an estimate (FR-010/P7)
+    # feature 024 (M7, research D2): embedding profiles live beside chat profiles, distinguished by `kind`.
+    kind: str = "chat"                # "chat" | "embedding"
+    dimension: int | None = None      # embedding vector length (embedding profiles only)
+    max_batch: int | None = None      # max texts per embedding call
+    max_input_tokens: int | None = None
 
     def feature(self, k: str) -> bool:
         return bool(self.features.get(k))
@@ -80,6 +85,10 @@ def _profile_from_json(doc: dict) -> CapabilityProfile:
         availability=doc.get("availability", "active"),
         sunset_at=doc.get("sunset_at"),
         provisional=bool(doc.get("provisional", False)),
+        kind=doc.get("kind", "chat"),
+        dimension=doc.get("dimension"),
+        max_batch=doc.get("max_batch"),
+        max_input_tokens=doc.get("max_input_tokens"),
     )
 
 
@@ -103,3 +112,41 @@ def resolve_profile(
     raise FileNotFoundError(
         f"no capability profile for provider={provider!r} model={model!r} in {directory}"
     )
+
+
+def resolve_embedding_profile(provider: str, model: str) -> CapabilityProfile:
+    """Resolve an EMBEDDING profile (feature 024). Fails closed with FileNotFoundError for an unknown model AND for a
+    chat model: a chat model is not an embedder, and guessing would mean wrong vectors and wrong pricing."""
+    profile = resolve_profile(provider, model)
+    if profile.kind != "embedding":
+        raise FileNotFoundError(f"no embedding profile for provider={provider!r} model={model!r} (it is a {profile.kind} model)")
+    return profile
+
+
+@lru_cache(maxsize=16)
+def _embedding_index(dir: str) -> tuple[CapabilityProfile, ...]:
+    """Every embedding profile in `dir`, read once (profiles are versioned, immutable data — same policy as
+    resolve_profile). On the invoke path via to_snapshot, so it must not re-glob per call."""
+    out = []
+    for path in sorted(Path(dir).glob("*.json")):
+        doc = json.loads(path.read_text())
+        if doc.get("kind") == "embedding":
+            out.append(_profile_from_json(doc))
+    return tuple(out)
+
+
+def resolve_embedding_profile_by_model(model: str, *, dir: str | Path = _PROFILE_DIR) -> CapabilityProfile:
+    """Find the EMBEDDING profile for a model id across providers (feature 024). A knowledge base names only its model;
+    the provider is derived from the profile, never from deployment settings (analyze M3). Fails closed on an unknown or
+    chat model. Embedding model ids are unique across providers in profiles_data (asserted, not assumed)."""
+    hits = [p for p in _embedding_index(str(dir)) if p.model == model]
+    if not hits:
+        raise FileNotFoundError(f"no embedding profile for model={model!r}")
+    if len(hits) > 1:
+        raise FileNotFoundError(f"ambiguous embedding model id {model!r}: {[h.provider for h in hits]}")
+    return hits[0]
+
+
+def embedding_profiles(*, dir: str | Path = _PROFILE_DIR) -> list[CapabilityProfile]:
+    """All embedding profiles (for KB validation's `supported_models`)."""
+    return list(_embedding_index(str(dir)))

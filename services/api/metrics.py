@@ -68,6 +68,32 @@ ac_deadline_exceeded_total = Counter(
 )
 
 
+ac_retrieval_seconds = Histogram(
+    "ac_retrieval_seconds", "Wall time of the pre-turn retrieval step per run that had knowledge bound (feature 024)",
+    ["source"], buckets=(0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10), registry=REGISTRY,
+)
+
+
+ac_injection_detections_total = Counter(
+    "ac_injection_detections_total", "Passages flagged by the injection scanner, by checkpoint and category (024)",
+    ["checkpoint", "category"], registry=REGISTRY,
+)
+ac_retrieval_passages_withheld_total = Counter(
+    "ac_retrieval_passages_withheld_total", "Retrieved passages withheld from the model by the scanner, by category",
+    ["category"], registry=REGISTRY,
+)
+
+
+def record_injection_detection(checkpoint: str, category: str, n: int = 1) -> None:
+    """Best-effort — never raises (FR-009)."""
+    try:
+        ac_injection_detections_total.labels(checkpoint=checkpoint, category=category).inc(n)
+        if checkpoint == "retrieve":
+            ac_retrieval_passages_withheld_total.labels(category=category).inc(n)
+    except Exception:  # noqa: BLE001
+        _log.warning("metrics: injection detection record failed")
+
+
 def record_run_slis(rec) -> None:
     """Observe the 023 SLIs for one recorded RunRecord — called at the same exactly-once site as `record_run`.
     Best-effort — never raises (FR-009)."""
@@ -78,6 +104,9 @@ def record_run_slis(rec) -> None:
         ft = getattr(rec, "first_token_ms", None)
         if ft is not None:
             ac_first_token_seconds.labels(source=source).observe(max(0, int(ft)) / 1000.0)
+        rr = getattr(rec, "retrieval", None)
+        if rr is not None:
+            ac_retrieval_seconds.labels(source=source).observe(max(0, int(rr.retrieval_ms or 0)) / 1000.0)
         outcome = rec.outcome.value if hasattr(rec.outcome, "value") else str(rec.outcome)
         if outcome == "timeout":
             ac_deadline_exceeded_total.labels(source=source).inc()
@@ -91,6 +120,46 @@ def record_call_log_error(stage: str) -> None:
         ac_call_log_errors_total.labels(stage=stage or "unknown").inc()
     except Exception as e:  # noqa: BLE001
         _log.debug("ac_call_log_errors_total increment failed: %s", e)
+
+
+# Feature 024 (M7) ingestion — aggregate only, no tenant/KB/document labels (FR-011 pattern).
+ac_ingestion_jobs_total = Counter(
+    "ac_ingestion_jobs_total", "Finished ingestion jobs by terminal status (ready|failed)", ["status"], registry=REGISTRY,
+)
+ac_ingestion_seconds = Histogram(
+    "ac_ingestion_seconds", "Wall time of one ingestion job from start to terminal status",
+    buckets=(0.5, 1, 2, 5, 10, 30, 60, 120, 300, 600), registry=REGISTRY,
+)
+ac_ingestion_reaped_total = Counter(
+    "ac_ingestion_reaped_total", "Ingestion jobs failed as interrupted by the stale-heartbeat reaper", registry=REGISTRY,
+)
+ac_storage_orphans_deleted_total = Counter(
+    "ac_storage_orphans_deleted_total", "Stored objects deleted by the orphan sweep (no referencing document)",
+    registry=REGISTRY,
+)
+
+
+def record_ingestion_job(status: str, seconds: float) -> None:
+    """Best-effort — a metrics failure never fails a job."""
+    try:
+        ac_ingestion_jobs_total.labels(status=status or "unknown").inc()
+        ac_ingestion_seconds.observe(max(0.0, seconds))
+    except Exception as e:  # noqa: BLE001
+        _log.debug("ingestion metrics failed: %s", e)
+
+
+def record_ingestion_reaped(n: int) -> None:
+    try:
+        ac_ingestion_reaped_total.inc(max(0, n))
+    except Exception as e:  # noqa: BLE001
+        _log.debug("ac_ingestion_reaped_total failed: %s", e)
+
+
+def record_storage_orphans_deleted(n: int) -> None:
+    try:
+        ac_storage_orphans_deleted_total.inc(max(0, n))
+    except Exception as e:  # noqa: BLE001
+        _log.debug("ac_storage_orphans_deleted_total failed: %s", e)
 
 
 def record_run(status: str, source: str) -> None:

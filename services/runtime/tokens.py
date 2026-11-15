@@ -43,3 +43,9 @@ def count_tokens(model, messages, tools=None, system=None) -> int:
     if tools:
         chars += len(json.dumps(tools, default=str))
     return math.ceil(chars / _CHARS_PER_TOKEN) + _PER_MESSAGE_OVERHEAD * turns
+
+
+def count_text_tokens(text: str) -> int:
+    """Token estimate for a bare text (feature 024 chunker): the same over-estimating chars/token heuristic as
+    `count_tokens`, without per-message framing, so retrieval trimming math agrees with the context-budget guard."""
+    return math.ceil(len(text) / _CHARS_PER_TOKEN) if text else 0

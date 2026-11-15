@@ -9,7 +9,7 @@ PYTEST ?= python -m pytest
 
 ## up: bring up the default dev stack (Postgres, PgBouncer, Redis, LocalStack [secrets+S3, buckets created], api)
 up:
-	$(COMPOSE) up -d --wait
+	$(COMPOSE) up -d --wait --build
 
 ## down: stop the stack (named volumes are kept; run `$(COMPOSE) down -v` to wipe data)
 down:
@@ -31,7 +31,7 @@ test-integration:
 	cd services && AC_RUN_LOCALSTACK=1 \
 		AC_AWS_ENDPOINT_URL=http://localhost:4566 \
 		AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test \
-		$(PYTEST) -v tests/test_aws_secrets_localstack.py tests/test_s3_buckets_localstack.py
+		$(PYTEST) -v tests/*_localstack.py
 
 ## observability-up: turn ON the PLACEHOLDER observability profile — NOT Langfuse-v3-ready (see compose comments)
 observability-up:

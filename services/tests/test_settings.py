@@ -77,6 +77,7 @@ _TELEMETRY_ENV = ("AC_ENV", "AC_TELEMETRY_FINGERPRINT_KEY", "AC_TELEMETRY_LOG_CO
 def _prod_safe(monkeypatch):
     for k in _TELEMETRY_ENV:
         monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("AC_STORAGE_PROVIDER", "s3")      # prod requires durable upload storage (review 2026-11-15 #9)
 
 
 def test_prod_without_fingerprint_key_fails_closed(monkeypatch):
@@ -134,3 +135,114 @@ def test_content_override_only_in_exact_dev_profile(monkeypatch, env):
     monkeypatch.setenv("AC_ENV", env)
     monkeypatch.setenv("AC_TELEMETRY_LOG_CONTENT_IN_DEV", "true")
     assert Settings().telemetry_content_override is False
+
+
+# ---- feature 024 (M7 RAG): storage + ingestion + embedding settings (tasks.md T010) -------------------------
+_INGEST_ENV = ("AC_STORAGE_PROVIDER", "AC_UPLOADS_BUCKET", "AC_INGEST_MAX_FILE_BYTES", "AC_INGEST_CONCURRENCY",
+               "AC_INGEST_STALE_AFTER_S", "AC_INGEST_HEARTBEAT_S", "AC_EMBEDDING_PROVIDER", "AC_EMBEDDING_ALLOWED_PROVIDERS")
+
+
+def _ingest_clean(monkeypatch):
+    for k in _INGEST_ENV:
+        monkeypatch.delenv(k, raising=False)
+
+
+def test_ingest_settings_defaults(monkeypatch):
+    _ingest_clean(monkeypatch)
+    s = Settings()
+    assert getattr(s, "storage_provider", None) == "local"
+    assert getattr(s, "uploads_bucket", None) == "ac-uploads"
+    assert getattr(s, "ingest_max_file_bytes", None) == 20971520          # 20 MiB
+    assert getattr(s, "ingest_concurrency", None) == 2
+    assert getattr(s, "ingest_stale_after_s", None) == 120
+    assert getattr(s, "ingest_heartbeat_s", None) == 15
+    assert not hasattr(s, "embedding_provider"), "provider comes from the KB model's profile now (T083, analyze M3)"
+
+
+def test_ingest_settings_env_overrides(monkeypatch):
+    _ingest_clean(monkeypatch)
+    monkeypatch.setenv("AC_STORAGE_PROVIDER", "s3")
+    monkeypatch.setenv("AC_UPLOADS_BUCKET", "other-bucket")
+    monkeypatch.setenv("AC_INGEST_MAX_FILE_BYTES", "1024")
+    monkeypatch.setenv("AC_INGEST_CONCURRENCY", "4")
+    s = Settings()
+    assert (getattr(s, "storage_provider", None), getattr(s, "uploads_bucket", None)) == ("s3", "other-bucket")
+    assert (getattr(s, "ingest_max_file_bytes", None), getattr(s, "ingest_concurrency", None)) == (1024, 4)
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        {"AC_STORAGE_PROVIDER": "minio"},                                   # only local | s3
+        {"AC_INGEST_MAX_FILE_BYTES": "0"},                                  # must be > 0
+        {"AC_INGEST_CONCURRENCY": "0"},                                     # 1..16
+        {"AC_INGEST_CONCURRENCY": "17"},
+        {"AC_INGEST_STALE_AFTER_S": "29"},                                  # >= 30
+        {"AC_INGEST_STALE_AFTER_S": "60", "AC_INGEST_HEARTBEAT_S": "30"},   # heartbeat < stale_after / 2
+    ],
+)
+def test_ingest_settings_invalid_values_fail_closed(monkeypatch, env):
+    _ingest_clean(monkeypatch)
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    with pytest.raises(ValidationError):
+        Settings()
+
+
+
+# ---- decision 2026-11-14 (T083): customer KB content is embedded only on Bedrock in prod -------------------------
+def test_embedding_providers_allowed_default_non_prod(monkeypatch):
+    _ingest_clean(monkeypatch)
+    monkeypatch.setenv("AC_ENV", "dev")
+    assert Settings().embedding_providers_allowed == frozenset({"openai", "bedrock"})
+
+
+def test_embedding_providers_allowed_default_prod_is_bedrock_only(monkeypatch):
+    _prod_safe(monkeypatch)
+    _ingest_clean(monkeypatch)
+    monkeypatch.setenv("AC_ENV", "prod")
+    monkeypatch.setenv("AC_STORAGE_PROVIDER", "s3")
+    monkeypatch.setenv("AC_TELEMETRY_FINGERPRINT_KEY", "a-real-deployment-key-0123456789")
+    assert Settings().embedding_providers_allowed == frozenset({"bedrock"})
+
+
+def test_embedding_providers_allowed_env_override(monkeypatch):
+    _ingest_clean(monkeypatch)
+    monkeypatch.setenv("AC_ENV", "dev")
+    monkeypatch.setenv("AC_EMBEDDING_ALLOWED_PROVIDERS", "bedrock")
+    assert Settings().embedding_providers_allowed == frozenset({"bedrock"})
+
+
+def test_embedding_providers_allowed_rejects_unknown(monkeypatch):
+    _ingest_clean(monkeypatch)
+    monkeypatch.setenv("AC_EMBEDDING_ALLOWED_PROVIDERS", "openai,vertex")
+    with pytest.raises(ValidationError):
+        Settings()
+
+
+# ---- T080 (H5): orphaned-object sweep grace period -------------------------------------------------------------
+def test_storage_orphan_grace_default_and_floor(monkeypatch):
+    monkeypatch.delenv("AC_STORAGE_ORPHAN_GRACE_S", raising=False)
+    assert getattr(Settings(), "storage_orphan_grace_s", None) == 3600
+    monkeypatch.setenv("AC_STORAGE_ORPHAN_GRACE_S", "299")      # below 5 min could delete an in-flight upload's object
+    with pytest.raises(ValidationError):
+        Settings()
+
+
+def test_prod_rejects_in_memory_upload_storage(monkeypatch):
+    """Code review 2026-11-15 #9: `local` storage lives in process memory — uploads vanish on restart / other
+    replicas. Fail closed at load under prod, like the fingerprint key."""
+    _prod_safe(monkeypatch)
+    monkeypatch.setenv("AC_ENV", "prod")
+    monkeypatch.setenv("AC_TELEMETRY_FINGERPRINT_KEY", "a-real-deployment-key-0123456789")
+    monkeypatch.setenv("AC_STORAGE_PROVIDER", "local")
+    with pytest.raises(ValidationError, match="AC_STORAGE_PROVIDER"):
+        Settings()
+    monkeypatch.setenv("AC_STORAGE_PROVIDER", "s3")
+    assert Settings().storage_provider == "s3"
+
+
+def test_compose_dev_stack_uses_localstack_s3_for_uploads():
+    from pathlib import Path
+    compose = (Path(__file__).resolve().parents[2] / "deploy" / "compose.yaml").read_text()
+    assert "AC_STORAGE_PROVIDER: s3" in compose
