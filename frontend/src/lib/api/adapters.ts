@@ -52,22 +52,32 @@ export function inputVariablesFromSchema(schema: unknown): InputVariable[] {
 /** Typed input variables → input_schema. Keys of an existing property the console doesn't model (enum values,
  *  description, …) are carried over from `prev` so a round-trip never silently drops them. */
 export function schemaFromInputVariables(vars: InputVariable[], prev: unknown): Record<string, unknown> {
-  const prevProps = ((prev ?? {}) as { properties?: Record<string, Record<string, unknown>> }).properties ?? {};
+  // Top-level keys the console doesn't model (additionalProperties, $schema, description, …) survive the round-trip.
+  const top = { ...((prev ?? {}) as Record<string, unknown>) };
+  const prevProps = (top.properties ?? {}) as Record<string, Record<string, unknown>>;
   const properties: Record<string, Record<string, unknown>> = {};
   for (const v of vars) {
     const base = { ...(prevProps[v.name] ?? {}) };
     delete base.default;
     if (v.type === "enum") {
       base.type = "string";
-      if (!Array.isArray(base.enum)) base.enum = v.default ? [v.default] : [];
+      // `enum: []` is an unsatisfiable schema (no value validates) — seed from the default, else leave it out.
+      if (!Array.isArray(base.enum) || base.enum.length === 0) {
+        if (v.default) base.enum = [v.default];
+        else delete base.enum;
+      }
     } else {
-      base.type = v.type;
+      // The console folds integer into "number" on read; keep the stricter integer when the user didn't change type.
+      base.type = v.type === "number" && base.type === "integer" ? "integer" : v.type;
       delete base.enum;
     }
-    if (v.default) base.default = v.type === "number" && Number.isFinite(Number(v.default)) ? Number(v.default) : v.default;
+    if (v.default) {
+      const n = Number(v.default);
+      base.default = v.type === "number" && Number.isFinite(n) ? n : v.default;
+    }
     properties[v.name] = base;
   }
-  return { type: "object", properties, required: vars.filter((v) => v.required).map((v) => v.name) };
+  return { ...top, type: "object", properties, required: vars.filter((v) => v.required).map((v) => v.name) };
 }
 
 function draftOut(d: DraftOut | null | undefined, o: AgentOut): LiveDraft | undefined {

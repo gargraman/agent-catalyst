@@ -6,7 +6,7 @@ import {
   createVersion as apiCreateVersion,
   type AgentOut, type AgentPatch, type DevPrincipal, type WorkspaceMembershipOut,
 } from "./api/client";
-import { agentOutToAgent, agentToCreate, draftWithEdit, type DraftEdit } from "./api/adapters";
+import { agentOutToAgent, agentToCreate, draftWithEdit, inputVariablesFromSchema, providerKey, type DraftEdit } from "./api/adapters";
 import { refusalMessage } from "./api/refusals";
 import {
   AGENTS, KNOWLEDGE_BASES, INGESTION_JOBS, MCP_SERVERS, TOOLS_REPO, SKILLS, EVAL_RUNS, EVAL_SUITES, RUNS, TOOL_APPROVALS,
@@ -364,17 +364,32 @@ export function loadAgent(id: string, opts: LoadOpts = {}): Promise<void> {
   if (!opts.force && etags.has(id) && state.agents.some((a) => a.id === id)) return Promise.resolve();
   const wsId = ws.id;
   return load(`agent:${id}`, async () => {
+    const seq = issueSeq(id);
     const { data, etag } = await getAgentWithEtag(callerFor(ws), id);
-    applyAgentOut(data, etag, wsId);
+    applyAgentOut(data, etag, wsId, seq);
   }, { ...opts, force: true });
 }
 
 /** Per-agent ETag (xmin) from the last GET/PATCH. Not render state, so it lives outside `state`. */
 const etags = new Map<string, string>();
 
+/** Review #10: a GET issued BEFORE a PATCH can resolve AFTER it; applying it would roll the agent (and its ETag)
+ *  back to the pre-edit row, so the next edit 409s against the user's own save. Every agent request takes a
+ *  per-agent sequence number when it is ISSUED, and a response is applied only if it is newer than the last one
+ *  applied. Responses then land in issue order (the server serialises the writes, so issue order is row order). */
+const issuedSeq = new Map<string, number>();
+const appliedSeq = new Map<string, number>();
+function issueSeq(id: string): number {
+  const n = (issuedSeq.get(id) ?? 0) + 1;
+  issuedSeq.set(id, n);
+  return n;
+}
+
 /** Merge one server AgentOut into the store (+ remember its ETag). Merges over an existing copy so a refresh doesn't
- *  wipe local-only display fields (see addAgent NOTE). */
-function applyAgentOut(o: AgentOut, etag: string | null, consoleWsId: string) {
+ *  wipe local-only display fields (see addAgent NOTE). A response older than one already applied is dropped. */
+function applyAgentOut(o: AgentOut, etag: string | null, consoleWsId: string, seq: number) {
+  if (seq <= (appliedSeq.get(o.id) ?? 0)) return;
+  appliedSeq.set(o.id, seq);
   if (etag) etags.set(o.id, etag);
   const fresh = agentOutToAgent(o, consoleWsId);
   const prev = state.agents.find((x) => x.id === o.id);
@@ -418,8 +433,9 @@ async function livePatch(id: string, action: string, build: (a: Agent) => AgentP
   const conflict = () => set({ editConflicts: { ...state.editConflicts, [id]: { reapply: () => livePatch(id, action, build, okMsg) } } });
   if (!etag) { conflict(); return false; }  // never loaded with an ETag → force a reload rather than guess
   try {
+    const seq = issueSeq(id);
     const { data, etag: next } = await patchAgent(callerFor(ws), id, body, etag);
-    applyAgentOut(data, next, ws.id);
+    applyAgentOut(data, next, ws.id, seq);
     if (okMsg) toast(okMsg);
     return true;
   } catch (e) {
@@ -789,20 +805,23 @@ async function updateAgentLive(id: string, patch: Partial<Agent>, notify: boolea
   return ok;
 }
 
-/** Live: save draft-config edits as ONE PATCH {draft}. Only fields that differ from the current server draft are
- *  sent (an untouched default — e.g. temperature the server never set — is not written). */
+/** Live: save draft-config edits as ONE PATCH {draft}. Only fields that differ from the RAW server draft are sent.
+ *  Review #9: diffing against `resolveConfig` compared an unset param with the console DEFAULT, so deliberately
+ *  choosing that default was silently dropped. Untouched defaults are kept out by the caller (it passes a param only
+ *  when the user edited it), not by comparing with a value the server never stored. */
 export function saveLiveDraft(id: string, edit: DraftEdit, notify = true): Promise<boolean> {
   return livePatch(id, "Save draft", (a) => {
     if (!a.draft) { toast("This agent has no draft to edit yet.", "critical"); return null; }
-    const cur = resolveConfig(a);
+    const d = a.draft;
+    const io = d.io_contract as { input_schema?: unknown; output_format?: unknown };
     const e: DraftEdit = {};
-    if (edit.provider !== undefined && edit.provider !== a.provider) e.provider = edit.provider;
-    if (edit.model !== undefined && edit.model !== a.model) e.model = edit.model;
-    if (edit.systemPrompt !== undefined && edit.systemPrompt !== cur.systemPrompt) e.systemPrompt = edit.systemPrompt;
-    if (edit.temperature !== undefined && edit.temperature !== cur.temperature) e.temperature = edit.temperature;
-    if (edit.maxOutputTokens !== undefined && edit.maxOutputTokens !== cur.maxOutputTokens) e.maxOutputTokens = edit.maxOutputTokens;
-    if (edit.outputFormat !== undefined && edit.outputFormat !== cur.outputFormat) e.outputFormat = edit.outputFormat;
-    if (edit.inputVariables !== undefined && JSON.stringify(edit.inputVariables) !== JSON.stringify(cur.inputVariables)) e.inputVariables = edit.inputVariables;
+    if (edit.provider !== undefined && providerKey(edit.provider) !== d.provider) e.provider = edit.provider;
+    if (edit.model !== undefined && edit.model !== d.model) e.model = edit.model;
+    if (edit.systemPrompt !== undefined && edit.systemPrompt !== d.system_prompt) e.systemPrompt = edit.systemPrompt;
+    if (edit.temperature !== undefined && edit.temperature !== d.model_params.temperature) e.temperature = edit.temperature;
+    if (edit.maxOutputTokens !== undefined && Math.round(edit.maxOutputTokens) !== d.model_params.max_tokens) e.maxOutputTokens = edit.maxOutputTokens;
+    if (edit.outputFormat !== undefined && edit.outputFormat !== io.output_format) e.outputFormat = edit.outputFormat;
+    if (edit.inputVariables !== undefined && JSON.stringify(edit.inputVariables) !== JSON.stringify(inputVariablesFromSchema(io.input_schema))) e.inputVariables = edit.inputVariables;
     if (!Object.keys(e).length) return null;
     return { draft: draftWithEdit(a.draft, e) };
   }, notify ? "Draft saved — create a version to freeze it" : undefined);

@@ -393,6 +393,12 @@ function Configure({ agent, model }: { agent: ReturnType<typeof getAgent> & {}; 
   // Model params
   const [temperature, setTemperature] = React.useState(String(base.temperature));
   const [maxTokens, setMaxTokens] = React.useState(String(base.maxOutputTokens));
+  // Live (review #9): a param the server never set renders the console default, so "unchanged text" can't tell an
+  // untouched field from the user deliberately picking that default. Track a real touched flag instead.
+  const [tempTouched, setTempTouched] = React.useState(false);
+  const [maxTouched, setMaxTouched] = React.useState(false);
+  const tempUnset = live && agent.draft?.model_params.temperature === undefined;
+  const maxUnset = live && agent.draft?.model_params.max_tokens === undefined;
   const [reasoning, setReasoning] = React.useState<ReasoningEffort>(base.reasoningEffort);
   const [fallback, setFallback] = React.useState(base.fallbackModel);
   // System prompt
@@ -413,7 +419,7 @@ function Configure({ agent, model }: { agent: ReturnType<typeof getAgent> & {}; 
 
 
   const generalDirty = name !== agent.name || description !== agent.description || parsedTags.join("\u0000") !== agent.tags.join("\u0000");
-  const modelDirty = provider !== agent.provider || modelId !== agent.model || parseNum(temperature, base.temperature) !== base.temperature || parseNum(maxTokens, base.maxOutputTokens) !== base.maxOutputTokens || reasoning !== base.reasoningEffort || fallback !== base.fallbackModel;
+  const modelDirty = provider !== agent.provider || modelId !== agent.model || parseNum(temperature, base.temperature) !== base.temperature || parseNum(maxTokens, base.maxOutputTokens) !== base.maxOutputTokens || (tempUnset && tempTouched) || (maxUnset && maxTouched) || reasoning !== base.reasoningEffort || fallback !== base.fallbackModel;
   const promptDirty = systemPrompt !== base.systemPrompt;
   const ioDirty = outputFormat !== base.outputFormat || includeCitations !== base.includeCitations || JSON.stringify(inputVariables) !== JSON.stringify(base.inputVariables);
   const memoryDirty = truncation !== base.truncationStrategy || sessionMemory !== base.sessionMemory || parseNum(maxTurns, base.maxTurnsRetained) !== base.maxTurnsRetained || longTerm !== base.longTermMemory;
@@ -445,7 +451,11 @@ function Configure({ agent, model }: { agent: ReturnType<typeof getAgent> & {}; 
 
         <SectionCard title="Model" desc="Model-agnostic. Edits save to the agent's draft config; a provider or model swap should be re-evaluated before you publish." action={saveBtn(modelDirty, () => {
           if (live) {
-            void saveLiveDraft(agent.id, { provider, model: modelId, temperature: parseNum(temperature, base.temperature), maxOutputTokens: parseNum(maxTokens, base.maxOutputTokens) });
+            void saveLiveDraft(agent.id, {
+              provider, model: modelId,
+              ...(tempTouched ? { temperature: parseNum(temperature, base.temperature) } : {}),
+              ...(maxTouched ? { maxOutputTokens: parseNum(maxTokens, base.maxOutputTokens) } : {}),
+            });
             return;
           }
           updateAgent(agent.id, { provider: provider as Agent["provider"], model: modelId }, false); updateAgentConfig(agent.id, { temperature: parseNum(temperature, base.temperature), maxOutputTokens: parseNum(maxTokens, base.maxOutputTokens), reasoningEffort: reasoning, fallbackModel: fallback });
@@ -457,8 +467,8 @@ function Configure({ agent, model }: { agent: ReturnType<typeof getAgent> & {}; 
             <Field label="Model">
               <Select value={modelId} onChange={(e) => setModelId(e.target.value)}>{MODELS.filter((m) => m.provider === provider).map((m) => <option key={m.model}>{m.model}</option>)}</Select>
             </Field>
-            <Field label={<Term id="temperature">Temperature</Term>} hint={live && agent.draft?.model_params.temperature === undefined ? "Not set on the server (provider default) — shown value is the console default" : undefined}><Input value={temperature} onChange={(e) => setTemperature(e.target.value)} inputMode="decimal" /></Field>
-            <Field label={<>Max output <Term id="token">tokens</Term></>} hint={live && agent.draft?.model_params.max_tokens === undefined ? "Not set on the server (provider default) — shown value is the console default" : undefined}><Input value={maxTokens} onChange={(e) => setMaxTokens(e.target.value)} inputMode="numeric" /></Field>
+            <Field label={<Term id="temperature">Temperature</Term>} hint={live && agent.draft?.model_params.temperature === undefined ? "Not set on the server (provider default) — shown value is the console default" : undefined}><Input value={temperature} onChange={(e) => { setTemperature(e.target.value); setTempTouched(true); }} inputMode="decimal" /></Field>
+            <Field label={<>Max output <Term id="token">tokens</Term></>} hint={live && agent.draft?.model_params.max_tokens === undefined ? "Not set on the server (provider default) — shown value is the console default" : undefined}><Input value={maxTokens} onChange={(e) => { setMaxTokens(e.target.value); setMaxTouched(true); }} inputMode="numeric" /></Field>
             <Field label={<Term id="reasoning-effort">Reasoning effort</Term>} hint={live ? naLive : undefined}>
               <Select value={reasoning} disabled={live} onChange={(e) => setReasoning(e.target.value as ReasoningEffort)}><option value="low">low</option><option value="medium">medium</option><option value="high">high</option><option value="xhigh">xhigh</option><option value="max">max</option></Select>
             </Field>
