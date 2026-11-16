@@ -25,7 +25,7 @@ from api.access_policy import PolicyPrincipal, can_use
 from api.db_errors import check_active_version_now, integrity_mapped
 from api.deps import (access_principal, ensure_manage, ensure_use, require_permission, idempotency_guard,
                       Principal, rate_limit, resolve_workspace, session_principal, tenant_db)
-from api.errors import ConflictStale, InputInvalid, KbArchived, NotFound
+from api.errors import AgentArchived, ConflictStale, InputInvalid, KbArchived, NotFound
 from api.models import Agent, AgentVersion, KnowledgeBase, RetrievalBinding, Skill, SkillBinding, Tool, ToolBinding
 from runtime.hashing import compute_snapshot_hash
 from runtime.providers.profiles import _PROFILE_DIR
@@ -278,6 +278,12 @@ async def patch_agent(
     if cur is None:
         raise NotFound("agent not found", detail={"agent_id": agent_id})
     ensure_manage(cur.access_policy, ap, not_found=NotFound("agent not found", detail={"agent_id": agent_id}))
+    # 026 D4: an archived agent is read-only — the ONLY accepted PATCH is a bare status transition out of `archived`
+    # (validated as a restore below). Checked before payload validation so the state, not the payload, explains it.
+    if cur.status == "archived":
+        other = (body.name, body.description, body.draft, body.access_policy, body.active_version_id)
+        if any(f is not None for f in other) or body.status in (None, "archived"):
+            raise AgentArchived("an archived agent is read-only; restore it first", detail={"agent_id": agent_id})
     # A re-point MUST target a version of THIS agent (validated/scoped) — never a foreign version or a
     # malformed id landing as a 500 (F3).
     new_av = None
@@ -427,6 +433,18 @@ def _missing_binding(kind: str, rid) -> NotFound:
 _DEFAULT_INJECTION = "always_on"     # 024: retrieval-as-a-tool (US4) is parked, so always_on is the working mode
 
 
+_EMPTY_ARGS = {"type": "object", "properties": {}}
+
+
+def _tool_def(t: Tool) -> dict:
+    """The provider-shaped def frozen into `schema_snapshot` (sent to the model as-is by `build_request`). Anthropic
+    requires an `input_schema` object, so one is ALWAYS present: the tool's own `http_config.input_schema` when it is
+    an object schema, else an empty-object schema (the registry has no schema column yet)."""
+    s = (t.http_config or {}).get("input_schema")
+    schema = dict(s) if isinstance(s, dict) and s.get("type") == "object" else dict(_EMPTY_ARGS)
+    return {"name": t.name, "description": t.description, "input_schema": schema}
+
+
 async def _draft_bindings(session: AsyncSession, resolved: dict, base: AgentVersion | None, ap: PolicyPrincipal,
                           ws: str) -> tuple[list[RetrievalBinding], list[ToolBinding], list[SkillBinding]]:
     """Existence-check + snapshot every binding the draft names (D2). Tool/skill snapshots are taken from the LIVE
@@ -455,7 +473,7 @@ async def _draft_bindings(session: AsyncSession, resolved: dict, base: AgentVers
         ensure_use(t.access_policy, ap, not_found=_missing_binding("tool", tid))
         tools.append(ToolBinding(
             workspace_id=wsid, kind=t.kind, tool_id=t.id,
-            schema_snapshot={"name": t.name, "description": t.description},
+            schema_snapshot=_tool_def(t),
             config_snapshot=dict(t.http_config or {}), risk_tier=t.risk_tier,
             requires_approval=t.risk_tier != "read"))
     skills = []
@@ -504,6 +522,8 @@ async def create_version(
     # feature 013: creating a version is an edit → MANAGE gate (404-then-403) after RBAC.
     ensure_manage(agent.access_policy, ap,
                   not_found=NotFound("agent (or its base version) not found", detail={"agent_id": agent_id}))
+    if agent.status == "archived":
+        raise AgentArchived("an archived agent is read-only; restore it first", detail={"agent_id": agent_id})
     base = _active_version(agent) or sorted(agent.versions, key=lambda v: v.created_at)[-1]
     if body is not None and body.label is not None:
         label = body.label
@@ -521,7 +541,6 @@ async def create_version(
         new_label = f"v{k}"
     if agent.draft is None:
         retrieval, tools, skills = _clone_bindings(base)
-        resolved = drafts.project(base)
     else:
         resolved = drafts.normalize(agent.draft)
         try:
@@ -532,12 +551,12 @@ async def create_version(
         retrieval, tools, skills = await _draft_bindings(session, resolved, base, ap, ws)
     if body is not None and body.retrieval_bindings is not None:
         retrieval = await _build_bindings(session, body.retrieval_bindings, ap, ws)
-    v = drafts.version_from_draft(agent, resolved, label=new_label, base=base, created_by=principal.subject,
-                                  retrieval=retrieval, tools=tools, skills=skills)
-    if agent.draft is None:
-        # exact clone: keep the base's frozen profile + prompt hash so identical content hashes identically (F4)
-        v.profile_snapshot, v.prompt_hash = base.profile_snapshot, base.prompt_hash
-        v.snapshot_hash = compute_snapshot_hash(v)
+    if agent.draft is None:   # exact clone of the base's stored config (review #1/#2)
+        v = drafts.clone_version(agent, base, label=new_label, created_by=principal.subject,
+                                 retrieval=retrieval, tools=tools, skills=skills)
+    else:
+        v = drafts.version_from_draft(agent, resolved, label=new_label, base=base, created_by=principal.subject,
+                                      retrieval=retrieval, tools=tools, skills=skills)
     session.add(v)
     async with integrity_mapped():   # 025 US4: a bound row deleted after the pre-check → typed 4xx, not 500
         await session.flush()

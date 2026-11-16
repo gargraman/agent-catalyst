@@ -120,6 +120,11 @@ class KbArchived(ConflictError):
     code = "kb.archived"
 
 
+class AgentArchived(ConflictError):
+    """An archived agent is read-only (feature 026 D4): only the restore transition is accepted."""
+    code = "agent.archived"
+
+
 class VersionFrozen(ConflictError):
     """A committed version's bindings are immutable (feature 025 US4, FR-018 — `frozen_binding:` trigger refusal)."""
     code = "version.frozen"

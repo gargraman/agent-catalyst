@@ -165,6 +165,24 @@ def version_from_draft(agent, draft: Draft | dict, *, label: str, base: AgentVer
     return v
 
 
+def clone_version(agent, base: AgentVersion, *, label: str, created_by: str | None = None,
+                  retrieval=(), tools=(), skills=()) -> AgentVersion:
+    """An UNSAVED exact copy of `base` (the NULL-draft path). Copies the stored config verbatim — never re-derives it
+    through `project()`/`profile_doc()`, which would drop keys outside the Draft shape (api_version) and 500 on a
+    base whose capability profile has since been retired. Identical content ⇒ identical snapshot_hash (F4)."""
+    v = AgentVersion(
+        workspace_id=agent.workspace_id, agent_id=agent.id, label=label,
+        system_prompt=base.system_prompt, prompt_hash=base.prompt_hash, snapshot_hash="",
+        model_config_=dict(base.model_config_ or {}), profile_snapshot=dict(base.profile_snapshot or {}),
+        io_contract=dict(base.io_contract or {}),
+        guardrail_config=dict(base.guardrail_config or {}), memory_config=dict(base.memory_config or {}),
+        context_config=dict(base.context_config or {}), created_by=created_by,
+    )
+    v.retrieval_bindings, v.tool_bindings, v.skill_bindings = list(retrieval), list(tools), list(skills)
+    v.snapshot_hash = compute_snapshot_hash(v)
+    return v
+
+
 def transient_version(agent, draft: Draft | dict, *, base: AgentVersion | None = None,
                       retrieval=(), tools=(), skills=()) -> AgentVersion:
     """An unsaved version for running the DRAFT through the same runtime path (D3). Never added to a session.
