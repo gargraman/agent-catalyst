@@ -100,7 +100,13 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Create Version */
+        /**
+         * Create Version
+         * @description Feature 026 (D2): freeze the RESOLVED DRAFT into a new immutable version — config + tool/skill/KB bindings in
+         *     ONE transaction (025's insert-window rule), stamped `created_by`. A NULL draft clones the active version exactly.
+         *     The new version is NOT made active (re-point is a separate, audited PATCH). The 024 `retrieval_bindings` body,
+         *     when given, still authors the KB bindings explicitly (it wins over the draft's kb_ids).
+         */
         post: operations["create_version_api_v1_agents__agent_id__versions_post"];
         delete?: never;
         options?: never;
@@ -1107,10 +1113,29 @@ export interface components {
             access_policy: components["schemas"]["AccessPolicy"];
             /** Versions */
             versions?: components["schemas"]["VersionOut"][];
+            /**
+             * Description
+             * @default
+             */
+            description: string;
+            /** Provider */
+            provider?: string | null;
+            /** Model */
+            model?: string | null;
+            draft?: components["schemas"]["DraftOut"] | null;
+            /**
+             * Draft Dirty
+             * @default false
+             */
+            draft_dirty: boolean;
+            /** Restore Status */
+            restore_status?: ("draft" | "published" | "archived" | "eval_failing") | null;
         };
         /**
          * AgentPatch
          * @description Partial edit. Requires an `If-Match` header (the prior ETag); status ∈ the agent_status enum.
+         *     Feature 026: `description` + `draft` (FULL replacement, validated → 422) ride the same xmin ETag. Archive is
+         *     `status:"archived"`; restore is `status:<restore_status>`; any other transition out of `archived` → 400.
          */
         AgentPatch: {
             /** Name */
@@ -1123,6 +1148,9 @@ export interface components {
             access_policy?: {
                 [key: string]: unknown;
             } | null;
+            /** Description */
+            description?: string | null;
+            draft?: components["schemas"]["Draft"] | null;
         };
         /** BaselineIn */
         BaselineIn: {
@@ -1222,6 +1250,67 @@ export interface components {
              * Format: date-time
              */
             updated_at: string;
+        };
+        /** Draft */
+        Draft: {
+            /** Provider */
+            provider: string;
+            /** Model */
+            model: string;
+            /** Model Params */
+            model_params?: {
+                [key: string]: unknown;
+            };
+            /**
+             * System Prompt
+             * @default
+             */
+            system_prompt: string;
+            /** Io Contract */
+            io_contract: {
+                [key: string]: unknown;
+            };
+            /** Kb Ids */
+            kb_ids?: string[];
+            /** Tool Ids */
+            tool_ids?: string[];
+            /** Skill Ids */
+            skill_ids?: string[];
+        };
+        /**
+         * DraftOut
+         * @description The resolved draft as READ (feature 026). Deliberately unvalidated: a stored draft may reference a KB deleted
+         *     since, or a profile retired since — reading must still work; validation happens at save / version create.
+         */
+        DraftOut: {
+            /** Provider */
+            provider?: string | null;
+            /** Model */
+            model?: string | null;
+            /** Model Params */
+            model_params?: {
+                [key: string]: unknown;
+            };
+            /**
+             * System Prompt
+             * @default
+             */
+            system_prompt: string;
+            /** Io Contract */
+            io_contract?: {
+                [key: string]: unknown;
+            };
+            /** Kb Ids */
+            kb_ids?: string[];
+            /** Tool Ids */
+            tool_ids?: string[];
+            /** Skill Ids */
+            skill_ids?: string[];
+            /**
+             * Restricted Bindings
+             * @default 0
+             */
+            restricted_bindings: number;
         };
         /** EvalRunIn */
         EvalRunIn: {
@@ -1812,7 +1901,10 @@ export interface components {
             };
             /** Latency Ms */
             latency_ms: number;
-            /** Cost Usd */
+            /**
+             * Cost Usd
+             * @description Run cost in USD computed from provider-reported usage only (feature 025, FR-015): failed provider attempts that reported no usage are unpriced and disclosed through `retries` — this is not a claim of the exact provider charge.
+             */
             cost_usd: number;
             /** Outcome */
             outcome: string;
@@ -1825,6 +1917,12 @@ export interface components {
              * Format: date-time
              */
             created_at: string;
+            /**
+             * Retries
+             * @description Provider retries this run spent (transport attempts beyond the first, over model turns and embedding calls). Cost reflects reported usage only, so retried attempts with no reported usage add no cost.
+             * @default 0
+             */
+            retries: number;
         };
         /** RunsStatsOut */
         RunsStatsOut: {
@@ -2119,6 +2217,13 @@ export interface components {
             created_at: string;
             /** Retrieval Bindings */
             retrieval_bindings?: components["schemas"]["RetrievalBindingOut"][];
+            /** Created By */
+            created_by?: string | null;
+            /**
+             * Is Active
+             * @default false
+             */
+            is_active: boolean;
         };
         /**
          * WorkspaceMembershipOut

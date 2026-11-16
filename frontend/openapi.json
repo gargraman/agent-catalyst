@@ -426,6 +426,7 @@
           "agents"
         ],
         "summary": "Create Version",
+        "description": "Feature 026 (D2): freeze the RESOLVED DRAFT into a new immutable version \u2014 config + tool/skill/KB bindings in\nONE transaction (025's insert-window rule), stamped `created_by`. A NULL draft clones the active version exactly.\nThe new version is NOT made active (re-point is a separate, audited PATCH). The 024 `retrieval_bindings` body,\nwhen given, still authors the KB bindings explicitly (it wins over the draft's kb_ids).",
         "operationId": "create_version_api_v1_agents__agent_id__versions_post",
         "parameters": [
           {
@@ -5767,6 +5768,65 @@
             },
             "type": "array",
             "title": "Versions"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description",
+            "default": ""
+          },
+          "provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "draft": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DraftOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "draft_dirty": {
+            "type": "boolean",
+            "title": "Draft Dirty",
+            "default": false
+          },
+          "restore_status": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "draft",
+                  "published",
+                  "archived",
+                  "eval_failing"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Restore Status"
           }
         },
         "type": "object",
@@ -5835,11 +5895,33 @@
               }
             ],
             "title": "Access Policy"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 2000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "draft": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Draft"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",
         "title": "AgentPatch",
-        "description": "Partial edit. Requires an `If-Match` header (the prior ETag); status \u2208 the agent_status enum."
+        "description": "Partial edit. Requires an `If-Match` header (the prior ETag); status \u2208 the agent_status enum.\nFeature 026: `description` + `draft` (FULL replacement, validated \u2192 422) ride the same xmin ETag. Archive is\n`status:\"archived\"`; restore is `status:<restore_status>`; any other transition out of `archived` \u2192 400."
       },
       "BaselineIn": {
         "properties": {
@@ -6105,6 +6187,136 @@
         ],
         "title": "DocumentOut",
         "description": "A KB document. Internal fields (storage key, content hash, dedup key) are never exposed."
+      },
+      "Draft": {
+        "properties": {
+          "provider": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Provider"
+          },
+          "model": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Model"
+          },
+          "model_params": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Model Params"
+          },
+          "system_prompt": {
+            "type": "string",
+            "title": "System Prompt",
+            "default": ""
+          },
+          "io_contract": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Io Contract"
+          },
+          "kb_ids": {
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": "array",
+            "title": "Kb Ids"
+          },
+          "tool_ids": {
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": "array",
+            "title": "Tool Ids"
+          },
+          "skill_ids": {
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": "array",
+            "title": "Skill Ids"
+          }
+        },
+        "type": "object",
+        "required": [
+          "provider",
+          "model",
+          "io_contract"
+        ],
+        "title": "Draft"
+      },
+      "DraftOut": {
+        "properties": {
+          "provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "model_params": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Model Params"
+          },
+          "system_prompt": {
+            "type": "string",
+            "title": "System Prompt",
+            "default": ""
+          },
+          "io_contract": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Io Contract"
+          },
+          "kb_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Kb Ids"
+          },
+          "tool_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Tool Ids"
+          },
+          "skill_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Skill Ids"
+          },
+          "restricted_bindings": {
+            "type": "integer",
+            "title": "Restricted Bindings",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "title": "DraftOut",
+        "description": "The resolved draft as READ (feature 026). Deliberately unvalidated: a stored draft may reference a KB deleted\nsince, or a profile retired since \u2014 reading must still work; validation happens at save / version create."
       },
       "EvalRunIn": {
         "properties": {
@@ -7654,7 +7866,8 @@
           },
           "cost_usd": {
             "type": "number",
-            "title": "Cost Usd"
+            "title": "Cost Usd",
+            "description": "Run cost in USD computed from provider-reported usage only (feature 025, FR-015): failed provider attempts that reported no usage are unpriced and disclosed through `retries` \u2014 this is not a claim of the exact provider charge."
           },
           "outcome": {
             "type": "string",
@@ -7672,6 +7885,12 @@
             "type": "string",
             "format": "date-time",
             "title": "Created At"
+          },
+          "retries": {
+            "type": "integer",
+            "title": "Retries",
+            "description": "Provider retries this run spent (transport attempts beyond the first, over model turns and embedding calls). Cost reflects reported usage only, so retried attempts with no reported usage add no cost.",
+            "default": 0
           }
         },
         "type": "object",
@@ -8395,6 +8614,22 @@
             },
             "type": "array",
             "title": "Retrieval Bindings"
+          },
+          "created_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created By"
+          },
+          "is_active": {
+            "type": "boolean",
+            "title": "Is Active",
+            "default": false
           }
         },
         "type": "object",
