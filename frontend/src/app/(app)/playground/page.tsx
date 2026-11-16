@@ -1,9 +1,11 @@
 "use client";
 
 /* @backend integration points (this page):
- *  - @backend POST /v1/agents/:id/invoke streaming - the chat run (send() is mock; see src/components/playground.tsx)
+ *  - @backend wired(026) POST /api/v1/agents/:id/invoke (SSE) - the chat run for live agents (streamInvoke via
+ *    store.invokeAgentStream; mock agents keep the sample send — see src/components/playground.tsx)
  *  - @backend GET /v1/agents?workspace=:id - agent picker list [via useAgents]
- *  - @backend wired(026) version picker reads the live AgentOut versions embed [via versionsOf] (seeds in mock mode)
+ *  - @backend wired(026) version picker reads the live AgentOut versions embed [via versionsOf] (seeds in mock mode);
+ *    for live agents it also offers "Draft" and maps the pick to invoke `target` (draft | active | version + version_id)
  *  - @backend runtime token decode previews server-side JWT validation (src/lib/runtime-access.ts)
  * See src/lib/store.ts markers + docs/backend-integration-map.md for the authoritative contracts.
  */
@@ -12,8 +14,8 @@ import * as React from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Bot, MessageSquare } from "lucide-react";
 import { Button, EmptyState, Field, PageHeader, Select } from "@/components/ui";
-import { Playground } from "@/components/playground";
-import { useAgents, versionsOf } from "@/lib/store";
+import { Playground, type RunTarget } from "@/components/playground";
+import { isLiveAgent, useAgents, versionsOf } from "@/lib/store";
 import { useAuth, usePrincipal } from "@/lib/auth";
 import { canUse } from "@/lib/access-policy";
 
@@ -35,12 +37,23 @@ function PlaygroundInner() {
   const selected = agents.find((a) => a.id === selId) ?? agents[0];
   const versions = selected ? versionsOf(selected) : [];
   const versionLabels = versions.map((v) => v.label);
+  const live = !!selected && isLiveAgent(selected.id);
+  // Live agents can also run the unsaved-as-version DRAFT (026 D3). "draft" is reserved as a picker key.
+  const DRAFT = "draft";
+  const pinned = versions.find((v) => v.isActive)?.label ?? selected?.activeVersion;
   // Only ever surface a version that is actually an option — guards an agent whose
   // activeVersion isn't in its version list, or a stale ?version= in the URL.
   const activeVersion =
-    requestedVersion && versionLabels.includes(requestedVersion) ? requestedVersion
-    : versionLabels.includes(selected?.activeVersion ?? "") ? selected?.activeVersion
+    live && requestedVersion === DRAFT ? DRAFT
+    : requestedVersion && versionLabels.includes(requestedVersion) ? requestedVersion
+    : versionLabels.includes(pinned ?? "") ? pinned
     : versionLabels[0];
+  // What a live turn runs: the draft, the pinned (active) version, or one specific version by id — never by label.
+  const picked = versions.find((v) => v.label === activeVersion);
+  const run: RunTarget | undefined = !live ? undefined
+    : activeVersion === DRAFT ? { target: "draft", label: "Draft" }
+    : picked && picked.label !== pinned && picked.id ? { target: "version", versionId: picked.id, label: picked.label }
+    : { target: "active", label: `${pinned ?? activeVersion ?? "active"} (active)` };
   // A deep link to an agent that can't be tested here (archived or no access).
   const requestedMissing = !!requested && !requestedUsable;
 
@@ -48,7 +61,7 @@ function PlaygroundInner() {
     router.replace(`/playground?agent=${id}`);
   }
   function pickVersion(label: string) {
-    router.replace(`/playground?agent=${selId}&version=${label}`);
+    router.replace(`/playground?agent=${selId}&version=${encodeURIComponent(label)}`);
   }
 
   if (!can("playground.use")) {
@@ -65,10 +78,13 @@ function PlaygroundInner() {
                 {agents.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
               </Select>
             </Field>
-            {versions.length > 0 && (
-              <Field label="Version">
+            {(versions.length > 0 || live) && (
+              <Field label={live ? "Run" : "Version"}>
                 <Select value={activeVersion} onChange={(e) => pickVersion(e.target.value)} className="min-w-24">
-                  {versions.map((v) => <option key={v.label} value={v.label}>{v.label}</option>)}
+                  {live && <option value={DRAFT}>Draft (unsaved changes)</option>}
+                  {versions.map((v) => (
+                    <option key={v.label} value={v.label}>{live && v.label === pinned ? `${v.label} (active)` : v.label}</option>
+                  ))}
                 </Select>
               </Field>
             )}
@@ -84,7 +100,7 @@ function PlaygroundInner() {
       )}
 
       {selected
-        ? <Playground key={`${selected.id}:${activeVersion}`} agent={selected} version={activeVersion} />
+        ? <Playground key={`${selected.id}:${activeVersion}`} agent={selected} version={activeVersion} run={run} />
         : (
           <EmptyState
             icon={<Bot className="size-6" />}

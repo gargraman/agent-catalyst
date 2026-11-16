@@ -1417,7 +1417,12 @@ export interface components {
             /** Finished At */
             finished_at?: string | null;
         };
-        /** InvokeIn */
+        /**
+         * InvokeIn
+         * @description Console/playground body. Feature 026 (D3): `target` picks what runs — the active version (default), the saved
+         *     DRAFT (a transient snapshot, recorded with version_id NULL), or one specific `version_id`. `version_id` is
+         *     required iff `target="version"`; the router refuses any other combination with 400 `input.invalid`.
+         */
         InvokeIn: {
             /** Inputs */
             inputs?: {
@@ -1425,6 +1430,12 @@ export interface components {
             };
             /** Version Id */
             version_id?: string | null;
+            /**
+             * Target
+             * @default active
+             * @enum {string}
+             */
+            target: "active" | "draft" | "version";
         };
         /** JobProgress */
         JobProgress: {
@@ -1835,6 +1846,19 @@ export interface components {
              * @default Publish is advisory in this release: the eval verdict is reported but does NOT gate publishing until the judge is κ-calibrated (owner decision #3).
              */
             advisory_note: string;
+        };
+        /**
+         * PublishedInvokeIn
+         * @description Published-plane body (feature 018). Has NO `target`: a published caller can never run a draft (026 D3) —
+         *     an unknown `target` key is ignored (pydantic default), so it always runs a saved version.
+         */
+        PublishedInvokeIn: {
+            /** Inputs */
+            inputs?: {
+                [key: string]: unknown;
+            };
+            /** Version Id */
+            version_id?: string | null;
         };
         /** ReingestAccepted */
         ReingestAccepted: {
@@ -2615,7 +2639,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["InvokeIn"];
+                "application/json": components["schemas"]["PublishedInvokeIn"];
             };
         };
         responses: {

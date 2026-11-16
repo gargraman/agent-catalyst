@@ -13,6 +13,11 @@ const nextConfig: NextConfig = {
   //   session + `ac_csrf` cookies are set on THIS origin; otherwise the browser never sends them to /api/v1.
   // TODO(deploy): in a deployed build, set AC_API_ORIGIN at BUILD time (rewrites are compiled into the routes
   //   manifest) or front both with one ingress and drop the rewrite.
+  // The rewrite proxy cuts an upstream socket that's been idle for `proxyTimeout` (default 30 s — and `0` also means
+  // 30 s, see next/dist/server/lib/router-utils/proxy-request.js). The invoke stream can legitimately be silent for
+  // the server's whole 30 s deadline (slow first token / reasoning), and then must still deliver its `error`+`done`
+  // frames — at the default the proxy wins the race and the browser sees "connection lost" (026 L10 live finding).
+  experimental: { proxyTimeout: 120_000 },
   async rewrites() {
     return [{ source: "/api/v1/:path*", destination: `${API_ORIGIN}/api/v1/:path*` }];
   },

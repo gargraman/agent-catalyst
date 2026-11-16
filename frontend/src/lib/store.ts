@@ -8,6 +8,7 @@ import {
 } from "./api/client";
 import { agentOutToAgent, agentToCreate, draftWithEdit, inputVariablesFromSchema, providerKey, type DraftEdit } from "./api/adapters";
 import { refusalMessage } from "./api/refusals";
+import { streamInvoke, type InvokeFrame, type InvokeIn, type StreamResult } from "./api/stream";
 import {
   AGENTS, KNOWLEDGE_BASES, INGESTION_JOBS, MCP_SERVERS, TOOLS_REPO, SKILLS, EVAL_RUNS, EVAL_SUITES, RUNS, TOOL_APPROVALS,
   API_TOKENS, PROVIDER_KEYS, MEMBERS, CHANNELS_SEED, resolveConfig, getVersions,
@@ -469,6 +470,15 @@ function notAvailableYet(action: string) {
 
 /** True when the active workspace's wired families are sourced from the API. */
 export const isLiveWorkspace = (ws: Workspace | undefined) => LIVE_API && !!ws?.backendId;
+
+// @backend wired(026) POST /api/v1/agents/:id/invoke (SSE) — the playground turn. `target` = active | draft | version
+//   (+ version_id). Pre-stream refusals reject with a typed ApiError (render via refusalMessage); a stream that ends
+//   without `done` resolves {interrupted:true}. The server records the run (no client addRun for live agents).
+export function invokeAgentStream(
+  agentId: string, body: InvokeIn, opts: { signal?: AbortSignal; onFrame: (f: InvokeFrame) => void },
+): Promise<StreamResult> {
+  return streamInvoke({ principal: callerFor(activeWorkspace()), agentId, body, signal: opts.signal, onFrame: opts.onFrame });
+}
 
 /** Is this agent server-owned (it lives in a live workspace)? */
 export function isLiveAgent(agentId: string): boolean {
@@ -1375,10 +1385,9 @@ export function deleteChannel(id: string) {
 // @backend none (server-recorded) - runs are emitted by runtime.invoke() server-side at every call
 //   (playground/API/eval/channel). This client action exists so the mock's "send test" affordances
 //   surface a run on the Runs page; it goes away once runs come from the API. [ref: backend/10 §1]
-//   NOTE (feature 009, M6): the real POST /v1/agents/:id/invoke (and /eval-runs) can reject with
-//   402 budget.exceeded when the workspace is over its monthly spend cap — the call is refused before any
-//   model run and NO run is recorded. When wiring the real invoke, surface that 402 (e.g. "monthly spend
-//   cap reached") instead of adding a run. [ref: specs/009-spend-cap/contracts/spend-cap.md]
+//   Live agents (026 US2): the playground streams the real invoke (`invokeAgentStream`) and NEVER calls this — the
+//   server records the run, and a pre-stream refusal (402 budget.exceeded, 429, 403, 404, 503) records none and is
+//   rendered through refusals.ts. Mock-only callers remain (e.g. the channel test send).
 export function addRun(r: Run) {
   const stamped = { ...r, workspaceId: r.workspaceId ?? tenantOfAgent(r.agentId, state.agents) };
   set({ runs: [stamped, ...state.runs] });

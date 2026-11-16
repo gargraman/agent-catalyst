@@ -635,7 +635,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/InvokeIn"
+                "$ref": "#/components/schemas/PublishedInvokeIn"
               }
             }
           }
@@ -6600,10 +6600,21 @@
               }
             ],
             "title": "Version Id"
+          },
+          "target": {
+            "type": "string",
+            "enum": [
+              "active",
+              "draft",
+              "version"
+            ],
+            "title": "Target",
+            "default": "active"
           }
         },
         "type": "object",
-        "title": "InvokeIn"
+        "title": "InvokeIn",
+        "description": "Console/playground body. Feature 026 (D3): `target` picks what runs \u2014 the active version (default), the saved\nDRAFT (a transient snapshot, recorded with version_id NULL), or one specific `version_id`. `version_id` is\nrequired iff `target=\"version\"`; the router refuses any other combination with 400 `input.invalid`."
       },
       "JobProgress": {
         "properties": {
@@ -7684,6 +7695,29 @@
           "status"
         ],
         "title": "PublishOut"
+      },
+      "PublishedInvokeIn": {
+        "properties": {
+          "inputs": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Inputs"
+          },
+          "version_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Version Id"
+          }
+        },
+        "type": "object",
+        "title": "PublishedInvokeIn",
+        "description": "Published-plane body (feature 018). Has NO `target`: a published caller can never run a draft (026 D3) \u2014\nan unknown `target` key is ignored (pydantic default), so it always runs a saved version."
       },
       "ReingestAccepted": {
         "properties": {

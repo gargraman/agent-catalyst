@@ -34,6 +34,14 @@ export function refusalMessage(err: Pick<ApiError, "status" | "code" | "message"
     };
   }
 
+  if (typeof d.version_id === "string" && (err.status === 404 || err.code === "not_found")) {
+    return {
+      title: "Version no longer available",
+      body: "The selected version doesn't exist for this agent any more. Pick another version, or run the draft.",
+      retryable: false,
+    };
+  }
+
   switch (err.code) {
     case "budget.exceeded": {
       const used = usd(d.month_to_date_usd);
@@ -56,6 +64,12 @@ export function refusalMessage(err: Pick<ApiError, "status" | "code" | "message"
       return { title: "Not permitted", body: "You don't have permission to do this. Ask a workspace admin for access.", retryable: false };
     case "not_found":
       return { title: "Not available", body: "This agent or version is no longer available (or you don't have access to it).", retryable: false };
+    case "provider_unavailable":   // in-stream (025 breaker open)
+      return { title: "Provider paused", body: "The model provider failed repeatedly, so calls are paused briefly to let it recover. Try again in a minute.", retryable: true };
+    case "provider_error":         // in-stream: the provider failed after retries
+      return { title: "Provider error", body: "The model provider returned an error after retrying. Try again.", retryable: true };
+    case "invalid_input":          // in-stream: inputs don't match the version's input schema
+      return { title: "Input doesn't match the agent", body: err.message || "The message doesn't match this agent's input schema.", retryable: false };
     case "provider.unavailable":
       return { title: "Provider unavailable", body: "The model provider is temporarily unavailable. Try again in a moment.", retryable: true };
     case "config_error":
