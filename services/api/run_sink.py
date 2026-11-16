@@ -39,7 +39,13 @@ async def persist_run_record(session: AsyncSession, workspace_id: str, rec) -> N
     # Feature 024: retrieval facts — ids / counts / scores / statuses only, never passage text or the query.
     if getattr(rec, "retrieval", None) is not None:
         usage["retrieval"] = dataclasses.asdict(rec.retrieval)
+    run_kwargs: dict = {}
+    # 026 (decision #6): the row takes the RunRecord's own id — the one the caller saw in run_start/done and every
+    # call-log line carries — so a turn can open its Runs row. A non-uuid id falls back to the server default.
+    if (rid := _uuid_or_none(getattr(rec, "run_id", None))) is not None:
+        run_kwargs["id"] = rid
     session.add(Run(
+        **run_kwargs,
         workspace_id=uuid.UUID(workspace_id),
         agent_id=_uuid_or_none(rec.agent_id),
         version_id=_uuid_or_none(rec.version_id),
