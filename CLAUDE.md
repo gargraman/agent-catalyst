@@ -15,16 +15,21 @@ cURL export) is deliberately plain software with no model in it.
 This is a **monorepo**: `frontend/` (Next.js console) + `services/` (Python backend) + `docs/` + `specs/`
 (spec-kit feature slices) + `deploy/` (local dev stack) + `mvp/` (the viability-gate prototype).
 
-- **Backend (`services/`) is BUILT, not just designed.** ~1,100 pytest tests (TDD).
+- **Backend (`services/`) is BUILT, not just designed.** ~1,360 pytest tests (TDD).
   Milestones **M0–M5 + M11 are shipped** (provider gateway, the `runtime.invoke` spine, the eval/drift
   engine, thin API + tenancy/RLS, the full M5 security set, and the M11 local dev stack), and **M7 minimal
-  RAG is built at the Must tier** (feature 024, uncommitted as of 2026-11-15). What exists on disk under
+  RAG is built at the Must tier** (feature 024), and **feature 025 platform hardening is closed at the Must tier**
+  (2026-11-16, uncommitted). What exists on disk under
   `services/`: `runtime/` (pure lib) + `runtime/providers/` + `runtime/retrieval/` + `runtime/guardrails/`
   (`redact.py`, `injection.py`), `evals/`, `ingestion/` (extract + chunk), `api/` (routers incl. `documents`,
-  `storage/`, `auth/`, `secrets/`, `publish/`, ingest executor/pipeline), and `migrations/` (13 Alembic revisions).
-- **⚠️ Audit 2026-11-15:** the status table overstates M0/M1/M3/M6 — notably **no provider retry/breaker on the
-  prod path** and **no binding FKs / immutability / F17 CHECKs**. See the audit note under the module status
-  table in `docs/implementation-plan.md`; feature 025 (platform hardening) is next.
+  `storage/`, `auth/`, `secrets/`, `publish/`, ingest executor/pipeline), and `migrations/` (15 Alembic revisions).
+- **Audit 2026-11-15 → 025 (2026-11-16):** gaps 1–2 are **closed** — provider retry + Redis-shared circuit breaker +
+  live/batch bulkhead on the prod path (`runtime/providers/resilience.py`), and DB-enforced binding integrity
+  (migration `0015`: composite same-workspace FKs, binding freeze/insert-window triggers, deferred same-agent
+  active-version FK; refusals → typed 4xx via `api/db_errors.py`). Bindings can **only** be written in their version's
+  own transaction — test seeders must use `seed_version(..., tool_ids=/skill_ids=/kb_ids=)`. Still open: F7
+  reservation, durable idempotency, eval persistence (feature 026 — `specs/026-core-loop-live`), provider fallback.
+  See the audit + 025 closure notes in `docs/implementation-plan.md`.
 - **Still unbuilt (designed only):** the orchestration layer — `runtime/graph/` (LangGraph), retrieval-as-a-tool
   (024 US4, parked), other guardrail stages, `memory/`, `cache/` — plus `mcp/`, and the
   `channels`/`adoption`/`org`/`notifications` routers. M6 is only **partially** done (spend cap + run
@@ -48,9 +53,9 @@ This is a **monorepo**: `frontend/` (Next.js console) + `services/` (Python back
 
 ```bash
 cd services
-./.venv/bin/python -m pytest -q -m "not integration"   # fast, infra-free suite (~555 tests)
+./.venv/bin/python -m pytest -q -m "not integration"   # fast, infra-free suite (~940 tests)
 ./.venv/bin/python -m pytest -q -m integration          # needs Postgres (via deploy/compose.yaml)
-./.venv/bin/python -m pytest -q --collect-only          # ~815 tests collected
+./.venv/bin/python -m pytest -q --collect-only          # ~1,360 tests collected
 alembic upgrade head                                     # run migrations
 ```
 

@@ -18,6 +18,11 @@
 > checkpointer/session memory, and output validate/repair (→ **M2b**). The §2 graph is the target, not the
 > current implementation.
 
+> **Resilience (feature 025, 2026-11-16):** provider retry-before-first-event, the shared `(provider, model, class)`
+> circuit breaker and the live/batch bulkhead live **below** `invoke`, in the gateway's `Guard` carried on
+> `RunContext.guard` — every caller (playground, published, channel, eval) gets identical behaviour
+> (`test_resilience_parity.py`). As-built details: [02 §6](02-provider-gateway.md#6-retry-fallback-circuit-breaker-resilience).
+
 ## 1. Responsibilities
 
 The runtime turns a frozen `VersionSnapshot` + inputs into a stream of `NormalizedStreamEvent`s by

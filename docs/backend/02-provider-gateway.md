@@ -288,16 +288,40 @@ class Substitution:
 
 ## 6. Retry, fallback, circuit breaker (resilience)
 
-> 🔸 **SUPERSEDED / NOT BUILT (see BUILT STATE):** none of the retry/fallback/circuit-breaker code below
-> is implemented in M1. The shipped `gateway.stream()` resolves the profile, picks the adapter, attaches
-> OUR cost on `USAGE`, merges substitutions, and normalizes a transport failure to one `ERROR` event —
-> but has **no** `retry_policy`, `breaker`, or fallback loop. Retry/backoff + the mid-stream "retry only
-> before first token" guard (F10/F11), the shared-vs-isolated circuit breaker (F8), and provider fallback
-> are deferred (M2 for the invoke-level deadline/retry seam; M3/M6 for the Redis breaker). The block below
-> is the target design, not current code.
+> ✅ **AS BUILT (feature 025, 2026-11-16) — retry + circuit breaker + live/batch bulkhead; fallback still NOT built.**
+> Code: [`runtime/providers/resilience.py`](../../services/runtime/providers/resilience.py) (`ResiliencePolicy`,
+> `BreakerKey`, `LocalBreakerStore`, `Guard`), used by `gateway.stream` / `gateway.embed`; the shared store is
+> [`api/breaker_store.py`](../../services/api/breaker_store.py) (`RedisBreakerStore`), composed per process in
+> [`api/resilience_wiring.py`](../../services/api/resilience_wiring.py) and carried on `RunContext.guard`.
+>
+> - **Retry only before the first event.** A transient failure (429 / 5xx / timeout / connect) is retried with
+>   exponential backoff + jitter **only if nothing has been yielded yet**; once a token streamed, a failure is a
+>   terminal `ERROR` (no duplicated partial output). Non-transient (auth, 4xx, content filter) is never retried.
+> - **`Retry-After` is honoured but capped** at `AC_PROVIDER_WAIT_CAP_S` (default 8 s), and a wait that would cross
+>   the run deadline is not taken (`Guard.fits_deadline`). Defaults: `AC_PROVIDER_MAX_ATTEMPTS=3`,
+>   `AC_PROVIDER_BACKOFF_BASE_S=0.5`.
+> - **Breaker keys are `(provider, model, traffic class)`** with class ∈ {`live`, `batch`} (`traffic_class(source)`:
+>   eval + ingestion ⇒ batch). Opens after `AC_BREAKER_FAILURE_THRESHOLD` (5) consecutive failures, one half-open
+>   trial per `AC_BREAKER_COOLDOWN_S` (30 s) **across replicas** (Redis). A batch call is also refused when the
+>   live key is open (`also_check`), so evals never probe a provider live traffic already gave up on.
+>   Refusal = `provider_unavailable`, **zero transport calls**.
+> - **Bulkhead:** batch calls hold a per-(provider, model) semaphore (`AC_BATCH_CONCURRENCY`, default 4); eval cases
+>   additionally hold a `case_slot` before invoke so queueing never eats the case deadline. Effective cap =
+>   cap × replicas (D6, known limit).
+> - **G1 hidden retry removed:** the SDK/LiteLLM retries are disabled (`max_retries=0`, `num_retries=0` in
+>   [`transport.py`](../../services/runtime/providers/transport.py)) — the Guard is the only retry layer, so attempts
+>   and cost are countable.
+> - **Kill switch:** `AC_PROVIDER_MAX_ATTEMPTS=1` disables retries without a deploy of code.
+> - **Cost basis (FR-015):** cost = provider-**reported** usage of the successful attempt only; failed attempts are
+>   disclosed via `runs.retry_count` (0014) / `RunOut.retries`, never estimated into cost.
+> - **Observability:** `ac_provider_retries_total`, `ac_breaker_transitions_total`, `ac_breaker_refusals_total`,
+>   `ac_breaker_degraded_total`, `ac_batch_queue_wait_seconds`, `ac_eval_case_wait_seconds` — labels are registry ids
+>   only (FR-013). Degraded-mode behaviour: [`degraded-mode.md`](degraded-mode.md).
+> - **Fallback model: NOT built** (v1.x). The block below remains the target shape for fallback only; its retry and
+>   breaker parts are superseded by the as-built notes above.
 
 ```python
-# services/runtime/providers/gateway.py  (TARGET DESIGN — not yet built)
+# services/runtime/providers/gateway.py  (TARGET DESIGN — fallback part still unbuilt; retry/breaker as built above)
 async def stream(req, *, api_key, profile) -> AsyncIterator[NormalizedStreamEvent]:
     adapter = adapter_for(req.provider)
     subs = adapter.supports(profile, req)
