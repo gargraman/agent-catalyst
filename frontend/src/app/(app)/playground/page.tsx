@@ -3,7 +3,7 @@
 /* @backend integration points (this page):
  *  - @backend POST /v1/agents/:id/invoke streaming - the chat run (send() is mock; see src/components/playground.tsx)
  *  - @backend GET /v1/agents?workspace=:id - agent picker list [via useAgents]
- *  - @backend GET /v1/agents/:id/versions - version picker [via getVersions, local today]
+ *  - @backend wired(026) version picker reads the live AgentOut versions embed [via versionsOf] (seeds in mock mode)
  *  - @backend runtime token decode previews server-side JWT validation (src/lib/runtime-access.ts)
  * See src/lib/store.ts markers + docs/backend-integration-map.md for the authoritative contracts.
  */
@@ -13,10 +13,9 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { Bot, MessageSquare } from "lucide-react";
 import { Button, EmptyState, Field, PageHeader, Select } from "@/components/ui";
 import { Playground } from "@/components/playground";
-import { useAgents } from "@/lib/store";
+import { useAgents, versionsOf } from "@/lib/store";
 import { useAuth, usePrincipal } from "@/lib/auth";
 import { canUse } from "@/lib/access-policy";
-import { getVersions } from "@/lib/data";
 
 function PlaygroundInner() {
   const router = useRouter();
@@ -34,7 +33,7 @@ function PlaygroundInner() {
   // (deriving instead of seeding state once at mount).
   const selId = requestedUsable ? requested! : agents[0]?.id ?? "";
   const selected = agents.find((a) => a.id === selId) ?? agents[0];
-  const versions = selected ? getVersions(selected.id) : [];
+  const versions = selected ? versionsOf(selected) : [];
   const versionLabels = versions.map((v) => v.label);
   // Only ever surface a version that is actually an option — guards an agent whose
   // activeVersion isn't in its version list, or a stale ?version= in the URL.

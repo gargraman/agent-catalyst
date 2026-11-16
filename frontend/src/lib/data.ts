@@ -68,6 +68,10 @@ export const MEMBERS: Member[] = [
 ];
 
 export type Version = {
+  /** Server version UUID (live agents only; seeds are label-keyed). Re-point targets the id, never the label. */
+  id?: string;
+  /** Live: this version is the agent's active (pinned) one — from VersionOut.is_active. */
+  isActive?: boolean;
   label: string;
   status: "published" | "evaluated" | "draft" | "deprecated";
   model: string;
@@ -105,6 +109,20 @@ export type Agent = {
   endpoint?: string;
   workspaceId?: string;
   accessPolicy?: AccessPolicy;
+  // @backend wired(026) live agent read model (AgentOut): description/provider/model come from the server's resolved
+  //   draft; the fields below are populated ONLY for live agents (seeds leave them undefined → mock behaviour).
+  /** Live: the saved draft differs from the active version (AgentOut.draft_dirty). */
+  draftDirty?: boolean;
+  /** Live, archived only: the status a restore returns to (AgentOut.restore_status). */
+  restoreStatus?: AgentStatus | null;
+  /** Live: the active version's UUID (AgentOut.active_version_id). */
+  activeVersionId?: string;
+  /** Live: the server version list, newest first (AgentOut.versions embed). Seeds use VERSIONS via getVersions. */
+  versionList?: Version[];
+  /** Live: the server's resolved draft, kept verbatim so a PATCH round-trips fields the console doesn't edit. */
+  draft?: LiveDraft;
+  /** Live: draft bindings the caller can't see (masked server-side; preserved by the server on save). */
+  restrictedBindings?: number;
   // @backend agent_versions.publishable proxy (FE versioning is cosmetic): a behavior-changing (trigger)
   //   edit — model/provider/params/prompt/guardrails/retrieval/tools/kb/skills — sets this true; a passing eval
   //   newer than that edit clears it. Gates publish alongside status==="eval_failing". [ref: backend/05 §5]
@@ -120,6 +138,19 @@ export type Agent = {
   // guardrail_config — see docs/backend/01-data-model.md). Partial so seeds fall back to
   // DEFAULT_AGENT_CONFIG via resolveConfig().
   config?: Partial<AgentConfig>;
+};
+
+/** The server's editable draft (feature 026 D1) — backend shape, snake_case on purpose: it is round-tripped to
+ *  PATCH {draft} as-is with only the edited fields replaced. */
+export type LiveDraft = {
+  provider: string;
+  model: string;
+  model_params: Record<string, unknown>;
+  system_prompt: string;
+  io_contract: Record<string, unknown>;
+  kb_ids: string[];
+  tool_ids: string[];
+  skill_ids: string[];
 };
 
 /* ---- Agent configuration (the editable draft config) ---- */

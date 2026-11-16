@@ -2,10 +2,12 @@
 
 import { useEffect, useRef, useSyncExternalStore } from "react";
 import {
-  LIVE_API, ApiError, createAgent, getAgent, listAgents, listMyWorkspaces,
-  type DevPrincipal, type WorkspaceMembershipOut,
+  LIVE_API, ApiError, createAgent, getAgentWithEtag, listAgents, listMyWorkspaces, patchAgent,
+  createVersion as apiCreateVersion,
+  type AgentOut, type AgentPatch, type DevPrincipal, type WorkspaceMembershipOut,
 } from "./api/client";
-import { agentOutToAgent, agentToCreate } from "./api/adapters";
+import { agentOutToAgent, agentToCreate, draftWithEdit, type DraftEdit } from "./api/adapters";
+import { refusalMessage } from "./api/refusals";
 import {
   AGENTS, KNOWLEDGE_BASES, INGESTION_JOBS, MCP_SERVERS, TOOLS_REPO, SKILLS, EVAL_RUNS, EVAL_SUITES, RUNS, TOOL_APPROVALS,
   API_TOKENS, PROVIDER_KEYS, MEMBERS, CHANNELS_SEED, resolveConfig, getVersions,
@@ -125,7 +127,13 @@ type State = {
   toasts: Toast[];
   // Live mode: per-resource load status, keyed "<family>:<consoleWorkspaceId>" (or "workspaces"). See `load()`.
   remote: Record<string, RemoteStatus>;
+  // Live mode: a save refused 409 (stale ETag — someone else changed the agent). Keyed by agent id; the page shows
+  // the "changed by someone else" dialog. `reapply` re-runs the SAME field-scoped edit on top of the latest state.
+  editConflicts: Record<string, EditConflict>;
+  // Live mode: bumped when an agent is reloaded after a conflict, so its edit forms re-initialise from the server.
+  revisions: Record<string, number>;
 };
+export type EditConflict = { reapply: () => Promise<boolean> };
 
 // @backend remove - initial state is hydrated from mock seeds (src/lib/data.ts). With the backend,
 //   the store starts empty and each list hook fetches from its API; the tagResource/WS_OVERRIDES/
@@ -157,6 +165,8 @@ let state: State = {
   limits: LIMITS,
   toasts: [],
   remote: {},
+  editConflicts: {},
+  revisions: {},
 };
 
 const listeners = new Set<() => void>();
@@ -346,30 +356,99 @@ export function loadAgents(opts?: LoadOpts): Promise<void> {
 // TODO(fe-wiring): detail URLs (/agents/<uuid>) carry no workspace, so a deep link into a workspace other than the
 //   active one 404s ("Agent not found"). Fix by scoping routes (/w/<ws>/agents/<id>) or by a server-side
 //   agent→workspace lookup for the caller, then switching the active workspace before loading.
-// TODO(fe-wiring): the response's ETag header is dropped. Capture it per agent (store it next to the Agent) when
-//   PATCH is wired — the backend REQUIRES If-Match on every edit (400 without it, 409 when stale).
+// The ETag (D13) is captured per agent in `etags`: the list response carries none, so an agent that is present only
+// from the list is still fetched once here — the backend REQUIRES If-Match on every edit (400 without, 409 stale).
 export function loadAgent(id: string, opts: LoadOpts = {}): Promise<void> {
   const ws = activeWorkspace();
   if (!LIVE_API || !ws?.backendId) return Promise.resolve();
-  if (!opts.force && state.agents.some((a) => a.id === id)) return Promise.resolve();
+  if (!opts.force && etags.has(id) && state.agents.some((a) => a.id === id)) return Promise.resolve();
   const wsId = ws.id;
   return load(`agent:${id}`, async () => {
-    const fresh = agentOutToAgent(await getAgent(callerFor(ws), id), wsId);
-    // Merge over an existing copy so a refresh doesn't wipe local-only display fields (see addAgent NOTE).
-    const prev = state.agents.find((x) => x.id === id);
-    const a = prev ? { ...prev, ...pickServerOwned(fresh) } : fresh;
-    const agents = [a, ...state.agents.filter((x) => x.id !== id)];
-    set({ agents, ...rollupsFor(agents) });
-  }, opts);
+    const { data, etag } = await getAgentWithEtag(callerFor(ws), id);
+    applyAgentOut(data, etag, wsId);
+  }, { ...opts, force: true });
 }
 
-/** The Agent fields the SERVER owns today (AgentOut). Everything else is placeholder or local-only until the
- *  contract carries it (feature 011 F-A), so merges must not overwrite it with placeholders. */
+/** Per-agent ETag (xmin) from the last GET/PATCH. Not render state, so it lives outside `state`. */
+const etags = new Map<string, string>();
+
+/** Merge one server AgentOut into the store (+ remember its ETag). Merges over an existing copy so a refresh doesn't
+ *  wipe local-only display fields (see addAgent NOTE). */
+function applyAgentOut(o: AgentOut, etag: string | null, consoleWsId: string) {
+  if (etag) etags.set(o.id, etag);
+  const fresh = agentOutToAgent(o, consoleWsId);
+  const prev = state.agents.find((x) => x.id === o.id);
+  const a = prev ? { ...prev, ...pickServerOwned(fresh) } : fresh;
+  const agents = [a, ...state.agents.filter((x) => x.id !== o.id)];
+  set({ agents, ...rollupsFor(agents) });
+}
+
+/** The Agent fields the SERVER owns (AgentOut, feature 026 read model). Everything else is placeholder or
+ *  local-only until the contract carries it, so merges must not overwrite it with placeholders. */
 function pickServerOwned(a: Agent): Partial<Agent> {
   return {
     id: a.id, name: a.name, status: a.status, workspaceId: a.workspaceId, createdAt: a.createdAt,
     updatedAt: a.updatedAt, activeVersion: a.activeVersion, versions: a.versions, accessPolicy: a.accessPolicy,
+    description: a.description, provider: a.provider, model: a.model, draftDirty: a.draftDirty,
+    restoreStatus: a.restoreStatus, activeVersionId: a.activeVersionId, versionList: a.versionList, draft: a.draft,
+    restrictedBindings: a.restrictedBindings, config: a.config,
   };
+}
+
+/** Toast a server refusal with its distinct D16 message (never a generic "failed"). */
+function toastRefusal(action: string, e: unknown) {
+  if (e instanceof ApiError) {
+    const r = refusalMessage(e);
+    toast(`${action} — ${r.title}: ${r.body}`, "critical");
+  } else {
+    toast(`${action} failed: ${e instanceof Error ? e.message : String(e)} (the API may be unreachable)`, "critical");
+  }
+}
+
+/** The ONE live write path for an agent: PATCH with the remembered `If-Match`, then apply the response + new ETag.
+ *  `build` runs at send time against the LATEST store copy, so a conflict re-apply is field-scoped (only the fields
+ *  this edit touched overwrite the other writer's change). A 409 opens the conflict dialog instead of a toast. */
+async function livePatch(id: string, action: string, build: (a: Agent) => AgentPatch | null, okMsg?: string): Promise<boolean> {
+  const a = state.agents.find((x) => x.id === id);
+  const ws = state.workspaces.find((w) => w.id === a?.workspaceId);
+  if (!a || !ws?.backendId) return false;
+  const body = build(a);
+  if (!body) return false;
+  const etag = etags.get(id);
+  const conflict = () => set({ editConflicts: { ...state.editConflicts, [id]: { reapply: () => livePatch(id, action, build, okMsg) } } });
+  if (!etag) { conflict(); return false; }  // never loaded with an ETag → force a reload rather than guess
+  try {
+    const { data, etag: next } = await patchAgent(callerFor(ws), id, body, etag);
+    applyAgentOut(data, next, ws.id);
+    if (okMsg) toast(okMsg);
+    return true;
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 409) { conflict(); return false; }
+    toastRefusal(action, e);
+    return false;
+  }
+}
+
+/** Resolve a 409 conflict: reload the agent (forms re-initialise via `revisions`), then optionally re-apply the
+ *  refused edit on top of the latest version. */
+export async function resolveEditConflict(id: string, reapply: boolean): Promise<void> {
+  const c = state.editConflicts[id];
+  const rest = { ...state.editConflicts };
+  delete rest[id];
+  set({ editConflicts: rest });
+  await loadAgent(id, { force: true });
+  set({ revisions: { ...state.revisions, [id]: (state.revisions[id] ?? 0) + 1 } });
+  if (reapply && c) await c.reapply();
+}
+export const useEditConflict = (id: string) => useSelector((s) => s.editConflicts[id]);
+export const useAgentRevision = (id: string) => useSelector((s) => s.revisions[id] ?? 0);
+
+/** Versions for an agent: the live server embed, else the mock seed list. */
+export const versionsOf = (a: Agent) => a.versionList ?? getVersions(a.id);
+
+/** Live: what the console can't do yet for a server-owned agent — say so, never a fake success. */
+function notAvailableYet(action: string) {
+  toast(`${action} is not available yet for live agents.`, "neutral");
 }
 
 /** True when the active workspace's wired families are sourced from the API. */
@@ -669,11 +748,10 @@ export async function addAgent(a: Agent, opts: { idempotencyKey?: string } = {})
 //   (publish/unpublish/archive/restore) and version rollback go through the dedicated guarded wrappers
 //   below (publishAgent/unpublishAgent/archiveAgent/restoreAgent/rollbackVersion), which map to the same
 //   endpoint but centralize the passing-eval guard.
-// TODO(fe-wiring): wire to PATCH /api/v1/agents/:id (BUILT) — needs the agent's ETag as If-Match (see loadAgent
-//   TODO) and an AgentPatch adapter (backend accepts name/status/active_version_id/access_policy only; provider/
-//   model/bindings are version-level → POST …/versions). Covers unpublish/archive/restore/rollback below too.
-export function updateAgent(id: string, patch: Partial<Agent>, notify = true) {
-  warnLocalOnly(id, "Edit");
+// @backend wired(026) live: name/description → PATCH (If-Match); provider/model → PATCH {draft}. Tags and
+//   bindings (knowledge/tools/skills families are still MOCK) are "not available yet" for a live agent.
+export function updateAgent(id: string, patch: Partial<Agent>, notify = true): Promise<boolean> {
+  if (isLiveAgent(id)) return updateAgentLive(id, patch, notify);
   // A behavior-changing (trigger) field edit flags the agent for re-eval (publishable proxy, backend/05 §5),
   // unless the caller set needsReEval explicitly (e.g. a rollback that clears it).
   const TRIGGER_FIELDS: (keyof Agent)[] = ["provider", "model", "knowledgeBases", "tools", "skills"];
@@ -691,15 +769,77 @@ export function updateAgent(id: string, patch: Partial<Agent>, notify = true) {
   if ("skills" in patch) extra.skills = withBoundSkillCounts(agents, state.skills);
   set({ agents, ...extra });
   if (notify) toast("Changes saved");
+  return Promise.resolve(true);
+}
+
+const LIVE_UNSUPPORTED_AGENT_FIELDS: (keyof Agent)[] = ["tags", "knowledgeBases", "tools", "skills"];
+async function updateAgentLive(id: string, patch: Partial<Agent>, notify: boolean): Promise<boolean> {
+  const blocked = LIVE_UNSUPPORTED_AGENT_FIELDS.filter((k) => k in patch);
+  const a = state.agents.find((x) => x.id === id);
+  if (blocked.includes("tags") && a && JSON.stringify(patch.tags) === JSON.stringify(a.tags)) blocked.splice(blocked.indexOf("tags"), 1);
+  if (blocked.length) notAvailableYet(`Editing ${blocked.join(", ")}`);
+  let ok = true;
+  const meta: AgentPatch = {};
+  if (patch.name !== undefined && patch.name !== a?.name) meta.name = patch.name;
+  if (patch.description !== undefined && patch.description !== a?.description) meta.description = patch.description;
+  if (Object.keys(meta).length) ok = await livePatch(id, "Save", () => meta, notify ? "Changes saved" : undefined);
+  if (ok && (patch.provider !== undefined || patch.model !== undefined)) {
+    ok = await saveLiveDraft(id, { provider: patch.provider, model: patch.model }, notify);
+  }
+  return ok;
+}
+
+/** Live: save draft-config edits as ONE PATCH {draft}. Only fields that differ from the current server draft are
+ *  sent (an untouched default — e.g. temperature the server never set — is not written). */
+export function saveLiveDraft(id: string, edit: DraftEdit, notify = true): Promise<boolean> {
+  return livePatch(id, "Save draft", (a) => {
+    if (!a.draft) { toast("This agent has no draft to edit yet.", "critical"); return null; }
+    const cur = resolveConfig(a);
+    const e: DraftEdit = {};
+    if (edit.provider !== undefined && edit.provider !== a.provider) e.provider = edit.provider;
+    if (edit.model !== undefined && edit.model !== a.model) e.model = edit.model;
+    if (edit.systemPrompt !== undefined && edit.systemPrompt !== cur.systemPrompt) e.systemPrompt = edit.systemPrompt;
+    if (edit.temperature !== undefined && edit.temperature !== cur.temperature) e.temperature = edit.temperature;
+    if (edit.maxOutputTokens !== undefined && edit.maxOutputTokens !== cur.maxOutputTokens) e.maxOutputTokens = edit.maxOutputTokens;
+    if (edit.outputFormat !== undefined && edit.outputFormat !== cur.outputFormat) e.outputFormat = edit.outputFormat;
+    if (edit.inputVariables !== undefined && JSON.stringify(edit.inputVariables) !== JSON.stringify(cur.inputVariables)) e.inputVariables = edit.inputVariables;
+    if (!Object.keys(e).length) return null;
+    return { draft: draftWithEdit(a.draft, e) };
+  }, notify ? "Draft saved — create a version to freeze it" : undefined);
+}
+
+/** Live: freeze the draft into a new immutable version (POST …/versions). Not made active — re-point separately. */
+// @backend wired(026) POST /api/v1/agents/:id/versions — replaces the toast-only SaveVersionDialog path.
+export async function createVersion(id: string, label?: string): Promise<boolean> {
+  const a = state.agents.find((x) => x.id === id);
+  const ws = state.workspaces.find((w) => w.id === a?.workspaceId);
+  if (!a || !ws?.backendId) return false;
+  try {
+    const v = await apiCreateVersion(callerFor(ws), id, label?.trim() || undefined);
+    await loadAgent(id, { force: true });
+    toast(`Version ${v.label} created — it is not active until you re-point to it`);
+    return true;
+  } catch (e) {
+    toastRefusal("Create version", e);
+    return false;
+  }
 }
 // @backend PATCH /v1/agents/:id - persist draft config (model params, prompt, memory, retrieval, spend).
 //   Guardrails specifically map to PUT /v1/agents/:id/guardrails (per-version config) per
 //   docs/backend-integration-map.md. Deep-merges into agent.config (updateAgent is shallow); the merged
 //   result is a full AgentConfig stored back into the Partial<AgentConfig> field.
-// TODO(fe-wiring): draft config is version-level on the backend — wire as POST /api/v1/agents/:id/versions (BUILT)
-//   with the merged config, then re-point via PATCH active_version_id. Local-only today.
-export function updateAgentConfig(id: string, patch: Partial<AgentConfig>, notify = true) {
-  warnLocalOnly(id, "Config change");
+// @backend wired(026) live: prompt / temperature / max tokens / io contract → PATCH {draft} (saveLiveDraft). The
+//   rest of AgentConfig (reasoning, fallback, citations, memory, retrieval, guardrails, spend) has no server field in
+//   026 → "not available yet" for a live agent, never a fake save.
+const LIVE_DRAFT_CONFIG_KEYS = ["systemPrompt", "temperature", "maxOutputTokens", "inputVariables", "outputFormat"] as const;
+export function updateAgentConfig(id: string, patch: Partial<AgentConfig>, notify = true): Promise<boolean> {
+  if (isLiveAgent(id)) {
+    const unsupported = Object.keys(patch).filter((k) => !(LIVE_DRAFT_CONFIG_KEYS as readonly string[]).includes(k));
+    if (unsupported.length) notAvailableYet(`Saving ${unsupported.join(", ")}`);
+    const edit: DraftEdit = {};
+    for (const k of LIVE_DRAFT_CONFIG_KEYS) if (patch[k] !== undefined) (edit as Record<string, unknown>)[k] = patch[k];
+    return Object.keys(edit).length ? saveLiveDraft(id, edit, notify) : Promise.resolve(false);
+  }
   set({
     agents: state.agents.map((a) => {
       if (a.id !== id) return a;
@@ -717,6 +857,7 @@ export function updateAgentConfig(id: string, patch: Partial<AgentConfig>, notif
     }),
   });
   if (notify) toast("Changes saved");
+  return Promise.resolve(true);
 }
 // @backend PATCH /v1/agents/:id - lifecycle transitions below are dedicated wrappers over the same
 //   endpoint; they centralize the guards (publish requires a passing eval) the UI previously duplicated.
@@ -753,23 +894,40 @@ export function publishAgent(id: string): boolean {
   return true;
 }
 /** Unpublish back to draft (the endpoint stops serving until re-published). */
+// Live: there is no unpublish transition in 026 (the server's lifecycle is archive/restore + publish) → not available.
 export function unpublishAgent(id: string) {
+  if (isLiveAgent(id)) { notAvailableYet("Unpublish"); return; }
   updateAgent(id, { status: "draft" }, false);
   toast("Agent unpublished", "neutral");
 }
+// @backend wired(026) lifecycle: archive / restore are PATCH status (If-Match). Restore returns to the server's
+//   `restore_status` (the status before archive), audited server-side as agent.archive / agent.restore.
 /** Archive (hide from active lists; reversible). */
 export function archiveAgent(id: string) {
+  if (isLiveAgent(id)) { void livePatch(id, "Archive", () => ({ status: "archived" }), "Agent archived"); return; }
   updateAgent(id, { status: "archived" }, false);
   toast("Agent archived", "neutral");
 }
-/** Restore an archived agent back to draft. */
+/** Restore an archived agent (mock: back to draft; live: to the server's restore_status). */
 export function restoreAgent(id: string) {
+  if (isLiveAgent(id)) {
+    void livePatch(id, "Restore", (a) => ({ status: a.restoreStatus ?? "draft" }), "Agent restored");
+    return;
+  }
   updateAgent(id, { status: "draft" }, false);
   toast("Agent restored");
 }
-/** Repoint the live version. Validates the label against the agent's known versions. */
-export function rollbackVersion(id: string, label: string) {
-  if (!getVersions(id).some((v) => v.label === label)) {
+/** Repoint the active version. Live: PATCH active_version_id by version **id** (labels are display-only). Mock:
+ *  validates the label against the agent's known versions. */
+// @backend wired(026) re-point = PATCH active_version_id (If-Match), audited server-side as agent.repoint.
+export function rollbackVersion(id: string, label: string, versionId?: string) {
+  if (isLiveAgent(id)) {
+    if (!versionId) { toast(`Version "${label}" has no server id — reload the agent`, "critical"); return; }
+    void livePatch(id, "Re-point", () => ({ active_version_id: versionId }), `Re-pointed to ${label}`);
+    return;
+  }
+  const a = state.agents.find((x) => x.id === id);
+  if (!(a ? versionsOf(a) : getVersions(id)).some((v) => v.label === label)) {
     toast(`Unknown version "${label}"`, "critical");
     return;
   }
@@ -783,8 +941,8 @@ export function rollbackVersion(id: string, label: string) {
 //   no dangling references survive the delete.
 // TODO(backend): DELETE /api/v1/agents/:id is DEFERRED server-side (agents router docstring) — build it, then wire
 //   here. Until then a delete of a live agent is local-only and the agent reappears on the next list refresh.
-export function deleteAgent(id: string) {
-  warnLocalOnly(id, "Delete");
+export function deleteAgent(id: string): boolean {
+  if (isLiveAgent(id)) { notAvailableYet("Delete"); return false; }
   const a = state.agents.find((x) => x.id === id);
   const agents = state.agents.filter((x) => x.id !== id);
   const toolCounts = withBoundToolCounts(agents, state.tools, state.mcpServers);
@@ -805,12 +963,13 @@ export function deleteAgent(id: string) {
     })),
   });
   toast("Agent deleted", "neutral");
+  return true;
 }
 // @backend POST /v1/agents/:id/duplicate - server copies config into a new draft; returns new id.
 // TODO(backend): POST /api/v1/agents/:id/duplicate is DEFERRED server-side — build it (or compose create +
 //   versions client-side), then wire. Local-only today.
 export function duplicateAgent(id: string): string | null {
-  warnLocalOnly(id, "Duplicate");
+  if (isLiveAgent(id)) { notAvailableYet("Duplicate"); return null; }
   const a = state.agents.find((x) => x.id === id);
   if (!a) return null;
   const newId = genId(a.id);
