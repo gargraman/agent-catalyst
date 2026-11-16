@@ -214,7 +214,9 @@ async def _run_invoke(*, session: AsyncSession, ws: str, ap: PolicyPrincipal, ag
 @router.post("/{agent_id}/invoke",
              # Order is load-bearing (feature 016): authz (403) → rate limit (429) → spend cap (402) → handler.
              dependencies=[Depends(require_permission("playground.use")),
-                           Depends(rate_limit("invoke")),
+                           # 026 (decision #7): the interactive console has its own bucket; the published plane
+                           # throttles on `invoke` per token (publish/token_auth.py).
+                           Depends(rate_limit("playground")),
                            Depends(enforce_spend_cap)])
 async def invoke_agent(
     agent_id: str,
