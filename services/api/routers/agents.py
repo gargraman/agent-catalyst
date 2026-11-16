@@ -445,7 +445,7 @@ def _tool_def(t: Tool) -> dict:
     return {"name": t.name, "description": t.description, "input_schema": schema}
 
 
-async def _draft_bindings(session: AsyncSession, resolved: dict, base: AgentVersion | None, ap: PolicyPrincipal,
+async def draft_bindings(session: AsyncSession, resolved: dict, base: AgentVersion | None, ap: PolicyPrincipal,
                           ws: str) -> tuple[list[RetrievalBinding], list[ToolBinding], list[SkillBinding]]:
     """Existence-check + snapshot every binding the draft names (D2). Tool/skill snapshots are taken from the LIVE
     registry row now — the version freezes them. A KB keeps the active version's retrieval settings when it was
@@ -548,7 +548,7 @@ async def create_version(
         except KeyError:   # a profile retired after the draft was saved — refuse typed, never a 500
             raise InputInvalid("the draft's model no longer has a capability profile",
                                detail={"provider": resolved["provider"], "model": resolved["model"]}) from None
-        retrieval, tools, skills = await _draft_bindings(session, resolved, base, ap, ws)
+        retrieval, tools, skills = await draft_bindings(session, resolved, base, ap, ws)
     if body is not None and body.retrieval_bindings is not None:
         retrieval = await _build_bindings(session, body.retrieval_bindings, ap, ws)
     if agent.draft is None:   # exact clone of the base's stored config (review #1/#2)

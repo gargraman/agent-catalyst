@@ -108,3 +108,36 @@ async def test_parity_retrieval_summary_and_citations(monkeypatch):
     strip = lambda r: dataclasses.replace(r, retrieval_ms=0)  # noqa: E731 — wall time legitimately differs
     assert strip(s_run.retrieval) == strip(res.run.retrieval)
     assert s_run.cost_usd == res.run.cost_usd
+
+
+async def test_parity_draft_run_matches_a_saved_version_with_identical_content(monkeypatch):
+    """Feature 026 US2 (T031, D3/P6): a DRAFT run is the same runtime path as a version run — only the snapshot's
+    origin differs. A transient draft version and a saved version built from the identical draft produce identical
+    output, cost and RunRecord (except the version identity: id + label)."""
+    import dataclasses
+    import uuid as _uuid
+    from types import SimpleNamespace
+
+    from api import drafts
+
+    agent = SimpleNamespace(id=_uuid.uuid4(), workspace_id=_uuid.uuid4())
+    draft = {"provider": "openai", "model": "gpt-5-mini", "model_params": {"temperature": 0.3},
+             "system_prompt": "You are helpful.", "io_contract": {"input_schema": {"type": "object"}},
+             "kb_ids": [], "tool_ids": [], "skill_ids": []}
+    saved = drafts.version_from_draft(agent, draft, label="v2")
+    saved.id = _uuid.uuid4()
+    draft_snap = drafts.transient_version(agent, draft).to_snapshot()
+    saved_snap = saved.to_snapshot()
+    assert draft_snap.snapshot_hash == saved_snap.snapshot_hash          # identical content ⇒ identical identity
+
+    events = [text_ev("same answer"), usage_ev(), stop_ev()]
+    monkeypatch.setattr(gateway, "stream", make_gateway(events))
+    d = await invoke_result(draft_snap, INPUTS, make_context(source="playground", correlation_id="corr-1"))
+    monkeypatch.setattr(gateway, "stream", make_gateway(events))
+    s = await invoke_result(saved_snap, INPUTS, make_context(source="playground", correlation_id="corr-1"))
+
+    assert d.text == s.text == "same answer"
+    assert d.run.cost_usd == s.run.cost_usd
+    identity = {"run_id", "version_id", "version_label", "latency_ms", "first_token_ms"}   # per-run / per-origin only
+    as_cmp = lambda r: {k: v for k, v in dataclasses.asdict(r).items() if k not in identity}  # noqa: E731
+    assert as_cmp(d.run) == as_cmp(s.run)

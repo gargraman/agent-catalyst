@@ -11,6 +11,7 @@ TWO planes share ONE body (`_run_invoke`) so they can never diverge (08 §244-25
 """
 from __future__ import annotations
 
+import dataclasses
 import time
 import uuid
 
@@ -20,7 +21,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from api import call_log, sse
+from api import call_log, drafts, sse
 from api.resilience_wiring import get_guard
 from api.access_policy import PolicyPrincipal
 from api.auth import denyset
@@ -30,11 +31,13 @@ from api.deps import (access_principal, assert_within_spend_cap, caller_db, enfo
 from api.provider_keys import resolve_provider_key
 from api.run_sink import persist_run_record
 from api.retrieval_wiring import attach_knowledge, citations_payload
-from api.errors import NotFound
+from api.errors import AgentArchived, InputInvalid, NotFound
 from api.models import Agent, AgentVersion, RetrievalBinding
-from api.schemas.invoke import InvokeIn
+from api.routers.agents import draft_bindings
+from api.schemas.invoke import InvokeIn, PublishedInvokeIn
 from api.settings import get_settings
 from runtime.context import RunContext
+from runtime.snapshot import VersionSnapshot
 from runtime.invoke import invoke as runtime_invoke
 from runtime.providers.ir import EventType
 
@@ -69,7 +72,44 @@ async def _load_version(session: AsyncSession, agent_id: str, version_id: str | 
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
-async def _run_invoke(*, session: AsyncSession, ws: str, ap: PolicyPrincipal, agent_id: str, body: InvokeIn,
+async def _resolve_snapshot(session: AsyncSession, ws: str, ap: PolicyPrincipal, aid: uuid.UUID,
+                            body: PublishedInvokeIn) -> tuple[VersionSnapshot, bool]:
+    """Pick WHAT runs (feature 026 D3) → (snapshot, is_draft). Only the snapshot's origin differs; every target then
+    goes through the same runtime path (P6). The published body has no `target`, so it can only ever run a saved
+    version (the active one, or its explicit `version_id`)."""
+    agent_id = str(aid)
+    console = isinstance(body, InvokeIn)
+    target = body.target if console else ("version" if body.version_id is not None else "active")
+    if console and (target == "version") != (body.version_id is not None):
+        raise InputInvalid("version_id is required when, and only when, target is 'version'",
+                           detail={"field": "version_id", "target": target})
+
+    if target != "draft":
+        version = await _load_version(session, agent_id, body.version_id if target == "version" else None)
+        if version is None:
+            raise NotFound("agent version not found", detail={"agent_id": agent_id, "version_id": body.version_id})
+        return version.to_snapshot(), False
+
+    agent = (await session.execute(select(Agent).where(Agent.id == aid))).scalar_one()
+    active = await _load_version(session, agent_id, None)
+    if agent.draft is None:
+        # NULL draft ≡ "the active version's config" (D1): run that exact content, labelled as a draft.
+        if active is None:
+            raise NotFound("agent has no draft to run", detail={"agent_id": agent_id})
+        return dataclasses.replace(active.to_snapshot(), version_id=str(uuid.uuid4()), label="draft"), True
+    resolved = drafts.normalize(agent.draft)
+    try:
+        drafts.profile_doc(resolved["provider"], resolved["model"])
+    except KeyError:   # a profile retired after the draft was saved — refuse typed, never a 500
+        raise InputInvalid("the draft's model no longer has a capability profile",
+                           detail={"provider": resolved["provider"], "model": resolved["model"]}) from None
+    # Same existence + USE check as "save version" (FR-005): a binding gone since save → 404 detail.binding.
+    retrieval, tools, skills = await draft_bindings(session, resolved, active, ap, ws)
+    transient = drafts.transient_version(agent, resolved, base=active, retrieval=retrieval, tools=tools, skills=skills)
+    return transient.to_snapshot(), True    # never added to the session — no version row is ever written
+
+
+async def _run_invoke(*, session: AsyncSession, ws: str, ap: PolicyPrincipal, agent_id: str, body: PublishedInvokeIn,
                       corr: str, provider_corr: str, source: str, deny_subject: str | None = None,
                       deny_token_id: str | None = None) -> StreamingResponse:
     """Shared invoke body for BOTH planes (P6 — same runtime.invoke). Access-gate → load snapshot → resolve key
@@ -80,16 +120,21 @@ async def _run_invoke(*, session: AsyncSession, ws: str, ap: PolicyPrincipal, ag
         aid = uuid.UUID(agent_id)
     except ValueError:
         raise NotFound("agent not found", detail={"agent_id": agent_id})
-    agent_policy = (await session.execute(
-        select(Agent.access_policy).where(Agent.id == aid))).scalar_one_or_none()
-    if agent_policy is None:
-        raise NotFound("agent not found", detail={"agent_id": agent_id})
-    ensure_use(agent_policy, ap, not_found=NotFound("agent not found", detail={"agent_id": agent_id}))
+    not_found = NotFound("agent not found", detail={"agent_id": agent_id})
+    row = (await session.execute(
+        select(Agent.access_policy, Agent.status).where(Agent.id == aid))).one_or_none()
+    if row is None:
+        raise not_found
+    ensure_use(row.access_policy, ap, not_found=not_found)
+    published = source == "published"
+    # feature 026 D4: an archived agent stops answering — before any provider work, spend or Run row. The console
+    # says why (it can offer restore); the published plane can't tell archived from absent (P5 no-leak).
+    if row.status == "archived":
+        if published:
+            raise not_found
+        raise AgentArchived("an archived agent does not answer; restore it first", detail={"agent_id": agent_id})
 
-    version = await _load_version(session, agent_id, body.version_id)
-    if version is None:
-        raise NotFound("agent version not found", detail={"agent_id": agent_id, "version_id": body.version_id})
-    snapshot = version.to_snapshot()          # pure frozen dataclass — safe to use after the session closes
+    snapshot, is_draft = await _resolve_snapshot(session, ws, ap, aid, body)   # pure frozen dataclass — session-safe
 
     # feature 014: resolve the workspace's active provider key just-in-time; fail closed (503) BEFORE streaming.
     provider = (snapshot.model_config or {}).get("provider", "")
@@ -106,7 +151,6 @@ async def _run_invoke(*, session: AsyncSession, ws: str, ap: PolicyPrincipal, ag
     ctx.provider_correlation_id = provider_corr   # FR-014: providers only ever see a platform-generated id
     # Feature 024: retrieval on the caller's RLS session with the caller's CURRENT access (both planes, same seam).
     ka = await attach_knowledge(session, ws, snapshot, ctx, ap)
-    published = source == "published"
 
     recheck_s = get_settings().denyset_stream_recheck_s
     has_deny_target = deny_subject is not None or deny_token_id is not None
@@ -126,7 +170,8 @@ async def _run_invoke(*, session: AsyncSession, ws: str, ap: PolicyPrincipal, ag
             return True
 
     async def _event_stream():
-        yield sse.frame("run_start", {"run_id": run_id, "version": snapshot.version_id,
+        yield sse.frame("run_start", {"run_id": run_id, "version": "draft" if is_draft else snapshot.label,
+                                      "version_id": None if is_draft else snapshot.version_id,
                                       "model": (snapshot.model_config or {}).get("model", "")})
         last_check = [0.0]
         error_emitted = False
@@ -144,15 +189,26 @@ async def _run_invoke(*, session: AsyncSession, ws: str, ap: PolicyPrincipal, ag
             if encoded is not None:
                 yield encoded
         run = runs[-1] if runs else None
+        if run is not None and is_draft:
+            run = dataclasses.replace(run, version_id="")   # D3: a draft run names no stored version → NULL
         if run is not None:
             await persist_run_record(session, ws, run)   # durable run record on the request session (FR-013, P8)
         if run is not None and run.error and not error_emitted:
             yield sse.error_frame(run.error.get("type", "error"), run.error.get("message", ""))
         status = run.outcome.value if run is not None else "unknown"
-        yield sse.frame("done", {"run_id": run.run_id if run is not None else "", "status": status})
+        # 026 L8: the run's OWN latency/cost, so the turn shows exactly what the Runs row stores.
+        yield sse.frame("done", {"run_id": run.run_id if run is not None else "", "status": status,
+                                 "latency_ms": run.latency_ms if run is not None else None,
+                                 "cost_usd": float(run.cost_usd) if run is not None and run.cost_usd is not None
+                                 else None})
 
+    # 026 (L10 live finding): forbid intermediaries from compressing/buffering the stream — a gzipping proxy (the
+    # console's Next rewrite) held every frame until the body ended. `no-transform` is honoured by Next's bundled
+    # `compression` and CDNs; `X-Accel-Buffering: no` by nginx-style buffers.
     return StreamingResponse(_event_stream(), media_type="text/event-stream",
-                             headers={"X-Correlation-Id": corr})   # echo resolved id (F13)
+                             headers={"X-Correlation-Id": corr,     # echo resolved id (F13)
+                                      "Cache-Control": "no-cache, no-transform",
+                                      "X-Accel-Buffering": "no"})
 
 
 @router.post("/{agent_id}/invoke",
@@ -177,7 +233,7 @@ async def invoke_agent(
 @published_router.post("/{agent_id}/invoke")
 async def published_invoke(
     agent_id: str,
-    body: InvokeIn,
+    body: PublishedInvokeIn,                            # 026 D3: no `target` — the published plane never runs a draft
     caller=Depends(require_caller),                     # 018: caller-token auth (401/429 fail-closed); FastAPI-cached
     session: AsyncSession = Depends(caller_db),         # RLS session for the token's workspace (reuses `caller`)
     cor: Correlation = Depends(correlation),
