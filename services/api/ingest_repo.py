@@ -12,9 +12,10 @@ import uuid
 from decimal import Decimal
 
 from sqlalchemy import delete, func, insert, select, update
+from sqlalchemy.exc import IntegrityError
 
 from api.db import tenant_session
-from api.ingest_pipeline import ChunkRow, JobContext
+from api.ingest_pipeline import ChunkDimMismatch, ChunkRow, JobContext
 from api.models import IngestionJob, KbChunk, KbDocument, KnowledgeBase
 
 
@@ -74,14 +75,19 @@ class DbIngestRepo:
     async def insert_chunks(self, document_id, generation: int, rows: list[ChunkRow]) -> None:
         if not rows:
             return
-        async with tenant_session(self.ws) as s:
-            doc = await s.get(KbDocument, uuid.UUID(str(document_id)))
-            await s.execute(insert(KbChunk), [
-                {"workspace_id": doc.workspace_id, "kb_id": doc.kb_id, "document_id": doc.id,
-                 "generation": generation, "ordinal": r.ordinal, "text": r.text, "token_count": r.token_count,
-                 "embedding": list(r.embedding), "embedding_model": r.embedding_model, "meta": r.meta,
-                 "injection_categories": list(r.injection_categories)}
-                for r in rows])
+        try:
+            async with tenant_session(self.ws) as s:
+                doc = await s.get(KbDocument, uuid.UUID(str(document_id)))
+                await s.execute(insert(KbChunk), [
+                    {"workspace_id": doc.workspace_id, "kb_id": doc.kb_id, "document_id": doc.id,
+                     "generation": generation, "ordinal": r.ordinal, "text": r.text, "token_count": r.token_count,
+                     "embedding": list(r.embedding), "embedding_model": r.embedding_model, "meta": r.meta,
+                     "injection_categories": list(r.injection_categories)}
+                    for r in rows])
+        except IntegrityError as exc:              # 025 US4: kb_chunks_dim_check (0015) refused the vectors
+            if "chunk_dim_mismatch:" in str(getattr(exc, "orig", "")):
+                raise ChunkDimMismatch() from None
+            raise
 
     async def delete_generation(self, document_id, generation: int) -> None:
         async with tenant_session(self.ws) as s:

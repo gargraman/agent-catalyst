@@ -57,9 +57,16 @@ async def test_bound_version_freezes_kb_facts_and_changes_the_hash():
 
 
 async def test_g2_omitted_bindings_are_copied_with_the_same_hash():
+    """G2 (024) under 026 D2: with no draft, an omitted `retrieval_bindings` clones the ACTIVE version's bindings (was:
+    the latest version's). The draft — what the console shows — resolves from the active version, so that is the
+    only source that freezes what the user saw. The G2 guarantee (knowledge is never silently dropped) is unchanged."""
     ws, aid, kb = await _setup()
     async with client() as c:
         bound = await _post(c, ws, aid, {"retrieval_bindings": [_binding(kb)]})
+        etag = (await c.get(f"/api/v1/agents/{aid}", headers=dev_headers(workspace=ws))).headers["ETag"]
+        rp = await c.patch(f"/api/v1/agents/{aid}", json={"active_version_id": bound.json()["id"]},
+                           headers=dev_headers(workspace=ws, if_match=etag))
+        assert rp.status_code == 200, rp.text
         copied = await _post(c, ws, aid)                         # no body at all
         copied2 = await _post(c, ws, aid, {"label": "v-copy"})   # body without the field
     for r in (copied, copied2):

@@ -1,9 +1,10 @@
 # Agent Catalyst — local dev stack (feature 022). Thin wrapper over `docker compose` + the opt-in integration
 # tests. Targets the dev compose at deploy/compose.yaml. All creds here are dev-only dummies.
 COMPOSE := docker compose -f deploy/compose.yaml
-# Host-side pytest runner. Override if you don't have the services venv on PATH, e.g.:
-#   make test-integration PYTEST="./services/.venv/bin/python -m pytest"
-PYTEST ?= python -m pytest
+# Host-side pytest runner. Defaults to the services venv when present (the recipe runs it AFTER `cd services`, so the
+# path is relative to services/); otherwise falls back to `python`. Override e.g.:
+#   make test-integration PYTEST="./.venv/bin/python -m pytest"
+PYTEST ?= $(if $(wildcard services/.venv/bin/python),./.venv/bin/python,python) -m pytest
 
 .PHONY: up down logs bootstrap test-integration observability-up observability-config
 

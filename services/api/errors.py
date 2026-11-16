@@ -120,6 +120,11 @@ class KbArchived(ConflictError):
     code = "kb.archived"
 
 
+class VersionFrozen(ConflictError):
+    """A committed version's bindings are immutable (feature 025 US4, FR-018 — `frozen_binding:` trigger refusal)."""
+    code = "version.frozen"
+
+
 class DocumentProcessing(ConflictError):
     """At most one active ingestion job per document (analyze H3; enforced by a partial unique index)."""
     code = "document.processing"

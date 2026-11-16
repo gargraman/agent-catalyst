@@ -23,7 +23,7 @@ from api.models import Agent, KbDocument
 from api.settings import get_settings
 from api.storage import get_storage
 from runtime.providers import transport
-from tests._api_helpers import client, dev_headers, seed_agent, seed_retrieval_binding, seed_version, seed_workspace
+from tests._api_helpers import client, dev_headers, seed_agent, seed_version, seed_workspace
 
 pytestmark = pytest.mark.integration
 
@@ -101,11 +101,10 @@ async def test_patch_to_unsupported_model_is_400():
 async def test_chunk_config_change_marks_ready_docs_stale_and_flags_bound_versions():
     ws = await seed_workspace()
     agent = await seed_agent(ws)
-    v = await seed_version(ws, agent)
     async with client() as c:
         created = await c.post("/api/v1/knowledge-bases", headers=dev_headers(workspace=ws), json=_kb())
         kid = created.json()["id"]
-        await seed_retrieval_binding(ws, v, kid)
+        await seed_version(ws, agent, kb_ids=[kid])   # 025: bindings are written with their version (0015)
         up = await c.post(f"/api/v1/knowledge-bases/{kid}/documents", headers=dev_headers(workspace=ws),
                           files={"file": ("faq.txt", (DOCS / "faq.txt").read_bytes(), "text/plain")})
         assert up.status_code == 202

@@ -9,7 +9,7 @@ from sqlalchemy import select
 from api.db import tenant_session
 from api.models import Agent
 from tests._api_helpers import (
-    client, dev_headers, seed_agent, seed_skill_binding, seed_version, seed_workspace,
+    client, dev_headers, seed_agent, seed_version, seed_workspace,
 )
 
 pytestmark = pytest.mark.integration
@@ -40,11 +40,10 @@ async def test_publish_stamps_unsigned_provenance():
 async def test_published_content_edit_reverts_to_draft_and_flags_bound_agent():
     ws = await seed_workspace()
     agent = await seed_agent(ws)
-    v = await seed_version(ws, agent)
     async with client() as c:
         created = await c.post("/api/v1/skills", headers=dev_headers(workspace=ws), json=_SKILL)
         sid, etag = created.json()["id"], created.headers["ETag"]
-        await seed_skill_binding(ws, v, sid)
+        await seed_version(ws, agent, skill_ids=[sid])   # 025: bindings are written with their version (0015)
         await c.post(f"/api/v1/skills/{sid}/publish", headers=dev_headers(workspace=ws))
         # content edit on a published skill → back to draft + drift flag
         get = await c.get(f"/api/v1/skills/{sid}", headers=dev_headers(workspace=ws))

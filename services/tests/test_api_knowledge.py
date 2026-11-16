@@ -9,7 +9,7 @@ from sqlalchemy import select
 from api.db import tenant_session
 from api.models import Agent
 from tests._api_helpers import (
-    client, dev_headers, seed_agent, seed_retrieval_binding, seed_version, seed_workspace,
+    client, dev_headers, seed_agent, seed_version, seed_workspace,
 )
 
 pytestmark = pytest.mark.integration
@@ -31,11 +31,10 @@ async def test_create_list_get_and_scope():
 async def test_content_edit_flags_bound_agent_cosmetic_does_not():
     ws = await seed_workspace()
     agent = await seed_agent(ws)
-    v = await seed_version(ws, agent)
     async with client() as c:
         created = await c.post("/api/v1/knowledge-bases", headers=dev_headers(workspace=ws), json=_KB)
         kid, etag = created.json()["id"], created.headers["ETag"]
-        await seed_retrieval_binding(ws, v, kid)
+        await seed_version(ws, agent, kb_ids=[kid])   # 025: bindings are written with their version (0015)
         r1 = await c.patch(f"/api/v1/knowledge-bases/{kid}", headers=dev_headers(workspace=ws, if_match=etag),
                            json={"name": "Renamed KB"})         # cosmetic
         assert await _needs_reeval(ws, agent) is False

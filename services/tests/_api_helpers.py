@@ -15,7 +15,7 @@ import httpx
 from api.db import tenant_session
 from api.main import app
 from api.models import (
-    Agent, AgentVersion, ApiToken, KnowledgeBase, Member, McpServer, McpTool, ProviderKey, RetrievalBinding,
+    Agent, AgentVersion, ApiToken, EvalBaseline, EvalCase, EvalResult, EvalRun, EvalSuite, KnowledgeBase, Member, McpServer, McpTool, ProviderKey, RetrievalBinding,
     Run, Skill, SkillBinding, Tool, ToolBinding, Workspace, WorkspaceSettings,
 )
 from tests._invoke_helpers import PROFILE_SNAPSHOT
@@ -67,15 +67,28 @@ async def seed_agent(workspace_id: str, name: str = "Seed Agent", access_policy:
 
 
 async def seed_version(workspace_id: str, agent_id: str, label: str = "v1",
-                       io_contract: dict | None = None) -> str:
+                       io_contract: dict | None = None, *, tool_ids: list[str] = (), skill_ids: list[str] = (),
+                       kb_ids: list[str] = ()) -> str:
+    """Seed a version (+ its bindings, in the SAME transaction — 0015 refuses a binding added to an already-committed
+    version, exactly like production's create_version) and make it the agent's active version."""
+    ws = uuid.UUID(workspace_id)
     async with tenant_session(workspace_id) as s:
         v = AgentVersion(
-            workspace_id=uuid.UUID(workspace_id), agent_id=uuid.UUID(agent_id), label=label,
+            workspace_id=ws, agent_id=uuid.UUID(agent_id), label=label,
             system_prompt="You are a test agent.", prompt_hash="ph-test", snapshot_hash="sh-test",
             model_config_=_MODEL_CONFIG, profile_snapshot=PROFILE_SNAPSHOT,
             io_contract=io_contract or _IO_CONTRACT,
         )
         s.add(v)
+        await s.flush()
+        for t in tool_ids:
+            s.add(ToolBinding(workspace_id=ws, version_id=v.id, kind="http", tool_id=uuid.UUID(t),
+                              schema_snapshot={}, config_snapshot={}))
+        for k in skill_ids:
+            s.add(SkillBinding(workspace_id=ws, version_id=v.id, skill_id=uuid.UUID(k), skill_content_hash="ch-0"))
+        for kb in kb_ids:
+            s.add(RetrievalBinding(workspace_id=ws, version_id=v.id, kb_id=uuid.UUID(kb), kb_index_version=1,
+                                   retrieval_config={}, injection="tool"))
         await s.flush()
         # link it as the agent's active version so a no-version-id invoke resolves it
         agent = await s.get(Agent, uuid.UUID(agent_id))
@@ -192,28 +205,6 @@ async def seed_limits(workspace_id: str, monthly_spend_usd) -> None:
         await s.flush()
 
 
-async def seed_tool_binding(workspace_id: str, version_id: str, tool_id: str) -> None:
-    """Bind a registry tool into an agent version (so drift can flag the owning agent)."""
-    async with tenant_session(workspace_id) as s:
-        s.add(ToolBinding(workspace_id=uuid.UUID(workspace_id), version_id=uuid.UUID(version_id),
-                          kind="http", tool_id=uuid.UUID(tool_id), schema_snapshot={}, config_snapshot={}))
-        await s.flush()
-
-
-async def seed_skill_binding(workspace_id: str, version_id: str, skill_id: str) -> None:
-    async with tenant_session(workspace_id) as s:
-        s.add(SkillBinding(workspace_id=uuid.UUID(workspace_id), version_id=uuid.UUID(version_id),
-                           skill_id=uuid.UUID(skill_id), skill_content_hash="ch-0"))
-        await s.flush()
-
-
-async def seed_retrieval_binding(workspace_id: str, version_id: str, kb_id: str) -> None:
-    async with tenant_session(workspace_id) as s:
-        s.add(RetrievalBinding(workspace_id=uuid.UUID(workspace_id), version_id=uuid.UUID(version_id),
-                               kb_id=uuid.UUID(kb_id), kb_index_version=1, retrieval_config={}, injection="tool"))
-        await s.flush()
-
-
 def parse_sse(body: str) -> list[tuple[str, dict]]:
     """Parse an SSE response body into a list of (event, data-dict)."""
     frames: list[tuple[str, dict]] = []
@@ -298,3 +289,81 @@ async def seed_ingestion_cost(workspace_id: str, cost_usd, created_at=None) -> s
         s.add(j)
         await s.flush()
         return str(j.id)
+
+
+# ---- feature 026 seeders (T011; ORM inserts, one transaction each, via tenant_session so RLS applies) -----------
+def case_content_hash(input: dict, rubric: list, required_fields: list | tuple = (), expected=None) -> str:
+    """sha256 of the canonical JSON of (input, rubric, required_fields, expected) — data-model §eval_cases.
+    TODO(026 US2): once the server-side hash lands in production code, import it here instead of duplicating."""
+    import hashlib
+    doc = {"input": input, "rubric": rubric, "required_fields": list(required_fields), "expected": expected}
+    return hashlib.sha256(json.dumps(doc, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+async def set_draft(workspace_id: str, agent_id: str, **fields) -> None:
+    """Write `agents.draft` (merged over any existing draft) — e.g. set_draft(ws, a, system_prompt="…")."""
+    async with tenant_session(workspace_id) as s:
+        agent = await s.get(Agent, uuid.UUID(agent_id))
+        agent.draft = {**(agent.draft or {}), **fields}
+        await s.flush()
+
+
+async def seed_suite(workspace_id: str, agent_id: str, name: str = "suite-a", cases: list[dict] = ()) -> tuple[str, list[str]]:
+    """Seed a suite + its cases. Each case dict: {input, rubric, required_fields?, expected?}. Returns (suite_id, case_ids)."""
+    ws = uuid.UUID(workspace_id)
+    async with tenant_session(workspace_id) as s:
+        suite = EvalSuite(workspace_id=ws, agent_id=uuid.UUID(agent_id), name=name)
+        s.add(suite)
+        await s.flush()
+        ids = []
+        for c in cases:
+            inp, rub = c.get("input", {"message": "hi"}), c.get("rubric", [{"name": "helpful", "weight": 1}])
+            req, exp = list(c.get("required_fields", [])), c.get("expected")
+            row = EvalCase(workspace_id=ws, suite_id=suite.id, input=inp, rubric=rub, required_fields=req, expected=exp,
+                           content_hash=case_content_hash(inp, rub, req, exp))
+            s.add(row)
+            await s.flush()
+            ids.append(str(row.id))
+        return str(suite.id), ids
+
+
+async def seed_eval_run(workspace_id: str, agent_id: str, suite_id: str, version_id: str, *, status: str = "completed",
+                        verdict: str | None = "pass", reason_code: str = "ok", finished_at=None,
+                        results: list[dict] = (), created_by: str = "u1", **over) -> str:
+    """Seed one eval run (+ per-case results). `verdict` is forced to None for status='failed' (DB CHECK).
+    Each result dict needs at least `case_id`; everything else defaults."""
+    ws = uuid.UUID(workspace_id)
+    async with tenant_session(workspace_id) as s:
+        cols = dict(
+            workspace_id=ws, agent_id=uuid.UUID(agent_id), suite_id=uuid.UUID(suite_id), version_id=uuid.UUID(version_id),
+            status=status, verdict=None if status == "failed" else verdict, reason_code=reason_code, reason=reason_code,
+            policy={}, compared_cases=0, new_cases=len(results), dropped_cases=0, total_cases=len(results),
+            created_by=created_by,
+        )
+        if finished_at is not None:
+            cols["finished_at"] = finished_at
+            cols["started_at"] = finished_at
+        cols.update(over)
+        run = EvalRun(**cols)
+        s.add(run)
+        await s.flush()
+        for r in results:
+            s.add(EvalResult(**{
+                "workspace_id": ws, "eval_run_id": run.id, "case_hash": "seed", "passed_deterministic": True,
+                "judge_low_confidence": False, "hard_failure": False, "candidate_output": "seed output",
+                "in_comparison": False, **r, "case_id": uuid.UUID(str(r["case_id"])),
+            }))
+        await s.flush()
+        return str(run.id)
+
+
+async def freeze(workspace_id: str, suite_id: str, run_id: str, by: str = "u1") -> None:
+    """Pin `run_id` as the suite's frozen baseline (upsert; the 0016 trigger refuses a non-completed/other-suite run)."""
+    async with tenant_session(workspace_id) as s:
+        row = await s.get(EvalBaseline, uuid.UUID(suite_id))
+        if row is None:
+            s.add(EvalBaseline(workspace_id=uuid.UUID(workspace_id), suite_id=uuid.UUID(suite_id),
+                               eval_run_id=uuid.UUID(run_id), frozen_by=by))
+        else:
+            row.eval_run_id, row.frozen_by = uuid.UUID(run_id), by
+        await s.flush()

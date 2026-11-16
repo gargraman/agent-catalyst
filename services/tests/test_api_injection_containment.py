@@ -18,7 +18,7 @@ import pytest
 
 from api import metrics
 from api.db import tenant_session
-from api.models import Agent, AgentVersion, KnowledgeBase, RetrievalBinding, ToolBinding
+from api.models import Agent, AgentVersion, KnowledgeBase, RetrievalBinding, Tool, ToolBinding
 from runtime.guardrails import injection
 from runtime.providers import gateway
 from tests._api_helpers import (
@@ -70,6 +70,9 @@ async def _tool_version(ws: str, aid: str, kb: str) -> None:
     """Versions are immutable and the version API doesn't author tool bindings: insert one with a tool AND the KB."""
     async with tenant_session(ws) as s:
         kbrow = await s.get(KnowledgeBase, _uuid.UUID(kb))
+        tool = Tool(workspace_id=_uuid.UUID(ws), name="search_runbook", kind="http")   # 025/0015: a real catalog row
+        s.add(tool)
+        await s.flush()
         v = AgentVersion(workspace_id=_uuid.UUID(ws), agent_id=_uuid.UUID(aid), label="v-tool",
                          system_prompt="You are a test agent.", prompt_hash="ph", snapshot_hash="sh-tool",
                          model_config_=_MODEL_CONFIG, profile_snapshot=PROFILE_SNAPSHOT, io_contract=_IO_CONTRACT)
@@ -77,7 +80,7 @@ async def _tool_version(ws: str, aid: str, kb: str) -> None:
                                                  kb_index_version=kbrow.index_version, injection="always_on",
                                                  retrieval_config={"top_k": 6, "similarity_threshold": 0.0,
                                                                    "max_ctx_tokens": 2000})]
-        v.tool_bindings = [ToolBinding(workspace_id=_uuid.UUID(ws), kind="http", tool_id=_uuid.uuid4(),
+        v.tool_bindings = [ToolBinding(workspace_id=_uuid.UUID(ws), kind="http", tool_id=tool.id,
                                        schema_snapshot={"name": "search_runbook", "input_schema": SCHEMA},
                                        config_snapshot={})]
         s.add(v)

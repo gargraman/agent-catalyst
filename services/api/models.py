@@ -11,7 +11,8 @@ import datetime
 import uuid
 
 from sqlalchemy import false as sa_false
-from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, MetaData, Numeric, String, Text, Uuid, func
+from sqlalchemy import (Boolean, CheckConstraint, DateTime, Enum, ForeignKey, ForeignKeyConstraint, Integer, MetaData,
+                        Numeric, String, Text, UniqueConstraint, Uuid, func)
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, declared_attr, mapped_column, relationship
 from sqlalchemy.types import UserDefinedType
@@ -84,12 +85,22 @@ class Workspace(Base):
 
 class Agent(Base, WorkspaceScoped):
     __tablename__ = "agents"
+    # 0015 (feature 025 FR-020): the active version must belong to THIS agent; deferred (circular create in one txn).
+    __table_args__ = (
+        ForeignKeyConstraint(["active_version_id", "id"], ["agent_versions.id", "agent_versions.agent_id"],
+                             name="fk_agents_active_version", deferrable=True, initially="DEFERRED", use_alter=True),
+        UniqueConstraint("workspace_id", "id", name="uq_agents_ws_id"),                          # 0016 FK target
+    )
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, server_default=func.gen_random_uuid())
     name: Mapped[str] = mapped_column(String(80))
     status: Mapped[str] = mapped_column(_AGENT_STATUS, default="draft")
     active_version_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
     needs_reeval: Mapped[bool] = mapped_column(Boolean, default=False)  # drift flag (feature 006, FR-002)
     access_policy: Mapped[dict] = mapped_column(JSONB, default=lambda: {"visibility": "workspace"})  # feature 013
+    # 0016 (feature 026): the editable draft (D1, NULL ⇒ resolved from the active version on read) + archive memory (D4)
+    description: Mapped[str] = mapped_column(Text, default="", server_default="")
+    draft: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    status_before_archive: Mapped[str | None] = mapped_column(_AGENT_STATUS, nullable=True)
     created_at: Mapped[datetime.datetime] = mapped_column(server_default=func.now())
     versions: Mapped[list["AgentVersion"]] = relationship(
         back_populates="agent", foreign_keys="AgentVersion.agent_id"
@@ -98,6 +109,7 @@ class Agent(Base, WorkspaceScoped):
 
 class AgentVersion(Base, WorkspaceScoped):
     __tablename__ = "agent_versions"
+    __table_args__ = (UniqueConstraint("id", "agent_id", name="uq_agent_versions_id_agent"),)   # 0015 FK target
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, server_default=func.gen_random_uuid())
     agent_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("agents.id"), index=True)
     label: Mapped[str] = mapped_column(String(40))
@@ -112,6 +124,7 @@ class AgentVersion(Base, WorkspaceScoped):
     context_config: Mapped[dict] = mapped_column(JSONB, default=dict)
     profile_snapshot: Mapped[dict] = mapped_column(JSONB, default=dict)
     publishable: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_by: Mapped[str | None] = mapped_column(Text, nullable=True)   # 0016: principal subject at INSERT (D2)
     created_at: Mapped[datetime.datetime] = mapped_column(server_default=func.now())
 
     agent: Mapped["Agent"] = relationship(back_populates="versions", foreign_keys=[agent_id])
@@ -185,6 +198,7 @@ class AgentVersion(Base, WorkspaceScoped):
 # --------------------------------------------------------------------------------------------------
 class KnowledgeBase(Base, WorkspaceScoped):
     __tablename__ = "knowledge_bases"
+    __table_args__ = (UniqueConstraint("workspace_id", "id", name="uq_kb_ws_id"),)               # 0015 FK target
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, server_default=func.gen_random_uuid())
     slug: Mapped[str] = mapped_column(Text)
     name: Mapped[str] = mapped_column(Text)
@@ -201,13 +215,18 @@ class KnowledgeBase(Base, WorkspaceScoped):
 
 class RetrievalBinding(Base, WorkspaceScoped):
     __tablename__ = "retrieval_bindings"
+    __table_args__ = (   # 0015: same-workspace KB (the single-column kb_id FK is kept alongside)
+        ForeignKeyConstraint(["workspace_id", "kb_id"], ["knowledge_bases.workspace_id", "knowledge_bases.id"],
+                             name="fk_retrieval_bindings_kb_ws", ondelete="RESTRICT"),
+    )
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, server_default=func.gen_random_uuid())
     version_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("agent_versions.id"), index=True)
     kb_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("knowledge_bases.id"))
     kb_index_version: Mapped[int] = mapped_column(Integer)
     retrieval_config: Mapped[dict] = mapped_column(JSONB)
     injection: Mapped[str] = mapped_column(Text, default="tool")
-    kb: Mapped["KnowledgeBase"] = relationship()
+    kb: Mapped["KnowledgeBase"] = relationship(primaryjoin="RetrievalBinding.kb_id == KnowledgeBase.id",
+                                               foreign_keys=[kb_id])   # two FK paths since 0015 — pin the join
 
 
 # --------------------------------------------------------------------------------------------------
@@ -265,6 +284,10 @@ class KbDocument(Base, WorkspaceScoped):
 
 class KbChunk(Base, WorkspaceScoped):
     __tablename__ = "kb_chunks"
+    __table_args__ = (   # 0015 orphan guard (G9); the dim check is the kb_chunks_dim_check trigger (DB-only)
+        ForeignKeyConstraint(["workspace_id", "kb_id"], ["knowledge_bases.workspace_id", "knowledge_bases.id"],
+                             name="fk_kb_chunks_kb", ondelete="RESTRICT"),
+    )
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, server_default=func.gen_random_uuid())
     kb_id: Mapped[uuid.UUID] = mapped_column(Uuid)
     document_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("kb_documents.id", ondelete="CASCADE"))
@@ -304,14 +327,29 @@ class IngestionJob(Base, WorkspaceScoped):
 
 class SkillBinding(Base, WorkspaceScoped):
     __tablename__ = "skill_bindings"
+    __table_args__ = (   # 0015; immutability = bindings_freeze / bindings_insert_window triggers (DB-only)
+        ForeignKeyConstraint(["workspace_id", "skill_id"], ["skills.workspace_id", "skills.id"],
+                             name="fk_skill_bindings_skill", ondelete="RESTRICT"),
+    )
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, server_default=func.gen_random_uuid())
     version_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("agent_versions.id"), index=True)
-    skill_id: Mapped[uuid.UUID] = mapped_column(Uuid)  # registry deferred: no FK yet
+    skill_id: Mapped[uuid.UUID] = mapped_column(Uuid)  # FK: fk_skill_bindings_skill (0015)
     skill_content_hash: Mapped[str] = mapped_column(Text)
 
 
 class ToolBinding(Base, WorkspaceScoped):
     __tablename__ = "tool_bindings"
+    __table_args__ = (   # 0015 (FR-016/017/019); subagent_config_id stays FK-less (no catalog)
+        ForeignKeyConstraint(["workspace_id", "tool_id"], ["tools.workspace_id", "tools.id"],
+                             name="fk_tool_bindings_tool", ondelete="RESTRICT"),
+        ForeignKeyConstraint(["workspace_id", "mcp_tool_id"], ["mcp_tools.workspace_id", "mcp_tools.id"],
+                             name="fk_tool_bindings_mcp_tool", ondelete="RESTRICT"),
+        CheckConstraint(
+            "(kind IN ('http','builtin') AND tool_id IS NOT NULL AND mcp_tool_id IS NULL AND subagent_config_id IS NULL)"
+            " OR (kind = 'mcp' AND mcp_tool_id IS NOT NULL AND tool_id IS NULL AND subagent_config_id IS NULL)"
+            " OR (kind = 'subagent' AND subagent_config_id IS NOT NULL AND tool_id IS NULL AND mcp_tool_id IS NULL)",
+            name="ck_tool_bindings_one_target"),
+    )
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, server_default=func.gen_random_uuid())
     version_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("agent_versions.id"), index=True)
     kind: Mapped[str] = mapped_column(_TOOL_KIND)
@@ -332,6 +370,7 @@ class ToolBinding(Base, WorkspaceScoped):
 class Tool(Base, WorkspaceScoped):
     """Reusable HTTP tool registry (data.ts RepoTool). http_config is NON-SECRET only (FR-021)."""
     __tablename__ = "tools"
+    __table_args__ = (UniqueConstraint("workspace_id", "id", name="uq_tools_ws_id"),)   # 0015 FK target
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, server_default=func.gen_random_uuid())
     name: Mapped[str] = mapped_column(Text)
     description: Mapped[str] = mapped_column(Text, default="")
@@ -358,6 +397,7 @@ class McpServer(Base, WorkspaceScoped):
 
 class McpTool(Base, WorkspaceScoped):
     __tablename__ = "mcp_tools"
+    __table_args__ = (UniqueConstraint("workspace_id", "id", name="uq_mcp_tools_ws_id"),)   # 0015 FK target
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, server_default=func.gen_random_uuid())
     server_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("mcp_servers.id"), index=True)
     name: Mapped[str] = mapped_column(Text)
@@ -370,6 +410,7 @@ class McpTool(Base, WorkspaceScoped):
 class Skill(Base, WorkspaceScoped):
     """Reusable skill package (data.ts Skill). provenance = unsigned stub (FR-004); no signature."""
     __tablename__ = "skills"
+    __table_args__ = (UniqueConstraint("workspace_id", "id", name="uq_skills_ws_id"),)   # 0015 FK target
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, server_default=func.gen_random_uuid())
     slug: Mapped[str] = mapped_column(Text)
     name: Mapped[str] = mapped_column(Text)
@@ -483,3 +524,146 @@ class Run(Base, WorkspaceScoped):
     created_at: Mapped[datetime.datetime] = mapped_column(server_default=func.now())
     # feature 025 (migration 0014): provider retries spent by this run — disclosed, never priced (FR-015)
     retry_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+
+
+# --------------------------------------------------------------------------------------------------
+# Feature 026 (migration 0016): persisted evals with a server-held baseline + append-only audit
+# Composite (workspace_id, …) FKs mirror the migration — RI bypasses RLS, so the workspace is pinned by the key (025 G8).
+# --------------------------------------------------------------------------------------------------
+class EvalSuite(Base, WorkspaceScoped):
+    __tablename__ = "eval_suites"
+    __table_args__ = (
+        UniqueConstraint("agent_id", "name", name="uq_eval_suites_agent_name"),
+        UniqueConstraint("workspace_id", "id", name="uq_eval_suites_ws_id"),
+        ForeignKeyConstraint(["workspace_id", "agent_id"], ["agents.workspace_id", "agents.id"],
+                             name="fk_eval_suites_agent", ondelete="RESTRICT"),
+        CheckConstraint("char_length(name) BETWEEN 1 AND 80", name="eval_suites_name_check"),
+    )
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, server_default=func.gen_random_uuid())
+    agent_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    name: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    cases: Mapped[list["EvalCase"]] = relationship(order_by="EvalCase.created_at", viewonly=True,
+                                                   primaryjoin="EvalSuite.id == foreign(EvalCase.suite_id)")
+
+
+class EvalCase(Base, WorkspaceScoped):
+    __tablename__ = "eval_cases"
+    __table_args__ = (
+        ForeignKeyConstraint(["workspace_id", "suite_id"], ["eval_suites.workspace_id", "eval_suites.id"],
+                             name="fk_eval_cases_suite", ondelete="CASCADE"),
+        CheckConstraint("jsonb_typeof(rubric) = 'array' AND jsonb_array_length(rubric) BETWEEN 1 AND 8",
+                        name="ck_eval_cases_rubric_dims"),
+    )
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, server_default=func.gen_random_uuid())
+    suite_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    input: Mapped[dict] = mapped_column(JSONB)
+    rubric: Mapped[list] = mapped_column(JSONB)
+    required_fields: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list, server_default="{}")
+    expected: Mapped[object | None] = mapped_column(JSONB, nullable=True)
+    content_hash: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class EvalRun(Base, WorkspaceScoped):
+    """One persisted eval run (never updated after insert). `verdict` is NULL iff `status='failed'`."""
+    __tablename__ = "eval_runs"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "id", name="uq_eval_runs_ws_id"),
+        ForeignKeyConstraint(["workspace_id", "agent_id"], ["agents.workspace_id", "agents.id"],
+                             name="fk_eval_runs_agent", ondelete="RESTRICT"),
+        ForeignKeyConstraint(["workspace_id", "suite_id"], ["eval_suites.workspace_id", "eval_suites.id"],
+                             name="fk_eval_runs_suite", ondelete="RESTRICT"),
+        ForeignKeyConstraint(["version_id", "agent_id"], ["agent_versions.id", "agent_versions.agent_id"],
+                             name="fk_eval_runs_version", ondelete="RESTRICT"),
+        ForeignKeyConstraint(["workspace_id", "baseline_run_id"], ["eval_runs.workspace_id", "eval_runs.id"],
+                             name="fk_eval_runs_baseline", ondelete="RESTRICT"),
+        CheckConstraint("status IN ('completed','failed')", name="eval_runs_status_check"),
+        CheckConstraint("verdict IN ('pass','fail','low_confidence')", name="eval_runs_verdict_check"),
+        CheckConstraint("baseline_origin IN ('automatic','frozen')", name="eval_runs_baseline_origin_check"),
+        CheckConstraint("(status = 'failed') = (verdict IS NULL)", name="ck_eval_runs_verdict_iff_completed"),
+        CheckConstraint("(baseline_run_id IS NULL) = (baseline_origin IS NULL)", name="ck_eval_runs_baseline_origin"),
+    )
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, server_default=func.gen_random_uuid())
+    agent_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    suite_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    version_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    status: Mapped[str] = mapped_column(Text)
+    verdict: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reason_code: Mapped[str] = mapped_column(Text)
+    reason: Mapped[str] = mapped_column(Text)
+    baseline_run_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+    baseline_origin: Mapped[str | None] = mapped_column(Text, nullable=True)
+    quality: Mapped[float | None] = mapped_column(Numeric, nullable=True)
+    quality_delta: Mapped[float | None] = mapped_column(Numeric, nullable=True)
+    cost_usd: Mapped[float | None] = mapped_column(Numeric, nullable=True)
+    cost_delta_pct: Mapped[float | None] = mapped_column(Numeric, nullable=True)
+    latency_ms: Mapped[float | None] = mapped_column(Numeric, nullable=True)
+    latency_delta_ms: Mapped[float | None] = mapped_column(Numeric, nullable=True)
+    dimensions: Mapped[list] = mapped_column(JSONB, default=list, server_default="[]")
+    compared_cases: Mapped[int] = mapped_column(Integer)
+    new_cases: Mapped[int] = mapped_column(Integer)
+    dropped_cases: Mapped[int] = mapped_column(Integer)
+    total_cases: Mapped[int] = mapped_column(Integer)
+    pairwise_rate: Mapped[float | None] = mapped_column(Numeric, nullable=True)
+    policy: Mapped[dict] = mapped_column(JSONB)
+    judge_version: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_by: Mapped[str] = mapped_column(Text)
+    started_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    finished_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class EvalResult(Base, WorkspaceScoped):
+    """Per-case evidence of an eval run. `case_id` is deliberately NOT an FK — evidence outlives a case edit/delete."""
+    __tablename__ = "eval_results"
+    __table_args__ = (
+        UniqueConstraint("eval_run_id", "case_id", name="uq_eval_results_run_case"),
+        ForeignKeyConstraint(["workspace_id", "eval_run_id"], ["eval_runs.workspace_id", "eval_runs.id"],
+                             name="fk_eval_results_run", ondelete="CASCADE"),
+    )
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, server_default=func.gen_random_uuid())
+    eval_run_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    case_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    case_hash: Mapped[str] = mapped_column(Text)
+    run_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+    passed_deterministic: Mapped[bool] = mapped_column(Boolean)
+    quality: Mapped[float | None] = mapped_column(Numeric, nullable=True)
+    rubric_scores: Mapped[dict] = mapped_column(JSONB, default=dict, server_default="{}")
+    pairwise_winner: Mapped[str | None] = mapped_column(Text, nullable=True)
+    judge_low_confidence: Mapped[bool] = mapped_column(Boolean)
+    failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    hard_failure: Mapped[bool] = mapped_column(Boolean)
+    candidate_output: Mapped[str] = mapped_column(Text)
+    cost_usd: Mapped[float | None] = mapped_column(Numeric, nullable=True)
+    cost_is_estimate: Mapped[bool] = mapped_column(Boolean, default=False, server_default=sa_false())
+    latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    in_comparison: Mapped[bool] = mapped_column(Boolean)
+
+
+class EvalBaseline(Base, WorkspaceScoped):
+    """The FROZEN baseline pointer for a suite (one per suite). Absence ⇒ the automatic rule applies (D7)."""
+    __tablename__ = "eval_baselines"
+    __table_args__ = (
+        ForeignKeyConstraint(["workspace_id", "suite_id"], ["eval_suites.workspace_id", "eval_suites.id"],
+                             name="fk_eval_baselines_suite", ondelete="CASCADE"),
+        ForeignKeyConstraint(["workspace_id", "eval_run_id"], ["eval_runs.workspace_id", "eval_runs.id"],
+                             name="fk_eval_baselines_run", ondelete="RESTRICT"),
+    )
+    suite_id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True)
+    eval_run_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    frozen_by: Mapped[str] = mapped_column(Text)
+    frozen_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class AuditLog(Base, WorkspaceScoped):
+    """Append-only (ac_app holds SELECT, INSERT only). `meta` holds ids only — write through `api.audit.record`."""
+    __tablename__ = "audit_logs"
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, server_default=func.gen_random_uuid())
+    actor: Mapped[str] = mapped_column(Text)
+    action: Mapped[str] = mapped_column(Text)
+    target_type: Mapped[str | None] = mapped_column(Text, nullable=True)
+    target_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+    meta: Mapped[dict] = mapped_column(JSONB, default=dict, server_default="{}")
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

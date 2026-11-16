@@ -10,7 +10,7 @@ from api import deps
 from api.db import tenant_session
 from api.models import Agent
 from tests._api_helpers import (
-    client, dev_headers, seed_agent, seed_tool_binding, seed_version, seed_workspace,
+    client, dev_headers, seed_agent, seed_version, seed_workspace,
 )
 
 pytestmark = pytest.mark.integration
@@ -68,11 +68,10 @@ async def test_restore_returns_to_default_list():
 async def test_auth_mode_edit_flags_bound_agent_but_cosmetic_does_not():
     ws = await seed_workspace()
     agent = await seed_agent(ws)
-    v = await seed_version(ws, agent)
     async with client() as c:
         created = await c.post("/api/v1/tools", headers=dev_headers(workspace=ws), json=_TOOL)
         tid, etag = created.json()["id"], created.headers["ETag"]
-        await seed_tool_binding(ws, v, tid)
+        await seed_version(ws, agent, tool_ids=[tid])   # 025: bindings are written with their version (0015)
         # cosmetic edit → no flag
         r1 = await c.patch(f"/api/v1/tools/{tid}", headers=dev_headers(workspace=ws, if_match=etag),
                            json={"description": "cosmetic"})

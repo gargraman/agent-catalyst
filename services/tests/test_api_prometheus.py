@@ -106,3 +106,59 @@ def test_retrieval_seconds_observed_only_for_runs_with_knowledge():
     assert count() == before + 1
     body = metrics.render()[0].decode()
     assert "ac_retrieval_seconds_bucket" in body and "kb_id" not in body
+
+
+# ---- feature 025 T041: the five resilience series — exact label sets, observer → series, no tenant ids (FR-013) ----
+
+_RESILIENCE_SERIES = {
+    "ac_provider_retries_total": ("provider", "model", "class"),
+    "ac_breaker_transitions_total": ("provider", "model", "class", "to"),
+    "ac_breaker_refusals_total": ("provider", "model", "class"),
+    "ac_breaker_degraded_total": (),
+    "ac_batch_queue_wait_seconds": ("provider", "model"),
+}
+_FORBIDDEN_LABELS = {"workspace", "workspace_id", "agent", "agent_id", "run", "run_id", "version_id", "tenant"}
+
+
+def _labelnames(name: str) -> tuple:
+    for collector in list(metrics.REGISTRY._collector_to_names):
+        if name in metrics.REGISTRY._collector_to_names[collector]:
+            return tuple(getattr(collector, "_labelnames", ()))
+    raise AssertionError(f"{name} is not registered")
+
+
+@pytest.mark.parametrize("name", sorted(_RESILIENCE_SERIES))
+def test_resilience_series_have_exact_label_sets(name):
+    labels = _labelnames(name)
+    assert labels == _RESILIENCE_SERIES[name]
+    assert not set(labels) & _FORBIDDEN_LABELS
+
+
+def _v(name, labels=None):
+    return metrics.REGISTRY.get_sample_value(name, labels or {}) or 0.0
+
+
+def test_observer_events_increment_their_series():
+    p, m = "openai", "t041-model"
+    before = {
+        "retry": _v("ac_provider_retries_total", {"provider": p, "model": m, "class": "live"}),
+        "trans": _v("ac_breaker_transitions_total", {"provider": p, "model": m, "class": "batch", "to": "open"}),
+        "refused": _v("ac_breaker_refusals_total", {"provider": p, "model": m, "class": "live"}),
+        "degraded": _v("ac_breaker_degraded_total"),
+        "wait": _v("ac_batch_queue_wait_seconds_count", {"provider": p, "model": m}),
+    }
+    metrics.record_resilience_event("retry", {"provider": p, "model": m, "cls": "live"})
+    metrics.record_resilience_event("breaker_transition", {"provider": p, "model": m, "cls": "batch", "to": "open"})
+    metrics.record_resilience_event("breaker_refused", {"provider": p, "model": m, "cls": "live"})
+    metrics.record_resilience_event("breaker_degraded", {})
+    metrics.record_resilience_event("batch_wait", {"provider": p, "model": m, "seconds": 0.2})
+    assert _v("ac_provider_retries_total", {"provider": p, "model": m, "class": "live"}) == before["retry"] + 1
+    assert _v("ac_breaker_transitions_total",
+              {"provider": p, "model": m, "class": "batch", "to": "open"}) == before["trans"] + 1
+    assert _v("ac_breaker_refusals_total", {"provider": p, "model": m, "class": "live"}) == before["refused"] + 1
+    assert _v("ac_breaker_degraded_total") == before["degraded"] + 1
+    assert _v("ac_batch_queue_wait_seconds_count", {"provider": p, "model": m}) == before["wait"] + 1
+
+
+def test_observer_swallows_a_malformed_event():
+    metrics.record_resilience_event("retry", {"provider": "openai"})   # missing labels → swallowed, never raises

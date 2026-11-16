@@ -20,23 +20,31 @@ from sqlalchemy import select, text, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from api import audit, drafts
 from api.access_policy import PolicyPrincipal, can_use
+from api.db_errors import check_active_version_now, integrity_mapped
 from api.deps import (access_principal, ensure_manage, ensure_use, require_permission, idempotency_guard,
                       Principal, rate_limit, resolve_workspace, session_principal, tenant_db)
 from api.errors import ConflictStale, InputInvalid, KbArchived, NotFound
-from api.models import Agent, AgentVersion, KnowledgeBase, RetrievalBinding
+from api.models import Agent, AgentVersion, KnowledgeBase, RetrievalBinding, Skill, SkillBinding, Tool, ToolBinding
 from runtime.hashing import compute_snapshot_hash
 from runtime.providers.profiles import _PROFILE_DIR
 from api.pagination import Page, clamp_limit, decode_cursor, encode_cursor
 from api.schemas.access_policy import policy_for_store, policy_out, stamp_private_owner, validate_access_policy
-from api.schemas.agents import AgentCreate, AgentOut, AgentPatch, RetrievalBindingOut, VersionCreate, VersionOut
+from api.schemas.agents import (AgentCreate, AgentOut, AgentPatch, DraftOut, RetrievalBindingOut, VersionCreate,
+                                VersionOut)
 
 router = APIRouter(prefix="/api/v1/agents", tags=["agents"])
 
 
 # Feature 024: every path that renders versions eager-loads bindings + their KB (async: no lazy loads; masking needs
 # the KB's live access policy).
-_VERSIONS = selectinload(Agent.versions).selectinload(AgentVersion.retrieval_bindings).selectinload(RetrievalBinding.kb)
+# Feature 026: tool + skill bindings too — the resolved draft projects them, and a NULL-draft version clones them.
+_VERSIONS = (
+    selectinload(Agent.versions).selectinload(AgentVersion.retrieval_bindings).selectinload(RetrievalBinding.kb),
+    selectinload(Agent.versions).selectinload(AgentVersion.tool_bindings),
+    selectinload(Agent.versions).selectinload(AgentVersion.skill_bindings),
+)
 
 
 def _binding_out(b: RetrievalBinding, ap: PolicyPrincipal) -> RetrievalBindingOut:
@@ -48,19 +56,56 @@ def _binding_out(b: RetrievalBinding, ap: PolicyPrincipal) -> RetrievalBindingOu
                                kb_index_version=b.kb_index_version, restricted=False)
 
 
-def _version_out(v: AgentVersion, ap: PolicyPrincipal) -> VersionOut:
+def _version_out(v: AgentVersion, ap: PolicyPrincipal, active_id: uuid.UUID | None = None) -> VersionOut:
     out = VersionOut(id=str(v.id), agent_id=str(v.agent_id), label=v.label, snapshot_hash=v.snapshot_hash,
-                     prompt_hash=v.prompt_hash, publishable=v.publishable, created_at=v.created_at)
+                     prompt_hash=v.prompt_hash, publishable=v.publishable, created_at=v.created_at,
+                     created_by=v.created_by, is_active=active_id is not None and v.id == active_id)
     out.retrieval_bindings = [_binding_out(b, ap) for b in sorted(v.retrieval_bindings, key=lambda b: str(b.kb_id))]
     return out
 
 
-def _agent_out(a: Agent, ap: PolicyPrincipal) -> AgentOut:
+def _active_version(a: Agent) -> AgentVersion | None:
+    return next((v for v in a.versions if v.id == a.active_version_id), None)
+
+
+_BINDING_MODELS = {"kb_ids": KnowledgeBase, "tool_ids": Tool, "skill_ids": Skill}
+
+
+async def _hidden_ids(session: AsyncSession, resolved_drafts: list[dict | None], ap: PolicyPrincipal) -> frozenset[str]:
+    """Ids named by these drafts that the caller may NOT use (P5). One query per kind for the whole page (no N+1).
+    An id with no visible row (deleted / other workspace) is NOT hidden: it names nothing the caller can't already
+    see, and keeping it visible lets the console say "a bound knowledge base no longer exists"."""
+    hidden: set[str] = set()
+    for field, model in _BINDING_MODELS.items():
+        ids = {uuid.UUID(i) for d in resolved_drafts if d for i in d[field]}
+        if not ids:
+            continue
+        rows = (await session.execute(select(model.id, model.access_policy).where(model.id.in_(ids)))).all()
+        hidden.update(str(r.id) for r in rows if not can_use(r.access_policy, ap))
+    return frozenset(hidden)
+
+
+def _agent_out(a: Agent, ap: PolicyPrincipal, hidden: frozenset[str]) -> AgentOut:
+    """`hidden` = draft binding ids the caller may not use (from `_hidden_ids`) — required, so no caller can forget
+    the masking. Version bindings are masked separately by `_binding_out`."""
+    active = _active_version(a)
+    resolved = drafts.resolve(a, active)
+    if resolved is not None:
+        masked = {f: [i for i in resolved[f] if i not in hidden] for f in _BINDING_MODELS}
+        n_hidden = sum(len(resolved[f]) - len(masked[f]) for f in _BINDING_MODELS)
+        resolved = {**resolved, **masked, "restricted_bindings": n_hidden}
+    newest_first = sorted(a.versions, key=lambda v: (v.created_at, str(v.id)), reverse=True)
     return AgentOut(id=str(a.id), name=a.name, status=a.status,
                     active_version_id=str(a.active_version_id) if a.active_version_id else None,
                     workspace_id=str(a.workspace_id), created_at=a.created_at,
                     access_policy=policy_out(a.access_policy),
-                    versions=[_version_out(v, ap) for v in sorted(a.versions, key=lambda v: v.created_at)])
+                    versions=[_version_out(v, ap, a.active_version_id) for v in newest_first],
+                    description=a.description or "",
+                    provider=resolved["provider"] if resolved else None,
+                    model=resolved["model"] if resolved else None,
+                    draft=DraftOut(**resolved) if resolved else None,
+                    draft_dirty=drafts.dirty(a, active),
+                    restore_status=a.status_before_archive if a.status == "archived" else None)
 
 
 async def _load_agent(session: AsyncSession, agent_id: str) -> Agent | None:
@@ -68,7 +113,7 @@ async def _load_agent(session: AsyncSession, agent_id: str) -> Agent | None:
         aid = uuid.UUID(agent_id)
     except ValueError:
         return None
-    stmt = select(Agent).where(Agent.id == aid).options(_VERSIONS)
+    stmt = select(Agent).where(Agent.id == aid).options(*_VERSIONS).execution_options(populate_existing=True)
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
@@ -138,6 +183,7 @@ async def create_agent(
             # computed pre-flush, so an unset field would hash as None here yet {} once loaded — diverging
             # from to_snapshot(). Setting {} makes the pre-flush hash equal the authoritative recomputed one.
             guardrail_config={}, memory_config={}, context_config={},
+            created_by=principal.subject,   # 026 D2: the initial v1 records its creator too (found by T029 L3)
         )
         # The AUTHORITATIVE content hash the runtime/RunRecord use (compute over empty bindings pre-flush —
         # no I/O). Stored == to_snapshot() recomputes, so version-id ↔ run content-hash comparisons hold.
@@ -146,12 +192,13 @@ async def create_agent(
         session.add(v)
         await session.flush()
         agent.active_version_id = v.id
-        await session.flush()
+        async with integrity_mapped():
+            await check_active_version_now(session)
         await session.refresh(agent, ["versions"])
         response.headers["ETag"] = await _etag(session, str(agent.id))
         # a brand-new agent has no bindings, so masking cannot apply; the creator's own role is enough here
         return _agent_out(agent, PolicyPrincipal(role=principal.workspace_claims.get(ws, ""), teams=(),
-                                                 subject=principal.subject))
+                                                 subject=principal.subject), frozenset())
 
 
 @router.get("", dependencies=[Depends(require_permission("view"))])
@@ -163,7 +210,7 @@ async def list_agents(
     cursor: str | None = None,
 ) -> Page[AgentOut]:
     n = clamp_limit(limit)
-    stmt = select(Agent).options(_VERSIONS).order_by(Agent.created_at.desc(), Agent.id.desc())
+    stmt = select(Agent).options(*_VERSIONS).order_by(Agent.created_at.desc(), Agent.id.desc())
     cur = decode_cursor(cursor)
     if cur is not None:
         # keyset on the SAME ordering key (created_at, id) as the ORDER BY — a row-value seek, so the next
@@ -180,7 +227,8 @@ async def list_agents(
     # feature 013: omit resources the caller can't USE (P5 no-leak — a hidden row is never listed). Post-filter
     # of the page (G4): a short page is acceptable; keyset pagination still advances by created_at,id.
     rows = [a for a in rows if can_use(a.access_policy, ap)]
-    return Page[AgentOut](items=[_agent_out(a, ap) for a in rows], next_cursor=next_cursor)
+    hidden = await _hidden_ids(session, [drafts.resolve(a, _active_version(a)) for a in rows], ap)
+    return Page[AgentOut](items=[_agent_out(a, ap, hidden) for a in rows], next_cursor=next_cursor)
 
 
 @router.get("/{agent_id}", dependencies=[Depends(require_permission("view"))])
@@ -197,7 +245,7 @@ async def get_agent(
     # feature 013: deny USE as a 404 byte-identical to the absent-row 404 (P5 no-leak).
     ensure_use(agent.access_policy, ap, not_found=NotFound("agent not found", detail={"agent_id": agent_id}))
     response.headers["ETag"] = await _etag(session, agent_id)
-    return _agent_out(agent, ap)
+    return _agent_out(agent, ap, await _hidden_ids(session, [drafts.resolve(agent, _active_version(agent))], ap))
 
 
 @router.patch("/{agent_id}", dependencies=[Depends(require_permission("agent.edit")), Depends(rate_limit("default"))])
@@ -224,38 +272,79 @@ async def patch_agent(
         _aid = uuid.UUID(agent_id)
     except ValueError:
         raise NotFound("agent not found", detail={"agent_id": agent_id})
-    _pol = (await session.execute(select(Agent.access_policy).where(Agent.id == _aid))).scalar_one_or_none()
-    if _pol is None:
+    cur = (await session.execute(
+        select(Agent.access_policy, Agent.status, Agent.status_before_archive, Agent.active_version_id)
+        .where(Agent.id == _aid))).first()
+    if cur is None:
         raise NotFound("agent not found", detail={"agent_id": agent_id})
-    ensure_manage(_pol, ap, not_found=NotFound("agent not found", detail={"agent_id": agent_id}))
+    ensure_manage(cur.access_policy, ap, not_found=NotFound("agent not found", detail={"agent_id": agent_id}))
     # A re-point MUST target a version of THIS agent (validated/scoped) — never a foreign version or a
     # malformed id landing as a 500 (F3).
+    new_av = None
     if body.active_version_id is not None:
-        await _version_belongs(session, agent_id, body.active_version_id)
+        new_av = await _version_belongs(session, agent_id, body.active_version_id)
+    # Feature 026 (D4) lifecycle. `cur` may be NEWER than the caller's ETag — harmless: the UPDATE below is guarded by
+    # `xmin = If-Match`, so a decision made on a row the caller never saw can't commit (it 409s instead).
+    sba_set, sba_val, events = False, None, []
+    if body.status is not None and body.status != cur.status:
+        if cur.status == "archived":
+            restore_to = cur.status_before_archive or "draft"
+            if body.status != restore_to:
+                raise InputInvalid(f"an archived agent can only be restored to its prior status '{restore_to}'",
+                                   detail={"field": "status", "restore_status": restore_to})
+            sba_set, events = True, [("agent.restore", {"restored_to": restore_to})]
+        elif body.status == "archived":
+            sba_set, sba_val, events = True, cur.status, [("agent.archive", {"prior_status": cur.status})]
+    if new_av is not None and new_av != cur.active_version_id:
+        events.append(("agent.repoint", {"from_version_id": cur.active_version_id, "to_version_id": new_av}))
     # feature 013: validate + owner-stamp the NEW policy. Named distinctly from the `ap` PolicyPrincipal dep
     # above so the caller view is never shadowed (a later ensure_*/can_use must still see the principal).
     new_policy = validate_access_policy(body.access_policy)   # None when omitted → coalesce keeps existing
     new_policy = stamp_private_owner(new_policy, principal.subject)   # FR-012: edit-to-private → stamp the editor
-    res = await session.execute(
-        text("update agents set name = coalesce(:name, name), status = coalesce(:status, status), "
-             "active_version_id = coalesce(:av, active_version_id), "
-             "access_policy = coalesce(cast(:policy as jsonb), access_policy) "
-             "where id = :id and xmin = cast(:etag as xid) returning id"),
-        {"name": body.name, "status": body.status,
-         "av": str(body.active_version_id) if body.active_version_id else None,
-         "policy": _json.dumps(new_policy) if new_policy is not None else None,
-         "id": agent_id, "etag": etag_val},
-    )
-    if res.first() is None:
+    new_draft = None
+    if body.draft is not None:
+        new_draft = drafts.normalize(body.draft)
+        # P5: the caller never saw ids they may not use (masked on read), so a full replace must not drop them.
+        before = await _load_agent(session, agent_id)
+        prev = drafts.resolve(before, _active_version(before)) if before is not None else None
+        if prev is not None:
+            keep = await _hidden_ids(session, [prev], ap)
+            for f in _BINDING_MODELS:
+                new_draft[f] = sorted(set(new_draft[f]) | {i for i in prev[f] if i in keep})
+    async with integrity_mapped():   # 025 US4: a pre-check race → the deferred same-agent FK refuses → 400, not 500
+        res = await session.execute(
+            text("update agents set name = coalesce(:name, name), status = coalesce(:status, status), "
+                 "active_version_id = coalesce(:av, active_version_id), "
+                 "access_policy = coalesce(cast(:policy as jsonb), access_policy), "
+                 "description = coalesce(:description, description), "
+                 "draft = coalesce(cast(:draft as jsonb), draft), "
+                 "status_before_archive = case when :sba_set then cast(:sba as agent_status) "
+                 "else status_before_archive end "
+                 "where id = :id and xmin = cast(:etag as xid) returning id"),
+            {"name": body.name, "status": body.status,
+             "av": str(body.active_version_id) if body.active_version_id else None,
+             "policy": _json.dumps(new_policy) if new_policy is not None else None,
+             "description": body.description,
+             "draft": _json.dumps(new_draft) if new_draft is not None else None,
+             "sba_set": sba_set, "sba": sba_val,
+             "id": agent_id, "etag": etag_val},
+        )
+        updated = res.first() is not None
+        if updated and body.active_version_id is not None:
+            await check_active_version_now(session)
+    if not updated:
         # distinguish a stale ETag (row exists) from a missing/cross-tenant row (RLS-hidden).
         exists = (await session.execute(text("select 1 from agents where id = :id"), {"id": agent_id})).first()
         if exists:
             raise ConflictStale("stale If-Match ETag; the agent was modified concurrently",
                                 detail={"agent_id": agent_id})
         raise NotFound("agent not found", detail={"agent_id": agent_id})
+    # FR-023: audit in the SAME transaction — a later failure rolls the audit row back with the change.
+    for action, meta in events:
+        await audit.record(session, principal, action, "agent", _aid, meta)
     agent = await _load_agent(session, agent_id)
     response.headers["ETag"] = await _etag(session, agent_id)
-    return _agent_out(agent, ap)
+    return _agent_out(agent, ap, await _hidden_ids(session, [drafts.resolve(agent, _active_version(agent))], ap))
 
 
 _CFG_KEYS = frozenset({"top_k", "similarity_threshold", "max_ctx_tokens", "hybrid", "reranker", "metadata_filters"})
@@ -329,22 +418,93 @@ async def _build_bindings(session: AsyncSession, raw: list, ap: PolicyPrincipal,
     return out
 
 
+def _missing_binding(kind: str, rid) -> NotFound:
+    """FR-005 / D2: the id comes from the caller's OWN draft, so naming it leaks nothing. A binding the caller may not
+    USE is reported identically (P5: denied ≡ absent)."""
+    return NotFound(f"a bound {kind.replace('_', ' ')} no longer exists", detail={"binding": kind, "id": str(rid)})
+
+
+_DEFAULT_INJECTION = "always_on"     # 024: retrieval-as-a-tool (US4) is parked, so always_on is the working mode
+
+
+async def _draft_bindings(session: AsyncSession, resolved: dict, base: AgentVersion | None, ap: PolicyPrincipal,
+                          ws: str) -> tuple[list[RetrievalBinding], list[ToolBinding], list[SkillBinding]]:
+    """Existence-check + snapshot every binding the draft names (D2). Tool/skill snapshots are taken from the LIVE
+    registry row now — the version freezes them. A KB keeps the active version's retrieval settings when it was
+    already bound there (the draft carries only ids), else the 024 defaults."""
+    wsid = uuid.UUID(ws)
+    prior = {b.kb_id: b for b in (base.retrieval_bindings if base is not None else ())}
+    retrieval = []
+    for kid in map(uuid.UUID, resolved["kb_ids"]):
+        kb = (await session.execute(select(KnowledgeBase).where(KnowledgeBase.id == kid))).scalar_one_or_none()
+        if kb is None:
+            raise _missing_binding("knowledge_base", kid)
+        ensure_use(kb.access_policy, ap, not_found=_missing_binding("knowledge_base", kid))
+        if kb.archived_at is not None:
+            raise KbArchived("the knowledge base is archived", detail={"kb_id": str(kid)})
+        old = prior.get(kid)
+        retrieval.append(RetrievalBinding(
+            workspace_id=wsid, kb_id=kid, kb_index_version=kb.index_version, kb=kb,
+            retrieval_config=dict(old.retrieval_config) if old else _retrieval_config({}, 0),
+            injection=old.injection if old else _DEFAULT_INJECTION))
+    tools = []
+    for tid in map(uuid.UUID, resolved["tool_ids"]):
+        t = (await session.execute(select(Tool).where(Tool.id == tid))).scalar_one_or_none()
+        if t is None or t.archived_at is not None:
+            raise _missing_binding("tool", tid)
+        ensure_use(t.access_policy, ap, not_found=_missing_binding("tool", tid))
+        tools.append(ToolBinding(
+            workspace_id=wsid, kind=t.kind, tool_id=t.id,
+            schema_snapshot={"name": t.name, "description": t.description},
+            config_snapshot=dict(t.http_config or {}), risk_tier=t.risk_tier,
+            requires_approval=t.risk_tier != "read"))
+    skills = []
+    for sid in map(uuid.UUID, resolved["skill_ids"]):
+        sk = (await session.execute(select(Skill).where(Skill.id == sid))).scalar_one_or_none()
+        if sk is None or sk.archived_at is not None:
+            raise _missing_binding("skill", sid)
+        ensure_use(sk.access_policy, ap, not_found=_missing_binding("skill", sid))
+        skills.append(SkillBinding(workspace_id=wsid, skill_id=sk.id, skill_content_hash=sk.content_hash or ""))
+    return retrieval, tools, skills
+
+
+def _clone_bindings(base: AgentVersion) -> tuple[list[RetrievalBinding], list[ToolBinding], list[SkillBinding]]:
+    """NULL draft ⇒ clone the active version EXACTLY, bindings included (G3: tool/skill were dropped before 026)."""
+    retrieval = [RetrievalBinding(workspace_id=b.workspace_id, kb_id=b.kb_id, kb_index_version=b.kb_index_version,
+                                  retrieval_config=dict(b.retrieval_config or {}), injection=b.injection, kb=b.kb)
+                 for b in base.retrieval_bindings]
+    tools = [ToolBinding(workspace_id=b.workspace_id, kind=b.kind, tool_id=b.tool_id, mcp_tool_id=b.mcp_tool_id,
+                         subagent_config_id=b.subagent_config_id, schema_snapshot=b.schema_snapshot,
+                         config_snapshot=b.config_snapshot, risk_tier=b.risk_tier,
+                         requires_approval=b.requires_approval, auth_mode=b.auth_mode,
+                         mcp_scopes=list(b.mcp_scopes) if b.mcp_scopes is not None else None)
+             for b in base.tool_bindings]
+    skills = [SkillBinding(workspace_id=b.workspace_id, skill_id=b.skill_id, skill_content_hash=b.skill_content_hash)
+              for b in base.skill_bindings]
+    return retrieval, tools, skills
+
+
 @router.post("/{agent_id}/versions", status_code=201, dependencies=[Depends(require_permission("agent.edit")), Depends(rate_limit("default"))])
 async def create_version(
     agent_id: str,
     ws: str = Depends(resolve_workspace),
     session: AsyncSession = Depends(tenant_db),
+    principal: Principal = Depends(session_principal),
     ap: PolicyPrincipal = Depends(access_principal),
     label: str | None = None,
     body: VersionCreate | None = Body(default=None),
 ) -> VersionOut:
+    """Feature 026 (D2): freeze the RESOLVED DRAFT into a new immutable version — config + tool/skill/KB bindings in
+    ONE transaction (025's insert-window rule), stamped `created_by`. A NULL draft clones the active version exactly.
+    The new version is NOT made active (re-point is a separate, audited PATCH). The 024 `retrieval_bindings` body,
+    when given, still authors the KB bindings explicitly (it wins over the draft's kb_ids)."""
     agent = await _load_agent(session, agent_id)
     if agent is None or not agent.versions:
         raise NotFound("agent (or its base version) not found", detail={"agent_id": agent_id})
     # feature 013: creating a version is an edit → MANAGE gate (404-then-403) after RBAC.
     ensure_manage(agent.access_policy, ap,
                   not_found=NotFound("agent (or its base version) not found", detail={"agent_id": agent_id}))
-    latest = sorted(agent.versions, key=lambda v: v.created_at)[-1]
+    base = _active_version(agent) or sorted(agent.versions, key=lambda v: v.created_at)[-1]
     if body is not None and body.label is not None:
         label = body.label
     # Label uniqueness (F5): reject an explicit duplicate; auto-derive the lowest free vN (count+1 breaks once
@@ -359,24 +519,26 @@ async def create_version(
         while f"v{k}" in existing:
             k += 1
         new_label = f"v{k}"
-    clone = AgentVersion(
-        workspace_id=latest.workspace_id, agent_id=latest.agent_id, label=new_label,
-        system_prompt=latest.system_prompt, prompt_hash=latest.prompt_hash, snapshot_hash="",
-        model_config_=latest.model_config_, profile_snapshot=latest.profile_snapshot,
-        io_contract=latest.io_contract, guardrail_config=latest.guardrail_config,
-        memory_config=latest.memory_config, context_config=latest.context_config,
-    )
-    # Recompute the authoritative snapshot_hash (same config as latest → same hash, consistent with F4).
-    # Feature 024 (research D12): bindings authored here; omitted ⇒ COPY the latest version's (G2 — a new version
-    # must not silently drop knowledge). Tool/skill bindings keep their pre-024 behaviour.
+    if agent.draft is None:
+        retrieval, tools, skills = _clone_bindings(base)
+        resolved = drafts.project(base)
+    else:
+        resolved = drafts.normalize(agent.draft)
+        try:
+            drafts.profile_doc(resolved["provider"], resolved["model"])
+        except KeyError:   # a profile retired after the draft was saved — refuse typed, never a 500
+            raise InputInvalid("the draft's model no longer has a capability profile",
+                               detail={"provider": resolved["provider"], "model": resolved["model"]}) from None
+        retrieval, tools, skills = await _draft_bindings(session, resolved, base, ap, ws)
     if body is not None and body.retrieval_bindings is not None:
         retrieval = await _build_bindings(session, body.retrieval_bindings, ap, ws)
-    else:
-        retrieval = [RetrievalBinding(workspace_id=b.workspace_id, kb_id=b.kb_id, kb_index_version=b.kb_index_version,
-                                      retrieval_config=dict(b.retrieval_config or {}), injection=b.injection, kb=b.kb)
-                     for b in latest.retrieval_bindings]
-    clone.retrieval_bindings, clone.tool_bindings, clone.skill_bindings = retrieval, [], []
-    clone.snapshot_hash = compute_snapshot_hash(clone)
-    session.add(clone)
-    await session.flush()
-    return _version_out(clone, ap)
+    v = drafts.version_from_draft(agent, resolved, label=new_label, base=base, created_by=principal.subject,
+                                  retrieval=retrieval, tools=tools, skills=skills)
+    if agent.draft is None:
+        # exact clone: keep the base's frozen profile + prompt hash so identical content hashes identically (F4)
+        v.profile_snapshot, v.prompt_hash = base.profile_snapshot, base.prompt_hash
+        v.snapshot_hash = compute_snapshot_hash(v)
+    session.add(v)
+    async with integrity_mapped():   # 025 US4: a bound row deleted after the pre-check → typed 4xx, not 500
+        await session.flush()
+    return _version_out(v, ap, agent.active_version_id)

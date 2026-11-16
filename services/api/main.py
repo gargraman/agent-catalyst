@@ -40,7 +40,20 @@ async def _lifespan(app: FastAPI):
         await ex.drain(timeout=10.0)
 
 
+def _bind_provider_transport() -> None:
+    """Feature 026 (D22): adapters/gateway call the module attributes `transport.stream_chunks` / `transport.embed`
+    (the existing test seam), so the dev-only fake is bound by assigning them once, api-side — runtime/ stays pure.
+    `api.settings` already refuses `fake` under AC_ENV=prod; this is a no-op for the default `litellm`."""
+    if get_settings().provider_transport != "fake":
+        return
+    from runtime.providers import fake_transport, transport
+    transport.stream_chunks = fake_transport.stream_chunks
+    transport.embed = fake_transport.embed
+    logging.getLogger("ac.providers").warning("AC_PROVIDER_TRANSPORT=fake — provider calls are SCRIPTED (dev only)")
+
+
 def create_app() -> FastAPI:
+    _bind_provider_transport()
     app = FastAPI(title="Agent Catalyst API", version="0.5.0", lifespan=_lifespan)
     # Typed exception → envelope ({"error": {code, message, detail?}}). Starlette matches subclasses via MRO,
     # so one registration covers every AppError leaf (InputInvalid, AccessDenied, ConflictStale, …).

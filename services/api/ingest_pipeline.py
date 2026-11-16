@@ -148,7 +148,12 @@ async def process_job(job_id, *, repo: IngestRepo, storage, embedder: Embedder,
             for r in rows:
                 for c in r.injection_categories:
                     flags[c] = flags.get(c, 0) + 1
-            await repo.insert_chunks(ctx.document_id, new_gen, rows)
+            try:
+                await repo.insert_chunks(ctx.document_id, new_gen, rows)
+            except ChunkDimMismatch:               # 025 US4: re-trying cannot fix a KB/model dimension mismatch
+                raise _Fail(_err("chunk_dim_mismatch",
+                                 "embedding dimension does not match the knowledge base's declared dimension",
+                                 False)) from None
             wrote_chunks = True
             cost += Decimal(res.cost_usd)
             estimate = estimate or res.cost_is_estimate
@@ -172,6 +177,10 @@ async def process_job(job_id, *, repo: IngestRepo, storage, embedder: Embedder,
         log.exception("ingestion job crashed", extra={"job_id": str(job_id)})
         await _fail(repo, job_id, ctx, new_gen, wrote_chunks,
                     _err("internal_error", "ingestion failed unexpectedly; retry", True), spent)
+
+
+class ChunkDimMismatch(Exception):
+    """Raised by a repo when the store refuses chunk vectors whose dimension ≠ the KB's declared one (0015 trigger)."""
 
 
 class _Fail(Exception):

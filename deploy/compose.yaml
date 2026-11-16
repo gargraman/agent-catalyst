@@ -104,6 +104,7 @@ services:
       AC_APP_DATABASE_URL: postgresql+asyncpg://ac_app:ac_app_pw@pgbouncer:6432/agent_catalyst
       AC_REDIS_URL: redis://redis:6379/0
       AC_ENV: dev                            # dev-only; prod sets prod + trellix-iam (see note above)
+      AC_PROVIDER_TRANSPORT: ${AC_PROVIDER_TRANSPORT:-litellm}   # feature 026: `fake` = scripted, zero-cost provider (dev only)
       AC_AUTH_PROVIDER: dev
       # Secret custody (feature 014): drive the real boto3 path against LocalStack in dev. Prod sets
       # AC_SECRETS_PROVIDER=aws with no endpoint override (real AWS) + an IAM role, not static creds.

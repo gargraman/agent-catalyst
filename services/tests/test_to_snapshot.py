@@ -18,7 +18,9 @@ from api.models import (
     AgentVersion,
     KnowledgeBase,
     RetrievalBinding,
+    Skill,
     SkillBinding,
+    Tool,
     ToolBinding,
     Workspace,
 )
@@ -27,8 +29,6 @@ from runtime.hashing import compute_snapshot_hash
 pytestmark = pytest.mark.integration
 
 # Fixed registry identities so two "clone" versions share behavior-defining content → equal hash.
-_SKILL_ID = uuid.UUID("11111111-1111-1111-1111-111111111111")
-_TOOL_ID = uuid.UUID("22222222-2222-2222-2222-222222222222")
 
 _MODEL_CONFIG = {
     "model": "claude-haiku-4-5",
@@ -39,7 +39,22 @@ _MODEL_CONFIG = {
 _PROFILE = {"features": {"structured_output": True}, "fallback": {}}
 
 
-async def _seed_version(session, ws_id, kb_id, *, prompt="You are a helpful assistant.", label="v1"):
+async def _catalog(session, ws_id):
+    """One real Tool + Skill per workspace (025/0015: bindings need same-workspace catalog rows; was fixed dangling
+    uuids). Get-or-create so two versions in one test bind the SAME ids — the clone-stability hash depends on it."""
+    tool = (await session.execute(select(Tool).where(Tool.workspace_id == ws_id, Tool.name == "snap-tool"))).scalar_one_or_none()
+    if tool is None:
+        tool = Tool(workspace_id=ws_id, name="snap-tool", kind="http")
+        skill = Skill(workspace_id=ws_id, slug="snap-skill", name="snap-skill")
+        session.add_all([tool, skill])
+        await session.flush()
+    skill = (await session.execute(select(Skill).where(Skill.workspace_id == ws_id, Skill.slug == "snap-skill"))).scalar_one()
+    return tool.id, skill.id
+
+
+async def _seed_version(session, ws_id, kb_id, *, prompt="You are a helpful assistant.", label="v1",
+                        kb_index_version=3):
+    tool_id, skill_id = await _catalog(session, ws_id)
     agent = Agent(workspace_id=ws_id, name=f"agent-{uuid.uuid4().hex[:6]}", status="draft")
     session.add(agent)
     await session.flush()
@@ -62,15 +77,15 @@ async def _seed_version(session, ws_id, kb_id, *, prompt="You are a helpful assi
     session.add_all(
         [
             ToolBinding(
-                workspace_id=ws_id, version_id=av.id, kind="http", tool_id=_TOOL_ID,
+                workspace_id=ws_id, version_id=av.id, kind="http", tool_id=tool_id,
                 schema_snapshot={"type": "object"}, config_snapshot={"url": "https://x.example"},
                 risk_tier="read", requires_approval=False,
             ),
             SkillBinding(
-                workspace_id=ws_id, version_id=av.id, skill_id=_SKILL_ID, skill_content_hash="sch-aaaa",
+                workspace_id=ws_id, version_id=av.id, skill_id=skill_id, skill_content_hash="sch-aaaa",
             ),
             RetrievalBinding(
-                workspace_id=ws_id, version_id=av.id, kb_id=kb_id, kb_index_version=3,
+                workspace_id=ws_id, version_id=av.id, kb_id=kb_id, kb_index_version=kb_index_version,
                 retrieval_config={"top_k": 5, "similarity_threshold": 0.2}, injection="tool",
             ),
         ]
@@ -137,17 +152,16 @@ async def test_snapshot_hash_is_clone_stable():
 
 async def test_kb_index_version_excluded_from_hash():
     ws_id, kb_id = await _ws_and_kb()
+    # 025 (0015): committed bindings are frozen, so instead of mutating one, compare two otherwise-identical versions
+    # whose bindings differ ONLY in kb_index_version — same property, no forbidden UPDATE.
     async with tenant_session(ws_id) as s:
-        av_id = await _seed_version(s, ws_id, kb_id)
+        a_id = await _seed_version(s, ws_id, kb_id, kb_index_version=3)
     async with tenant_session(ws_id) as s:
-        av = await _load(s, av_id)
-        h1 = av.to_snapshot().snapshot_hash
+        b_id = await _seed_version(s, ws_id, kb_id, kb_index_version=999)
     async with tenant_session(ws_id) as s:
-        rb = (await s.execute(select(RetrievalBinding).where(RetrievalBinding.version_id == av_id))).scalar_one()
-        rb.kb_index_version = 999  # bindings aren't frozen; only agent_versions are
-    async with tenant_session(ws_id) as s:
-        av = await _load(s, av_id)
-        h2 = av.to_snapshot().snapshot_hash
+        a, b = await _load(s, a_id), await _load(s, b_id)
+        assert a.retrieval_bindings[0].kb_index_version != b.retrieval_bindings[0].kb_index_version
+        h1, h2 = a.to_snapshot().snapshot_hash, b.to_snapshot().snapshot_hash
     assert h1 == h2, "kb_index_version must not affect snapshot_hash (04 §9)"
 
 

@@ -14,7 +14,7 @@ from api.db import tenant_session
 from api.drift import flag_bound_agents
 from api.models import Agent
 from tests._api_helpers import (
-    seed_agent, seed_skill, seed_skill_binding, seed_tool, seed_tool_binding, seed_version, seed_workspace,
+    seed_agent, seed_skill, seed_tool, seed_version, seed_workspace,
 )
 
 pytestmark = pytest.mark.integration
@@ -29,10 +29,9 @@ async def _needs_reeval(ws: str, agent_id: str) -> bool:
 async def test_bound_tool_edit_flags_only_bound_agent():
     ws = await seed_workspace()
     bound = await seed_agent(ws, "Bound")
-    bound_v = await seed_version(ws, bound)
     unbound = await seed_agent(ws, "Unbound")
     tool = await seed_tool(ws)
-    await seed_tool_binding(ws, bound_v, tool)
+    await seed_version(ws, bound, tool_ids=[tool])        # 025: bindings are written with their version (0015)
 
     async with tenant_session(ws) as s:
         n = await flag_bound_agents(s, "tool", tool)
@@ -44,9 +43,8 @@ async def test_bound_tool_edit_flags_only_bound_agent():
 async def test_bound_skill_edit_flags_bound_agent():
     ws = await seed_workspace()
     a = await seed_agent(ws)
-    v = await seed_version(ws, a)
     skill = await seed_skill(ws)
-    await seed_skill_binding(ws, v, skill)
+    await seed_version(ws, a, skill_ids=[skill])          # 025: bindings are written with their version (0015)
 
     async with tenant_session(ws) as s:
         n = await flag_bound_agents(s, "skill", skill)

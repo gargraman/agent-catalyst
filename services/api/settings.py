@@ -268,6 +268,16 @@ class Settings(BaseSettings):
             raise ValueError("AC_STORAGE_PROVIDER must be 's3' under AC_ENV=prod (local storage is not durable)")
         return self
 
+    # Feature 026 (research D22): provider transport. `fake` = the deterministic scripted transport
+    # (runtime/providers/fake_transport.py) for zero-cost live checks; bound at app startup (api/main.py). Dev-only.
+    provider_transport: Literal["litellm", "fake"] = Field(default="litellm", alias="AC_PROVIDER_TRANSPORT")
+
+    @model_validator(mode="after")
+    def _fake_transport_refused_in_prod(self) -> "Settings":
+        if self.env == "prod" and self.provider_transport != "litellm":
+            raise ValueError("AC_PROVIDER_TRANSPORT=fake is refused under AC_ENV=prod (scripted answers, no real provider)")
+        return self
+
     @model_validator(mode="after")
     def _fingerprint_key_required_in_prod(self) -> "Settings":
         key = self.telemetry_fingerprint_key.get_secret_value()

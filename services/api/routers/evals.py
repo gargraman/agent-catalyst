@@ -21,6 +21,7 @@ from api.deps import (access_principal, enforce_spend_cap, ensure_manage, ensure
 from api.provider_keys import resolve_provider_key
 from api.run_sink import persist_run_record
 from api.retrieval_wiring import attach_knowledge, ensure_eval_can_use_knowledge
+from api.db_errors import check_active_version_now, integrity_mapped
 from api.errors import NotFound
 from api.models import Agent
 from api.routers.agents import _version_belongs
@@ -149,5 +150,6 @@ async def publish_version(
     # ADVISORY (D6): publish proceeds regardless of eval state — NEVER raise publish.eval_gate here.
     agent.status = "published"
     agent.active_version_id = vid
-    await session.flush()
+    async with integrity_mapped():   # 025 US4: pre-check race → deferred same-agent FK → 400 input.invalid
+        await check_active_version_now(session)
     return PublishOut(agent_id=agent_id, version_id=body.version_id, status="published", advisory_verdict=None)
