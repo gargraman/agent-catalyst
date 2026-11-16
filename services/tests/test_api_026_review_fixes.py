@@ -113,7 +113,7 @@ async def test_draft_bound_tool_snapshot_is_a_provider_valid_def(http_config, ex
 async def _archived(c, ws) -> tuple[dict, str]:
     a, etag = await _agent(c, ws)
     r = await c.patch(f"/api/v1/agents/{a['id']}", json={"status": "archived"},
-                      headers=dev_headers(workspace=ws, if_match=etag))
+                      headers=dev_headers(workspace=ws, claims={ws: "admin"}, if_match=etag))   # archive = admin (026 #9)
     assert r.status_code == 200, r.text
     return r.json(), r.headers["ETag"]
 
@@ -150,7 +150,7 @@ async def test_archived_agent_can_still_be_restored_then_edited():
     async with client() as c:
         a, etag = await _archived(c, ws)
         r = await c.patch(f"/api/v1/agents/{a['id']}", json={"status": a["restore_status"]},
-                          headers=dev_headers(workspace=ws, if_match=etag))
+                          headers=dev_headers(workspace=ws, claims={ws: "admin"}, if_match=etag))   # restore = admin
         assert r.status_code == 200, r.text
         e = await c.patch(f"/api/v1/agents/{a['id']}", json={"name": "renamed"},
                           headers=dev_headers(workspace=ws, if_match=r.headers["ETag"]))

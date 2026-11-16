@@ -25,7 +25,8 @@ from api.access_policy import PolicyPrincipal, can_use
 from api.db_errors import check_active_version_now, integrity_mapped
 from api.deps import (access_principal, ensure_manage, ensure_use, require_permission, idempotency_guard,
                       Principal, rate_limit, resolve_workspace, session_principal, tenant_db)
-from api.errors import AgentArchived, ConflictStale, InputInvalid, KbArchived, NotFound
+from api.errors import AccessDenied, AgentArchived, ConflictStale, InputInvalid, KbArchived, NotFound
+from api.permissions import has_permission
 from api.models import Agent, AgentVersion, KnowledgeBase, RetrievalBinding, Skill, SkillBinding, Tool, ToolBinding
 from runtime.hashing import compute_snapshot_hash
 from runtime.providers.profiles import _PROFILE_DIR
@@ -303,6 +304,15 @@ async def patch_agent(
             sba_set, sba_val, events = True, cur.status, [("agent.archive", {"prior_status": cur.status})]
     if new_av is not None and new_av != cur.active_version_id:
         events.append(("agent.repoint", {"from_version_id": cur.active_version_id, "to_version_id": new_av}))
+    # 026 (decision #9): the route's `agent.edit` (builder+) covers ordinary edits; lifecycle transitions carry the
+    # console's stricter gates server-side — archive/restore = `agent.delete` (admin), re-point = `agent.publish`
+    # (publisher). Only an actual transition is gated: re-sending the current version/status stays a builder no-op.
+    role = principal.workspace_claims.get(ws, "")
+    for kind, _ in events:
+        needed = "agent.publish" if kind == "agent.repoint" else "agent.delete"
+        if not has_permission(role, needed):
+            raise AccessDenied("insufficient role for this operation",
+                               detail={"required_permission": needed, "transition": kind})
     # feature 013: validate + owner-stamp the NEW policy. Named distinctly from the `ap` PolicyPrincipal dep
     # above so the caller view is never shadowed (a later ensure_*/can_use must still see the principal).
     new_policy = validate_access_policy(body.access_policy)   # None when omitted → coalesce keeps existing

@@ -114,7 +114,7 @@ async def test_kb_binding_settings_carry_over_from_the_active_version():
         assert v2.status_code == 201, v2.text
         etag = (await c.get(f"/api/v1/agents/{a['id']}", headers=dev_headers(workspace=ws))).headers["ETag"]
         rp = await c.patch(f"/api/v1/agents/{a['id']}", json={"active_version_id": v2.json()["id"]},
-                           headers=dev_headers(workspace=ws, if_match=etag))
+                           headers=dev_headers(workspace=ws, claims={ws: "publisher"}, if_match=etag))
         assert rp.status_code == 200 and rp.json()["draft"]["kb_ids"] == [k]
         p = await c.patch(f"/api/v1/agents/{a['id']}", json={"draft": _draft(kb_ids=[k], system_prompt="new")},
                           headers=dev_headers(workspace=ws, if_match=rp.headers["ETag"]))
@@ -156,7 +156,7 @@ async def test_versions_listed_newest_first_and_draft_clean_after_repoint():
         assert [v["label"] for v in got.json()["versions"]] == ["v2", "v1"]
         assert got.json()["draft_dirty"] is True
         rp = await c.patch(f"/api/v1/agents/{a['id']}", json={"active_version_id": v2["id"]},
-                           headers=dev_headers(workspace=ws, if_match=got.headers["ETag"]))
+                           headers=dev_headers(workspace=ws, claims={ws: "publisher"}, if_match=got.headers["ETag"]))
     assert rp.status_code == 200 and rp.json()["draft_dirty"] is False
     assert [v["is_active"] for v in rp.json()["versions"]] == [True, False]
 

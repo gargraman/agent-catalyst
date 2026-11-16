@@ -158,7 +158,7 @@ async def test_viewer_patch_is_403_and_other_workspace_is_404():
 
 # --- T016: archive / restore -------------------------------------------------------------------------------------------
 async def _to_status(c, ws, aid, etag, status):
-    r = await _patch(c, ws, aid, etag, {"status": status})
+    r = await _patch(c, ws, aid, etag, {"status": status}, claims={ws: "admin"})   # lifecycle = admin (026 #9)
     assert r.status_code == 200, r.text
     return r.json(), r.headers["ETag"]
 
@@ -194,7 +194,7 @@ async def test_repoint_writes_agent_repoint_audit_row():
         v1 = a["active_version_id"]
         v2 = (await c.post(f"/api/v1/agents/{a['id']}/versions", headers=dev_headers(workspace=ws))).json()["id"]
         etag = (await c.get(f"/api/v1/agents/{a['id']}", headers=dev_headers(workspace=ws))).headers["ETag"]
-        r = await _patch(c, ws, a["id"], etag, {"active_version_id": v2})
+        r = await _patch(c, ws, a["id"], etag, {"active_version_id": v2}, claims={ws: "publisher"})
         assert r.status_code == 200, r.text
     (row,) = await _audit(ws, "agent.repoint")
     assert row.actor == "u1" and row.target_type == "agent" and str(row.target_id) == a["id"]
@@ -216,10 +216,10 @@ async def test_failed_patch_writes_no_audit_row():
         a, etag = await _create(c, ws)
         v2 = (await c.post(f"/api/v1/agents/{a['id']}/versions", headers=dev_headers(workspace=ws))).json()["id"]
         rotated = await _patch(c, ws, a["id"], etag, {"description": "rotate"})    # rotates the ETag; not audited
-        stale = await _patch(c, ws, a["id"], etag, {"active_version_id": v2})      # old ETag → genuinely stale
+        stale = await _patch(c, ws, a["id"], etag, {"active_version_id": v2}, claims={ws: "admin"})      # old ETag → genuinely stale
         assert stale.status_code == 409
         bad = await _patch(c, ws, a["id"], rotated.headers["ETag"],
-                           {"status": "archived", "active_version_id": str(uuid.uuid4())})   # foreign version → 404
+                           {"status": "archived", "active_version_id": str(uuid.uuid4())}, claims={ws: "admin"})   # foreign version → 404
         assert bad.status_code == 404
     assert await _audit(ws) == []
 

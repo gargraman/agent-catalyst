@@ -42,7 +42,7 @@ async def _archived_agent_with_token(c, ws) -> tuple[dict, str, str]:
     secret = "ac_live_arch_" + uuid.uuid4().hex[:10]
     await seed_api_token(ws, r.json()["id"], secret=secret)
     p = await c.patch(f"/api/v1/agents/{r.json()['id']}", json={"status": "archived"},
-                      headers=dev_headers(workspace=ws, if_match=r.headers["ETag"]))
+                      headers=dev_headers(workspace=ws, claims={ws: "admin"}, if_match=r.headers["ETag"]))   # archive = admin (026 #9)
     assert p.status_code == 200, p.text
     return p.json(), p.headers["ETag"], secret
 
@@ -97,7 +97,7 @@ async def test_restored_agent_answers_on_both_planes(monkeypatch):
     async with client() as c:
         a, etag, secret = await _archived_agent_with_token(c, ws)
         rs = await c.patch(f"/api/v1/agents/{a['id']}", json={"status": a["restore_status"]},
-                           headers=dev_headers(workspace=ws, if_match=etag))
+                           headers=dev_headers(workspace=ws, claims={ws: "admin"}, if_match=etag))   # restore = admin
         assert rs.status_code == 200, rs.text
         console = await c.post(f"/api/v1/agents/{a['id']}/invoke", headers=dev_headers(workspace=ws),
                                json={"inputs": INPUTS})

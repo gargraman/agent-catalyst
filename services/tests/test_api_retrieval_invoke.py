@@ -73,7 +73,8 @@ async def _bound_version(c, ws, aid, kbs, hdr=None) -> str:
                                                   for k in kbs]})
     assert v.status_code == 201, v.text
     etag = (await c.get(f"/api/v1/agents/{aid}", headers=h)).headers["ETag"]
-    act = await c.patch(f"/api/v1/agents/{aid}", headers={**h, "If-Match": etag},
+    rp_h = hdr or dev_headers(workspace=ws, claims={ws: "publisher"})       # re-point = publisher (026 #9)
+    act = await c.patch(f"/api/v1/agents/{aid}", headers={**rp_h, "If-Match": etag},
                         json={"active_version_id": v.json()["id"]})
     assert act.status_code == 200, act.text
     return v.json()["id"]

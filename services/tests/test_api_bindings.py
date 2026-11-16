@@ -65,7 +65,7 @@ async def test_g2_omitted_bindings_are_copied_with_the_same_hash():
         bound = await _post(c, ws, aid, {"retrieval_bindings": [_binding(kb)]})
         etag = (await c.get(f"/api/v1/agents/{aid}", headers=dev_headers(workspace=ws))).headers["ETag"]
         rp = await c.patch(f"/api/v1/agents/{aid}", json={"active_version_id": bound.json()["id"]},
-                           headers=dev_headers(workspace=ws, if_match=etag))
+                           headers=dev_headers(workspace=ws, claims={ws: "publisher"}, if_match=etag))   # re-point = publisher
         assert rp.status_code == 200, rp.text
         copied = await _post(c, ws, aid)                         # no body at all
         copied2 = await _post(c, ws, aid, {"label": "v-copy"})   # body without the field
