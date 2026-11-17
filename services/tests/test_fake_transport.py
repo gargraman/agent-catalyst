@@ -154,6 +154,14 @@ def test_slow_marker_is_capped(monkeypatch):
     assert len(_texts(_run(_drain(**_kw("x [[slow:100000]]"))))) == 600   # ≤ 5 min of dev stream, never unbounded
 
 
+@pytest.mark.parametrize("fail", ["midstream", "transient", "timeout", "provider_unavailable"])
+def test_slow_marker_refuses_a_combined_fail_marker(fail):
+    """026 US3 review #9: `[[slow:N]] [[fail:X]]` must not silently drop one marker — a live check combining them would
+    pass for the wrong reason. A ValueError (not a retryable TransportError) before any chunk."""
+    with pytest.raises(ValueError, match="cannot be combined"):
+        _run(_drain(**_kw(f"x [[slow:3]] [[fail:{fail}]]")))
+
+
 def test_midstream_marker_yields_text_then_raises():
     seen = []
 

@@ -32,10 +32,19 @@ async def _seed():
     return ws, aid, v1, v2, suite
 
 
-async def _publish(ws, aid, vid, role="publisher"):
+async def _publish(ws, aid, vid, role="publisher", if_match: str | None = None):
+    h = dev_headers(workspace=ws, claims={ws: role})
+    if if_match is not None:
+        h["If-Match"] = if_match
     async with client() as c:
-        return await c.post(f"/api/v1/agents/{aid}/publish", json={"version_id": vid},
-                            headers=dev_headers(workspace=ws, claims={ws: role}))
+        return await c.post(f"/api/v1/agents/{aid}/publish", json={"version_id": vid}, headers=h)
+
+
+async def _etag(ws, aid):
+    async with client() as c:
+        r = await c.get(f"/api/v1/agents/{aid}", headers=dev_headers(workspace=ws, claims={ws: "publisher"}))
+    assert r.status_code == 200, r.text
+    return r.headers["ETag"]
 
 
 @pytest.fixture(autouse=True)
@@ -126,3 +135,34 @@ async def test_builder_cannot_publish():
         a = await s.get(Agent, uuid.UUID(aid))
         rows = list((await s.scalars(select(AuditLog))).all())
     assert str(a.active_version_id) == v2 and rows == []
+
+
+# ---- 026 US3 review #1: publish honours If-Match when sent (a stale tab must not undo a newer re-point) ----------
+async def test_publish_with_a_stale_if_match_is_409_and_changes_nothing():
+    ws, aid, v1, v2, _suite = await _seed()               # v2 active
+    stale = await _etag(ws, aid)
+    async with client() as c:                             # someone else re-points v2 -> v1 -> v2 (row changes)
+        r = await c.patch(f"/api/v1/agents/{aid}", json={"description": "touched"},
+                          headers={**dev_headers(workspace=ws, claims={ws: "publisher"}), "If-Match": stale})
+    assert r.status_code == 200, r.text
+    r = await _publish(ws, aid, v1, if_match=stale)
+    assert r.status_code == 409, r.text
+    assert r.json()["error"]["code"] == "conflict.stale"
+    async with tenant_session(ws) as s:
+        a = await s.get(Agent, uuid.UUID(aid))
+        rows = list((await s.scalars(select(AuditLog).where(AuditLog.action == "agent.publish"))).all())
+    assert str(a.active_version_id) == v2 and a.status == "draft" and rows == []
+
+
+async def test_publish_with_a_malformed_if_match_is_409():
+    ws, aid, v1, v2, _suite = await _seed()
+    r = await _publish(ws, aid, v1, if_match="not-an-etag")
+    assert r.status_code == 409, r.text
+    assert r.json()["error"]["code"] == "conflict.stale"
+
+
+async def test_publish_with_the_current_if_match_succeeds():
+    ws, aid, v1, v2, _suite = await _seed()
+    r = await _publish(ws, aid, v2, if_match=await _etag(ws, aid))
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "published"

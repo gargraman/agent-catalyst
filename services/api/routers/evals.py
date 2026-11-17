@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Depends, Response
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, Header, Response
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.resilience_wiring import get_guard
@@ -22,7 +22,7 @@ from api.provider_keys import resolve_provider_key
 from api.run_sink import persist_run_record
 from api.retrieval_wiring import attach_knowledge, ensure_eval_can_use_knowledge
 from api.db_errors import check_active_version_now, integrity_mapped
-from api.errors import AgentArchived, NotFound
+from api.errors import AgentArchived, ConflictStale, NotFound
 from api.models import Agent, EvalRun
 from api.routers.agents import _version_belongs
 from api.routers.invoke import _load_version
@@ -139,16 +139,26 @@ async def publish_version(
     session: AsyncSession = Depends(tenant_db),
     ap: PolicyPrincipal = Depends(access_principal),
     principal: Principal = Depends(session_principal),
+    if_match: str | None = Header(default=None, alias="If-Match"),
 ) -> PublishOut:
     try:
         aid = uuid.UUID(agent_id)
     except ValueError:
         raise NotFound("agent not found", detail={"agent_id": agent_id})
-    agent = (await session.execute(select(Agent).where(Agent.id == aid))).scalar_one_or_none()
+    q = select(Agent).where(Agent.id == aid)
+    agent = (await session.execute(q.with_for_update() if if_match else q)).scalar_one_or_none()
     if agent is None:
         raise NotFound("agent not found", detail={"agent_id": agent_id})
     # feature 013: publish is a MANAGE op (404-then-403) — after the agent.publish RBAC gate.
     ensure_manage(agent.access_policy, ap, not_found=NotFound("agent not found", detail={"agent_id": agent_id}))
+    # 026 US3 review #1: publish re-points active_version_id, so — like PATCH re-point — it honours If-Match when sent
+    # (a stale console tab must not silently undo a newer re-point). Optional: API callers without it keep the
+    # pre-026 behaviour. The row is locked above, so the xmin compare can't race a concurrent PATCH.
+    if if_match:
+        cur = (await session.execute(text("select xmin::text as etag from agents where id = :id"),
+                                     {"id": agent_id})).scalar_one()
+        if if_match.strip() != cur:
+            raise ConflictStale("stale If-Match ETag; the agent was modified concurrently", detail={"agent_id": agent_id})
     # The published version MUST belong to THIS agent (validated/scoped) — never a foreign version, never a
     # malformed id landing as a 500 / FK error (F2).
     # 026 review-2 #1: publishing must not resurrect an archived agent — restore (admin, agent.delete) comes first.

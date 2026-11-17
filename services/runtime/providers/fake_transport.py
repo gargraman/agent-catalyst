@@ -13,7 +13,8 @@ Scripted failure markers — read ONLY from the LAST user message (so an old tur
   [[fail:midstream]]             yields some text (no usage), then a retryable TransportError
   [[fail:provider_unavailable]]  NON-retryable TransportError, status 502
   [[slow:N]]                     N text chunks, each after a 0.5 s pause (cap 600), then usage — a LONG stream so a
-                                 mid-stream token revoke (026 L15) is observable live
+                                 mid-stream token revoke (026 L15) is observable live. Combined with any [[fail:*]]
+                                 marker → ValueError (never silently drop one of them)
 
 Pure: stdlib + runtime.providers only (guarded by tests/test_fake_transport.py + test_runtime_purity.py).
 """
@@ -75,6 +76,10 @@ async def stream_chunks(**kwargs: Any) -> AsyncIterator[Any]:
     messages = kwargs.get("messages") or []
     last = _last_user(messages)
     marker = (_MARKER.search(last) or [None, None])[1]
+    slow = _SLOW.search(last)
+    if marker and slow:
+        # 026 US3 review #9: never silently honour one marker and drop the other — a check would pass for the wrong reason.
+        raise ValueError("[[slow:N]] cannot be combined with a [[fail:*]] marker")
 
     if marker == "transient":
         raise TransportError("fake transient provider failure", retryable=True, status=503)
@@ -86,8 +91,6 @@ async def stream_chunks(**kwargs: Any) -> AsyncIterator[Any]:
         raise TransportError("fake provider timeout", retryable=True, status=None)
 
     seed = hashlib.sha256(f"{kwargs.get('model')}\x00{last}".encode()).digest()
-    slow = _SLOW.search(last)
-    parts = _answer(seed, _SLOW.sub("", _MARKER.sub("", last)))
     if slow:
         n = min(int(slow[1]), SLOW_MAX_CHUNKS)
         parts = [f" {_WORDS[(seed[i % len(seed)] + i) % len(_WORDS)]}" for i in range(n)]
@@ -97,6 +100,7 @@ async def stream_chunks(**kwargs: Any) -> AsyncIterator[Any]:
         yield _chunk(None, usage=_usage_of(messages, "".join(parts)))
         return
 
+    parts = _answer(seed, _MARKER.sub("", last))
     if marker == "midstream":
         for p in parts[:2]:
             yield _chunk(p)
