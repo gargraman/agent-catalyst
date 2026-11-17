@@ -26,23 +26,25 @@ from runtime import invoke as invoke_mod
 from runtime.providers import gateway
 from runtime.run import Outcome
 from tests._api_helpers import seed_agent, seed_version, seed_workspace
-from tests._invoke_helpers import make_context, make_snapshot, text_ev
+from tests._invoke_helpers import make_context, make_snapshot, text_ev, usage_ev
 
 pytestmark = pytest.mark.integration
 
 
-def _hanging_gateway(started: asyncio.Event):
-    """Yields one delta, then blocks forever — like a slow model mid-answer."""
+def _hanging_gateway(started: asyncio.Event, *, with_usage: bool = False):
+    """Yields one delta (+ optionally the usage event), then blocks forever — like a slow model mid-answer."""
     async def _stream(req, *, api_key, profile=None, timeout=None, **_resilience):
         yield text_ev("partial ")
+        if with_usage:
+            yield usage_ev()
         started.set()
         await asyncio.Event().wait()
     return _stream
 
 
-async def _open_stream(ws, aid, monkeypatch, session):
+async def _open_stream(ws, aid, monkeypatch, session, *, with_usage: bool = False, return_started: bool = False):
     started = asyncio.Event()
-    monkeypatch.setattr(gateway, "stream", _hanging_gateway(started))
+    monkeypatch.setattr(gateway, "stream", _hanging_gateway(started, with_usage=with_usage))
     ap = PolicyPrincipal(role="builder", teams=(), subject="u1")
     resp = await _run_invoke(session=session, ws=ws, ap=ap, agent_id=aid, body=InvokeIn(inputs={"message": "hi"}),
                              corr=uuid.uuid4().hex, provider_corr=uuid.uuid4().hex, source="playground")
@@ -50,7 +52,20 @@ async def _open_stream(ws, aid, monkeypatch, session):
     first = await it.__anext__()                      # run_start
     assert b"run_start" in (first if isinstance(first, bytes) else first.encode())
     await it.__anext__()                              # the partial text delta
-    return it
+    return (it, started) if return_started else it
+
+
+async def _blocked_next(it, started: asyncio.Event) -> asyncio.Future:
+    """Return a pending `__anext__` task that is parked inside the provider await (frames emitted before the hang,
+    e.g. a `usage` frame, are drained first) — deterministic, no sleeps."""
+    for _ in range(5):
+        task = asyncio.ensure_future(it.__anext__())
+        waiter = asyncio.ensure_future(started.wait())
+        done, _ = await asyncio.wait({task, waiter}, return_when=asyncio.FIRST_COMPLETED)
+        if task not in done:
+            return task
+        waiter.cancel()
+    raise AssertionError("stream never blocked in the provider")
 
 
 async def _runs(ws):
@@ -77,14 +92,27 @@ async def test_aclose_at_a_yield_still_persists_a_cancelled_run(monkeypatch):
 async def test_cancelled_error_mid_await_still_persists_a_cancelled_run(monkeypatch):
     ws, aid = await _seed()
     async with tenant_session(ws) as s:
-        it = await _open_stream(ws, aid, monkeypatch, s)
-        task = asyncio.ensure_future(it.__anext__())   # now blocked inside the provider await
-        await asyncio.sleep(0.05)
+        it, started = await _open_stream(ws, aid, monkeypatch, s, return_started=True)
+        task = await _blocked_next(it, started)        # deterministically parked inside the provider await
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
     (run,) = await _runs(ws)
     assert run.outcome == "cancelled"
+
+
+async def test_cancelled_run_keeps_the_billed_cost_so_it_counts_toward_spend(monkeypatch):
+    """Red review: the provider already reported usage (billed), then the client went away. The cancelled run must
+    carry that cost — otherwise aborting just before `done` sidesteps the month-to-date spend cap."""
+    ws, aid = await _seed()
+    async with tenant_session(ws) as s:
+        it, started = await _open_stream(ws, aid, monkeypatch, s, with_usage=True, return_started=True)
+        task = await _blocked_next(it, started)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    (run,) = await _runs(ws)
+    assert run.outcome == "cancelled" and run.cost_usd is not None and run.cost_usd > 0
 
 
 async def test_late_finalizer_after_the_request_session_closed_still_persists(monkeypatch):

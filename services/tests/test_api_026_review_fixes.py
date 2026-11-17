@@ -122,7 +122,7 @@ async def _archived(c, ws) -> tuple[dict, str]:
     {"draft": _draft(system_prompt="changed")},
     {"name": "renamed"},
     {"description": "d"},
-    {"access_policy": {"visibility": "public"}},
+    {"access_policy": {"visibility": "workspace"}},   # a VALID policy (Red review: "public" was malformed → 400)
     {"active_version_id": "__v1__"},
     {"status": "archived", "name": "renamed"},
 ])
@@ -133,8 +133,10 @@ async def test_archived_agent_refuses_edits(body):
         if body.get("active_version_id") == "__v1__":
             body = {"active_version_id": a["versions"][0]["id"]}
         r = await c.patch(f"/api/v1/agents/{a['id']}", json=body, headers=dev_headers(workspace=ws, if_match=etag))
+        after = await c.get(f"/api/v1/agents/{a['id']}", headers=dev_headers(workspace=ws))
     assert r.status_code == 409, r.text
     assert r.json()["error"]["code"] == "agent.archived"
+    assert after.headers["ETag"] == etag                       # nothing was written
 
 
 async def test_archived_agent_refuses_version_create():

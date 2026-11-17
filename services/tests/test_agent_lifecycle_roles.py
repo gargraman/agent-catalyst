@@ -40,6 +40,8 @@ async def test_archive_and_restore_require_admin():
                               headers=_h(ws, role, await _etag(c, ws, aid)))
             assert r.status_code == 403, (role, r.text)
             assert r.json()["error"]["code"] == "access.denied"
+            assert r.json()["error"]["detail"]["required_permission"] == "agent.delete"
+            assert (await c.get(f"/api/v1/agents/{aid}", headers=_h(ws, "admin"))).json()["status"] != "archived"
         r = await c.patch(f"/api/v1/agents/{aid}", json={"status": "archived"},
                           headers=_h(ws, "admin", await _etag(c, ws, aid)))
         assert r.status_code == 200, r.text
@@ -47,6 +49,8 @@ async def test_archive_and_restore_require_admin():
         r = await c.patch(f"/api/v1/agents/{aid}", json={"status": restore},
                           headers=_h(ws, "publisher", await _etag(c, ws, aid)))
         assert r.status_code == 403, r.text                              # restore is the same lifecycle gate
+        assert r.json()["error"]["detail"]["required_permission"] == "agent.delete"
+        assert (await c.get(f"/api/v1/agents/{aid}", headers=_h(ws, "admin"))).json()["status"] == "archived"
         r = await c.patch(f"/api/v1/agents/{aid}", json={"status": restore},
                           headers=_h(ws, "admin", await _etag(c, ws, aid)))
         assert r.status_code == 200, r.text
@@ -61,6 +65,8 @@ async def test_repoint_requires_publisher_but_builder_can_still_edit():
                           headers=_h(ws, "builder", await _etag(c, ws, aid)))
         assert r.status_code == 403, r.text
         assert r.json()["error"]["code"] == "access.denied"
+        assert r.json()["error"]["detail"]["required_permission"] == "agent.publish"
+        assert (await c.get(f"/api/v1/agents/{aid}", headers=_h(ws, "admin"))).json()["active_version_id"] == active
         r = await c.patch(f"/api/v1/agents/{aid}", json={"active_version_id": active},
                           headers=_h(ws, "builder", await _etag(c, ws, aid)))
         assert r.status_code == 200, r.text                              # naming the current version is a no-op

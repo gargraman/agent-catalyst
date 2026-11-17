@@ -68,6 +68,53 @@ def _frame(r, name) -> dict:
 
 
 # ---- draft target -------------------------------------------------------------------------------------------
+async def test_draft_target_snapshot_carries_the_drafts_tool_skill_and_kb_bindings(monkeypatch):
+    """Red-review H2 (the G3 class on the draft-RUN path): a draft's tool/skill/KB ids must reach the transient
+    snapshot the runtime executes — not be silently dropped. Captures `_resolve_snapshot`'s output, then stops the
+    request before any provider/retrieval work (resolution is what's under test)."""
+    from api.errors import InputInvalid
+    from api.routers import invoke as invoke_router
+    from tests._api_helpers import seed_kb, seed_skill, seed_tool
+    captured: list = []
+    real = invoke_router._resolve_snapshot
+
+    async def _capture(*a, **k):
+        snap, is_draft = await real(*a, **k)
+        captured.append((snap, is_draft))
+        raise InputInvalid("stop after resolution", detail={"test": "captured"})
+    monkeypatch.setattr(invoke_router, "_resolve_snapshot", _capture)
+    ws = await seed_workspace()
+    tool, skill, kb = await seed_tool(ws), await seed_skill(ws), await seed_kb(ws)
+    async with client() as c:
+        a = await _agent(c, ws)
+        await set_draft(ws, a["id"], provider="openai", model="gpt-5-mini", model_params={},
+                        system_prompt=DRAFT_PROMPT, io_contract=IO, kb_ids=[kb], tool_ids=[tool], skill_ids=[skill])
+        r = await _invoke(c, ws, a["id"], target="draft")
+    assert r.status_code == 400 and r.json()["error"]["detail"] == {"test": "captured"}, r.text
+    ((snap, is_draft),) = captured
+    assert is_draft and snap.label == "draft" and snap.system_prompt == DRAFT_PROMPT
+    assert [t.schema_snapshot["name"] for t in snap.tools] == ["repo-tool"]
+    assert [s.skill_id for s in snap.skills] == [skill]
+    assert [ref.kb_id for ref in snap.retrieval] == [kb]
+
+
+async def test_draft_target_tool_binding_reaches_the_provider_request(monkeypatch):
+    """H2, end to end: the draft's bound tool is offered to the model on a real draft run."""
+    from tests._api_helpers import seed_tool
+    stream, seen = _recording_gateway()
+    monkeypatch.setattr(gateway, "stream", stream)
+    ws = await seed_workspace()
+    tool = await seed_tool(ws, name="lookup-order")
+    async with client() as c:
+        a = await _agent(c, ws)
+        await set_draft(ws, a["id"], provider="openai", model="gpt-5-mini", model_params={},
+                        system_prompt=DRAFT_PROMPT, io_contract=IO, kb_ids=[], tool_ids=[tool], skill_ids=[])
+        r = await _invoke(c, ws, a["id"], target="draft")
+    assert r.status_code == 200, r.text
+    assert seen and [t["name"] if isinstance(t, dict) else t.name for t in seen[-1].tools] == ["lookup-order"]
+
+
+
 async def test_draft_target_runs_the_draft_prompt_and_records_a_null_version(monkeypatch):
     stream, seen = _recording_gateway()
     monkeypatch.setattr(gateway, "stream", stream)
@@ -215,7 +262,13 @@ async def test_published_plane_never_runs_the_draft(monkeypatch):
 async def test_done_frame_carries_the_persisted_runs_latency_and_cost(monkeypatch):
     """US2 L8: the playground turn shows cost/latency that EQUAL the Runs row — so `done` carries the run's own
     `latency_ms` + `cost_usd` (the usage frame has cost but no latency, and client wall-clock ≠ the server's)."""
-    monkeypatch.setattr(gateway, "stream", _recording_gateway()[0])
+    import asyncio
+
+    async def _slow(req, *, api_key, profile=None, timeout=None, **_resilience):
+        await asyncio.sleep(0.06)        # non-zero latency, so 0 == 0 can't pass (Red-review M)
+        for ev in (text_ev("ok"), usage_ev(), stop_ev()):
+            yield ev
+    monkeypatch.setattr(gateway, "stream", _slow)
     ws = await seed_workspace()
     async with client() as c:
         a = await _agent(c, ws)
@@ -223,5 +276,6 @@ async def test_done_frame_carries_the_persisted_runs_latency_and_cost(monkeypatc
     assert r.status_code == 200, r.text
     done = _frame(r, "done")
     (run,) = await _runs(ws, a["id"])
-    assert done["run_id"] and done["latency_ms"] == run.latency_ms
+    assert done["run_id"] == str(run.id).replace("-", "") or done["run_id"] == str(run.id)
+    assert done["latency_ms"] >= 50 and done["latency_ms"] == run.latency_ms
     assert done["cost_usd"] == pytest.approx(float(run.cost_usd))

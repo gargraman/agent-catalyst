@@ -182,8 +182,10 @@ async def test_other_transition_out_of_archived_is_400():
         a, etag = await _create(c, ws)
         a, etag = await _to_status(c, ws, a["id"], etag, "published")
         a, etag = await _to_status(c, ws, a["id"], etag, "archived")
-        r = await _patch(c, ws, a["id"], etag, {"status": "draft"})
+        # admin claims: restore is admin-only (026 #9) — so the 400 can only be the transition rule, not an RBAC order
+        r = await _patch(c, ws, a["id"], etag, {"status": "draft"}, claims={ws: "admin"})
     assert r.status_code == 400 and r.json()["error"]["code"] == "input.invalid"
+    assert r.json()["error"]["detail"]["restore_status"] == "published"
 
 
 # --- T016: audit -------------------------------------------------------------------------------------------------------
@@ -207,10 +209,39 @@ async def test_archive_and_restore_write_audit_rows():
         a, etag = await _create(c, ws)
         _, etag = await _to_status(c, ws, a["id"], etag, "archived")
         await _to_status(c, ws, a["id"], etag, "draft")
-    assert [r.action for r in await _audit(ws)] == ["agent.archive", "agent.restore"]
+    rows = await _audit(ws)
+    assert [r.action for r in rows] == ["agent.archive", "agent.restore"]
+    assert all(r.actor == "u1" and r.target_type == "agent" and str(r.target_id) == a["id"] for r in rows)
+    assert rows[0].meta == {"prior_status": "draft"} and rows[1].meta == {"restored_to": "draft"}
 
 
-async def test_failed_patch_writes_no_audit_row():
+async def test_audit_row_rolls_back_with_a_patch_that_fails_after_the_audit_write(monkeypatch):
+    """FR-023 (Red-review H1): the audit row is written in the request's OWN transaction. Force a failure AFTER
+    `audit.record` (the post-write reload) — the re-point and its audit row must both roll back. An audit written on a
+    separate/auto-committed session would survive here."""
+    from api.errors import InputInvalid
+    from api.routers import agents as agents_router
+    ws = await seed_workspace()
+    async with client() as c:
+        a, _ = await _create(c, ws)
+        v1 = a["active_version_id"]
+        v2 = (await c.post(f"/api/v1/agents/{a['id']}/versions", headers=dev_headers(workspace=ws))).json()["id"]
+        etag = (await c.get(f"/api/v1/agents/{a['id']}", headers=dev_headers(workspace=ws))).headers["ETag"]
+
+        async def _boom(*_a, **_k):
+            raise InputInvalid("forced post-audit failure", detail={"test": "rollback"})
+        monkeypatch.setattr(agents_router, "_load_agent", _boom)   # only reached after the UPDATE + audit.record
+        r = await _patch(c, ws, a["id"], etag, {"active_version_id": v2}, claims={ws: "publisher"})
+        monkeypatch.undo()
+        assert r.status_code == 400 and r.json()["error"]["detail"] == {"test": "rollback"}, r.text
+        after = (await c.get(f"/api/v1/agents/{a['id']}", headers=dev_headers(workspace=ws))).json()
+    assert after["active_version_id"] == v1                       # the re-point rolled back …
+    assert await _audit(ws) == []                                 # … and so did its audit row
+
+
+async def test_patch_refused_before_the_write_leaves_no_audit_row():
+    # Guard only: both refusals fire BEFORE the UPDATE/audit. The same-transaction property is pinned by
+    # test_audit_row_rolls_back_with_a_patch_that_fails_after_the_audit_write.
     ws = await seed_workspace()
     async with client() as c:
         a, etag = await _create(c, ws)
@@ -228,7 +259,8 @@ async def test_noop_description_edit_writes_no_audit_row():
     ws = await seed_workspace()
     async with client() as c:
         a, etag = await _create(c, ws)
-        await _patch(c, ws, a["id"], etag, {"description": "just text"})
+        r = await _patch(c, ws, a["id"], etag, {"description": "just text"})
+    assert r.status_code == 200 and r.json()["description"] == "just text", r.text
     assert await _audit(ws) == []
 
 

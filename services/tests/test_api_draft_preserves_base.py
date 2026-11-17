@@ -61,6 +61,7 @@ async def test_version_from_draft_keeps_api_version_and_mcp_bindings():
                                .where(AgentVersion.id == uuid.UUID(v2.json()["id"])))).scalar_one()
     assert row.system_prompt == "edited prompt"
     assert row.model_config_.get("api_version") == "2026-01"
+    assert row.profile_snapshot == PROFILE_SNAPSHOT                    # same model → the frozen profile is inherited
     assert [(b.kind, b.mcp_tool_id) for b in row.tool_bindings] == [("mcp", mcp_tool)]
 
 
@@ -79,6 +80,8 @@ async def test_switching_model_in_the_draft_does_not_carry_the_old_api_version()
     async with tenant_session(ws) as s:
         row = await s.get(AgentVersion, uuid.UUID(v2.json()["id"]))
     assert row.model_config_["model"] == "claude-haiku-5-5" and "api_version" not in row.model_config_
+    assert row.profile_snapshot != PROFILE_SNAPSHOT                    # never the old model's frozen profile …
+    assert row.profile_snapshot.get("model") == "claude-haiku-5-5"     # … but the new model's
 
 
 # --- review-2 #8: the console must know each version's input contract ---------------------------------------------
