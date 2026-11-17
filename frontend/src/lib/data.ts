@@ -80,6 +80,9 @@ export type Version = {
   createdBy: string;
   evalVerdict: Verdict | "none";
   note: string;
+  /** Live: this version's OWN input variables (VersionOut.io_contract) — a run of it must use these field names,
+   *  which can differ from the draft's (026 review-2 #8). Absent for seeds. */
+  inputVariables?: InputVariable[];
 };
 
 export type Agent = {

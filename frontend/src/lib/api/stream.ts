@@ -50,7 +50,10 @@ export type InvokeFrame =
  *  `event:` line (named "message"). A frame whose data isn't JSON is skipped — never thrown — so one bad frame
  *  can't kill a stream. Pure. */
 export function parseSseChunk(buffer: string): { frames: InvokeFrame[]; rest: string } {
-  const text = buffer.replace(/\r\n?/g, "\n");
+  // 026 review-2 #10: a CRLF split across two network chunks must not normalise to two LFs (a fake blank line = a
+  // fake frame boundary that drops the event's data). Hold a trailing "\r" back until its "\n" (or not) arrives.
+  const held = buffer.endsWith("\r") ? "\r" : "";
+  const text = (held ? buffer.slice(0, -1) : buffer).replace(/\r\n?/g, "\n");
   const frames: InvokeFrame[] = [];
   let start = 0;
   for (;;) {
@@ -76,7 +79,7 @@ export function parseSseChunk(buffer: string): { frames: InvokeFrame[]; rest: st
       /* non-JSON data — skip the frame, keep the stream */
     }
   }
-  return { frames, rest: text.slice(start) };
+  return { frames, rest: text.slice(start) + held };
 }
 
 export type StreamResult = { interrupted: boolean; done?: DoneFrame };

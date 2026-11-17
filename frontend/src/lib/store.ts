@@ -430,19 +430,39 @@ async function livePatch(id: string, action: string, build: (a: Agent) => AgentP
   if (!a || !ws?.backendId) return false;
   const body = build(a);
   if (!body) return false;
-  const etag = etags.get(id);
   const conflict = () => set({ editConflicts: { ...state.editConflicts, [id]: { reapply: () => livePatch(id, action, build, okMsg) } } });
-  if (!etag) { conflict(); return false; }  // never loaded with an ETag → force a reload rather than guess
-  try {
-    const seq = issueSeq(id);
-    const { data, etag: next } = await patchAgent(callerFor(ws), id, body, etag);
-    applyAgentOut(data, next, ws.id, seq);
-    if (okMsg) toast(okMsg);
-    return true;
-  } catch (e) {
-    if (e instanceof ApiError && e.status === 409) { conflict(); return false; }
-    toastRefusal(action, e);
-    return false;
+  let etag = etags.get(id);
+  if (!etag) {
+    // 026 review-2 #3: the LIST response carries no ETag, and the conflict dialog is mounted only on the detail page —
+    // so a list-page action (Archive/Restore) used to vanish silently. Never guess: load the agent (which captures its
+    // ETag), then apply this edit to that fresh copy — the same thing "reload + re-apply" in the dialog does.
+    try {
+      await loadAgent(id, { force: true });
+    } catch (e) {
+      toastRefusal(action, e);
+      return false;
+    }
+    etag = etags.get(id);
+    if (!etag) { toast(`${action} failed: could not load the agent's current version — reload and try again.`, "critical"); return false; }
+    const fresh = state.agents.find((x) => x.id === id);
+    const rebuilt = fresh ? build(fresh) : null;
+    if (!rebuilt) return false;
+    return sendPatch(rebuilt, etag);
+  }
+  return sendPatch(body, etag);
+
+  async function sendPatch(payload: AgentPatch, tag: string): Promise<boolean> {
+    try {
+      const seq = issueSeq(id);
+      const { data, etag: next } = await patchAgent(callerFor(ws!), id, payload, tag);
+      applyAgentOut(data, next, ws!.id, seq);
+      if (okMsg) toast(okMsg);
+      return true;
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 409) { conflict(); return false; }
+      toastRefusal(action, e);
+      return false;
+    }
   }
 }
 

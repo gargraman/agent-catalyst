@@ -100,6 +100,7 @@ export function versionOutToVersion(v: VersionOut): Version {
   return {
     id: v.id, isActive: v.is_active, label: v.label, status: "draft", model: "", provider: "",
     createdAt: v.created_at, createdBy: v.created_by ?? "", evalVerdict: "none", note: "",
+    inputVariables: inputVariablesFromSchema((v.io_contract as { input_schema?: unknown } | undefined)?.input_schema),
   };
 }
 

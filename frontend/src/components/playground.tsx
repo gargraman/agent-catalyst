@@ -56,9 +56,15 @@ function Section({ title, desc, children }: { title: string; desc?: string; chil
   );
 }
 
-/** The io_contract field the chat message goes into: `message` when declared, else the first string input. */
-function messageField(agent: Agent): string {
-  const vars = resolveConfig(agent).inputVariables;
+/** The io_contract field the chat message goes into: `message` when declared, else the first string input. It is read
+ *  from the contract of what will actually RUN (026 review-2 #8): a saved version — picked, or the active one — uses
+ *  its own io_contract; only a draft run uses the draft's (which may have renamed the field since). */
+function messageField(agent: Agent, run?: RunTarget): string {
+  const versions = agent.versionList ?? [];
+  const runs = run?.target === "version" ? versions.find((v) => v.id === run.versionId)
+    : run?.target === "draft" ? undefined
+    : versions.find((v) => v.isActive);
+  const vars = runs?.inputVariables?.length ? runs.inputVariables : resolveConfig(agent).inputVariables;
   return vars.find((v) => v.name === "message")?.name ?? vars.find((v) => v.type === "string")?.name ?? "message";
 }
 
@@ -118,8 +124,8 @@ export function Playground({ agent, version, run }: { agent: Agent; version?: st
     });
     try {
       const body = run?.target === "version"
-        ? { inputs: { [messageField(agent)]: text }, target: "version" as const, version_id: run.versionId }
-        : { inputs: { [messageField(agent)]: text }, target: run?.target ?? ("active" as const) };
+        ? { inputs: { [messageField(agent, run)]: text }, target: "version" as const, version_id: run.versionId }
+        : { inputs: { [messageField(agent, run)]: text }, target: run?.target ?? ("active" as const) };
       const res = await invokeAgentStream(agent.id, body, { signal: ctl.signal, onFrame });
       if (res.interrupted) {
         patchTurn(idx, (m) => ({ ...m, live: { ...m.live!, state: "incomplete",
