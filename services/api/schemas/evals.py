@@ -84,11 +84,20 @@ class PublishIn(BaseModel):
     version_id: str
 
 
+class Advisory(BaseModel):
+    """026 D5: the newest COMPLETED eval run of the published version (any suite); none → low_confidence/no_eval_run."""
+    verdict: Verdict
+    reason_code: str
+    eval_run_id: str | None = None
+    suite_id: str | None = None
+
+
 class PublishOut(BaseModel):
     agent_id: str
     version_id: str
     status: Literal["published"]
-    advisory_verdict: Verdict | None = None
+    advisory: Advisory
+    advisory_verdict: Verdict | None = None   # back-compat mirror of advisory.verdict (pre-026 shape)
     advisory_note: str = (
         "Publish is advisory in this release: the eval verdict is reported but does NOT gate publishing "
         "until the judge is κ-calibrated (owner decision #3)."

@@ -23,10 +23,11 @@ from api.run_sink import persist_run_record
 from api.retrieval_wiring import attach_knowledge, ensure_eval_can_use_knowledge
 from api.db_errors import check_active_version_now, integrity_mapped
 from api.errors import AgentArchived, NotFound
-from api.models import Agent
+from api.models import Agent, EvalRun
 from api.routers.agents import _version_belongs
 from api.routers.invoke import _load_version
-from api.schemas.evals import DimensionOut, EvalRunIn, EvalRunOut, FailingCaseOut, PublishIn, PublishOut
+from api.schemas.evals import (Advisory, DimensionOut, EvalRunIn, EvalRunOut, FailingCaseOut, PublishIn,
+                               PublishOut)
 from evals.drift import EvalPolicy
 from evals.runner import run_eval
 from evals.types import BaselineAggregate, EvalCase, RubricDimension
@@ -160,7 +161,15 @@ async def publish_version(
     agent.active_version_id = vid
     async with integrity_mapped():   # 025 US4: pre-check race → deferred same-agent FK → 400 input.invalid
         await check_active_version_now(session)
-    # FR-023: audited in the SAME transaction as the change (T042 builds the advisory on top of this).
+    # 026 D5: the advisory is READ from persisted runs — no provider call, zero cost, never blocks.
+    run = (await session.execute(
+        select(EvalRun).where(EvalRun.version_id == uuid.UUID(str(vid)), EvalRun.status == "completed")
+        .order_by(EvalRun.finished_at.desc().nulls_last(), EvalRun.id.desc()).limit(1))).scalar_one_or_none()
+    advisory = (Advisory(verdict=run.verdict, reason_code=run.reason_code, eval_run_id=str(run.id),
+                         suite_id=str(run.suite_id)) if run is not None
+                else Advisory(verdict="low_confidence", reason_code="no_eval_run"))
+    # FR-023: audited in the SAME transaction as the change. D10: meta is ids only (the verdict joins via the run).
     await audit.record(session, principal, "agent.publish", "agent", aid,
-                       {"prior_status": prior, "version_id": vid})
-    return PublishOut(agent_id=agent_id, version_id=body.version_id, status="published", advisory_verdict=None)
+                       {"prior_status": prior, "version_id": vid, "eval_run_id": advisory.eval_run_id})
+    return PublishOut(agent_id=agent_id, version_id=body.version_id, status="published", advisory=advisory,
+                      advisory_verdict=advisory.verdict)
