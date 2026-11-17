@@ -131,6 +131,29 @@ def test_timeout_marker_sleeps_past_the_deadline_then_raises(monkeypatch):
     assert "timeout" in str(ei.value).lower()
 
 
+def test_slow_marker_paces_n_text_chunks_then_usage(monkeypatch):
+    """026 US3 L15: a LONG stream on the fake transport, so a mid-stream token revoke can be observed live.
+    `[[slow:N]]` → N text chunks with a fixed pause before each, then the usage chunk; the marker is never echoed."""
+    slept = []
+
+    async def fake_sleep(s):
+        slept.append(s)
+    monkeypatch.setattr(_fake(), "sleep", fake_sleep)
+    chunks = _run(_drain(**_kw("stream please [[slow:6]]")))
+    texts = _texts(chunks)
+    assert len(texts) == 6
+    assert len(slept) == 6 and all(s == pytest.approx(0.5) for s in slept)
+    assert "[[" not in "".join(texts)
+    assert _usage(chunks).completion_tokens > 0
+
+
+def test_slow_marker_is_capped(monkeypatch):
+    async def fake_sleep(s):
+        pass
+    monkeypatch.setattr(_fake(), "sleep", fake_sleep)
+    assert len(_texts(_run(_drain(**_kw("x [[slow:100000]]"))))) == 600   # ≤ 5 min of dev stream, never unbounded
+
+
 def test_midstream_marker_yields_text_then_raises():
     seen = []
 

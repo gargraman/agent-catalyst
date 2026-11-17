@@ -12,6 +12,8 @@ Scripted failure markers — read ONLY from the LAST user message (so an old tur
   [[fail:timeout]]               sleeps past the call's `timeout`, then a retryable "timeout" TransportError
   [[fail:midstream]]             yields some text (no usage), then a retryable TransportError
   [[fail:provider_unavailable]]  NON-retryable TransportError, status 502
+  [[slow:N]]                     N text chunks, each after a 0.5 s pause (cap 600), then usage — a LONG stream so a
+                                 mid-stream token revoke (026 L15) is observable live
 
 Pure: stdlib + runtime.providers only (guarded by tests/test_fake_transport.py + test_runtime_purity.py).
 """
@@ -30,6 +32,9 @@ from runtime.providers.transport import TransportError
 sleep = asyncio.sleep          # module attribute so tests can monkeypatch the timeout path without real waiting
 
 _MARKER = re.compile(r"\[\[fail:([a-z_]+)\]\]")
+_SLOW = re.compile(r"\[\[slow:(\d+)\]\]")
+SLOW_PAUSE_S = 0.5
+SLOW_MAX_CHUNKS = 600
 _WORDS = ("the", "policy", "agent", "answer", "is", "based", "on", "your", "question", "and", "context",
           "we", "recommend", "checking", "details", "carefully", "result", "summary", "for", "this", "case")
 
@@ -81,7 +86,16 @@ async def stream_chunks(**kwargs: Any) -> AsyncIterator[Any]:
         raise TransportError("fake provider timeout", retryable=True, status=None)
 
     seed = hashlib.sha256(f"{kwargs.get('model')}\x00{last}".encode()).digest()
-    parts = _answer(seed, _MARKER.sub("", last))
+    slow = _SLOW.search(last)
+    parts = _answer(seed, _SLOW.sub("", _MARKER.sub("", last)))
+    if slow:
+        n = min(int(slow[1]), SLOW_MAX_CHUNKS)
+        parts = [f" {_WORDS[(seed[i % len(seed)] + i) % len(_WORDS)]}" for i in range(n)]
+        for p in parts:
+            await sleep(SLOW_PAUSE_S)
+            yield _chunk(p)
+        yield _chunk(None, usage=_usage_of(messages, "".join(parts)))
+        return
 
     if marker == "midstream":
         for p in parts[:2]:
@@ -90,16 +104,20 @@ async def stream_chunks(**kwargs: Any) -> AsyncIterator[Any]:
 
     for p in parts:
         yield _chunk(p)
+    yield _chunk(None, usage=_usage_of(messages, "".join(parts)))
+
+
+def _usage_of(messages: list, answer: str) -> SimpleNamespace:
     prompt_text = " ".join(_text_of(m.get("content")) for m in messages)
     usage = SimpleNamespace(
         prompt_tokens=_approx_tokens(prompt_text),
-        completion_tokens=_approx_tokens("".join(parts)),
+        completion_tokens=_approx_tokens(answer),
         total_tokens=None,
         prompt_tokens_details=SimpleNamespace(cached_tokens=0),
         completion_tokens_details=SimpleNamespace(reasoning_tokens=0),
     )
     usage.total_tokens = usage.prompt_tokens + usage.completion_tokens
-    yield _chunk(None, usage=usage)
+    return usage
 
 
 def _dimension(model: str | None, requested: Any) -> int:
