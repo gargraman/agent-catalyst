@@ -150,11 +150,20 @@ def version_from_draft(agent, draft: Draft | dict, *, label: str, base: AgentVer
     `base` (the active version) so a draft edit never silently resets it. Bindings are passed in pre-built (the
     router loads + existence-checks the referenced rows); the snapshot hash is computed over them."""
     n = normalize(draft)
+    model_config = {"provider": n["provider"], "model": n["model"], "params": n["model_params"]}
+    profile = profile_doc(n["provider"], n["model"])
+    bmc = (base.model_config_ or {}) if base is not None else {}
+    if base is not None and (bmc.get("provider"), bmc.get("model")) == (n["provider"], n["model"]):
+        # 026 review-2 #4: same model ⇒ keep the base's model identity the Draft shape can't express (api_version,
+        # which is hashed and picks the provider profile) and its frozen profile — like clone_version does. A model
+        # switch starts clean from the new profile.
+        model_config = {**{k: v for k, v in bmc.items() if k not in model_config}, **model_config}
+        profile = dict(base.profile_snapshot or profile)
     v = AgentVersion(
         workspace_id=agent.workspace_id, agent_id=agent.id, label=label,
         system_prompt=n["system_prompt"], prompt_hash=prompt_hash(n["system_prompt"]), snapshot_hash="",
-        model_config_={"provider": n["provider"], "model": n["model"], "params": n["model_params"]},
-        profile_snapshot=profile_doc(n["provider"], n["model"]), io_contract=n["io_contract"],
+        model_config_=model_config,
+        profile_snapshot=profile, io_contract=n["io_contract"],
         guardrail_config=dict(base.guardrail_config or {}) if base is not None else {},
         memory_config=dict(base.memory_config or {}) if base is not None else {},
         context_config=dict(base.context_config or {}) if base is not None else {},

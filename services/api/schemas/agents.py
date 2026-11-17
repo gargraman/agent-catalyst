@@ -85,6 +85,9 @@ class VersionOut(BaseModel):
     retrieval_bindings: list[RetrievalBindingOut] = Field(default_factory=list)   # feature 024
     created_by: str | None = None          # feature 026 (D2): subject at create; NULL for pre-0016 versions
     is_active: bool = False                # feature 026: == agent.active_version_id
+    # 026 review-2 #8: the version's OWN input contract — the console sends a version/active run under that
+    # version's field name, not the draft's (which may have been renamed since).
+    io_contract: dict = Field(default_factory=dict)
 
 
 # TODO(backend/contract): owner, tags and 30-day metrics are still console placeholders (feature 011 F-A);

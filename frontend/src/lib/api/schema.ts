@@ -2248,6 +2248,10 @@ export interface components {
              * @default false
              */
             is_active: boolean;
+            /** Io Contract */
+            io_contract?: {
+                [key: string]: unknown;
+            };
         };
         /**
          * WorkspaceMembershipOut

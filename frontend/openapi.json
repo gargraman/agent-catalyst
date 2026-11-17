@@ -8664,6 +8664,11 @@
             "type": "boolean",
             "title": "Is Active",
             "default": false
+          },
+          "io_contract": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Io Contract"
           }
         },
         "type": "object",

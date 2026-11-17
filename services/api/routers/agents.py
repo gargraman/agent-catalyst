@@ -60,7 +60,8 @@ def _binding_out(b: RetrievalBinding, ap: PolicyPrincipal) -> RetrievalBindingOu
 def _version_out(v: AgentVersion, ap: PolicyPrincipal, active_id: uuid.UUID | None = None) -> VersionOut:
     out = VersionOut(id=str(v.id), agent_id=str(v.agent_id), label=v.label, snapshot_hash=v.snapshot_hash,
                      prompt_hash=v.prompt_hash, publishable=v.publishable, created_at=v.created_at,
-                     created_by=v.created_by, is_active=active_id is not None and v.id == active_id)
+                     created_by=v.created_by, is_active=active_id is not None and v.id == active_id,
+                     io_contract=dict(v.io_contract or {}))
     out.retrieval_bindings = [_binding_out(b, ap) for b in sorted(v.retrieval_bindings, key=lambda b: str(b.kb_id))]
     return out
 
@@ -500,7 +501,19 @@ async def draft_bindings(session: AsyncSession, resolved: dict, base: AgentVersi
             raise _missing_binding("skill", sid)
         ensure_use(sk.access_policy, ap, not_found=_missing_binding("skill", sid))
         skills.append(SkillBinding(workspace_id=wsid, skill_id=sk.id, skill_content_hash=sk.content_hash or ""))
+    # 026 review-2 #4: the draft edits registry tools only — MCP / subagent bindings aren't expressible in it, so they
+    # carry over from the base verbatim instead of being silently dropped by the first draft-derived version.
+    if base is not None:
+        tools += [_copy_tool_binding(b) for b in base.tool_bindings if b.kind not in ("http", "builtin")]
     return retrieval, tools, skills
+
+
+def _copy_tool_binding(b: ToolBinding) -> ToolBinding:
+    return ToolBinding(workspace_id=b.workspace_id, kind=b.kind, tool_id=b.tool_id, mcp_tool_id=b.mcp_tool_id,
+                       subagent_config_id=b.subagent_config_id, schema_snapshot=b.schema_snapshot,
+                       config_snapshot=b.config_snapshot, risk_tier=b.risk_tier,
+                       requires_approval=b.requires_approval, auth_mode=b.auth_mode,
+                       mcp_scopes=list(b.mcp_scopes) if b.mcp_scopes is not None else None)
 
 
 def _clone_bindings(base: AgentVersion) -> tuple[list[RetrievalBinding], list[ToolBinding], list[SkillBinding]]:
@@ -508,12 +521,7 @@ def _clone_bindings(base: AgentVersion) -> tuple[list[RetrievalBinding], list[To
     retrieval = [RetrievalBinding(workspace_id=b.workspace_id, kb_id=b.kb_id, kb_index_version=b.kb_index_version,
                                   retrieval_config=dict(b.retrieval_config or {}), injection=b.injection, kb=b.kb)
                  for b in base.retrieval_bindings]
-    tools = [ToolBinding(workspace_id=b.workspace_id, kind=b.kind, tool_id=b.tool_id, mcp_tool_id=b.mcp_tool_id,
-                         subagent_config_id=b.subagent_config_id, schema_snapshot=b.schema_snapshot,
-                         config_snapshot=b.config_snapshot, risk_tier=b.risk_tier,
-                         requires_approval=b.requires_approval, auth_mode=b.auth_mode,
-                         mcp_scopes=list(b.mcp_scopes) if b.mcp_scopes is not None else None)
-             for b in base.tool_bindings]
+    tools = [_copy_tool_binding(b) for b in base.tool_bindings]
     skills = [SkillBinding(workspace_id=b.workspace_id, skill_id=b.skill_id, skill_content_hash=b.skill_content_hash)
               for b in base.skill_bindings]
     return retrieval, tools, skills
