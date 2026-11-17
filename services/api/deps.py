@@ -133,16 +133,15 @@ async def caller_db(caller=Depends(require_caller)) -> AsyncIterator[AsyncSessio
     """Yield the RLS-scoped session for the caller-token's workspace (so the streaming generator holds an open
     session, like `tenant_db`). Best-effort `last_used_at` touch here (never fails the request). `require_caller`
     is FastAPI-cached, so the route can also inject `caller` without a second resolution/rate-limit hit."""
+    # 026 L15 (live-found): the touch commits in its OWN short transaction. Inside the stream's session its row lock
+    # lived for the whole stream, so a revoke (UPDATE of the same row) blocked until the stream ended and the deny-set
+    # was armed too late to cut it (SC-006). Separate session ⇒ a failed touch also can't poison the stream's txn.
+    try:                                                   # best-effort telemetry; must never break auth/invoke
+        async with tenant_session(caller.workspace_id) as touch:
+            await touch.execute(text("UPDATE api_tokens SET last_used_at=now() WHERE id=:i"), {"i": caller.token_id})
+    except Exception:                                      # noqa: BLE001
+        pass
     async with tenant_session(caller.workspace_id) as session:
-        try:                                               # best-effort telemetry; must never break auth/invoke
-            # SAVEPOINT: a failed touch rolls back ONLY the nested txn, leaving the outer transaction usable —
-            # a bare execute+swallow would poison the whole transaction (Postgres aborts it) and break the
-            # subsequent snapshot load / run persistence on this same session.
-            async with session.begin_nested():
-                await session.execute(text("UPDATE api_tokens SET last_used_at=now() WHERE id=:i"),
-                                      {"i": caller.token_id})
-        except Exception:                                  # noqa: BLE001
-            pass
         yield session
 
 
