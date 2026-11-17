@@ -12,8 +12,11 @@ TWO planes share ONE body (`_run_invoke`) so they can never diverge (08 §244-25
 from __future__ import annotations
 
 import dataclasses
+import logging
 import time
 import uuid
+
+import anyio
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
@@ -32,6 +35,7 @@ from api.provider_keys import resolve_provider_key
 from api.run_sink import persist_run_record
 from api.retrieval_wiring import attach_knowledge, citations_payload
 from api.errors import AgentArchived, InputInvalid, NotFound
+from api.db import tenant_session
 from api.models import Agent, AgentVersion, RetrievalBinding
 from api.routers.agents import draft_bindings
 from api.schemas.invoke import InvokeIn, PublishedInvokeIn
@@ -40,6 +44,8 @@ from runtime.context import RunContext
 from runtime.snapshot import VersionSnapshot
 from runtime.invoke import invoke as runtime_invoke
 from runtime.providers.ir import EventType
+
+_log = logging.getLogger("ac.invoke")
 
 router = APIRouter(prefix="/api/v1/agents", tags=["invoke"])                  # console/playground plane (session)
 published_router = APIRouter(prefix="/v1/agents", tags=["invoke"])            # published plane (caller token, 018)
@@ -169,38 +175,76 @@ async def _run_invoke(*, session: AsyncSession, ws: str, ap: PolicyPrincipal, ag
         except Exception:                      # noqa: BLE001 — deny-set unreachable mid-stream → cut (fail closed)
             return True
 
-    async def _event_stream():
-        yield sse.frame("run_start", {"run_id": run_id, "version": "draft" if is_draft else snapshot.label,
-                                      "version_id": None if is_draft else snapshot.version_id,
-                                      "model": (snapshot.model_config or {}).get("model", "")})
-        last_check = [0.0]
-        error_emitted = False
-        async for ev in runtime_invoke(snapshot, body.inputs, ctx):
-            if await _revoked_midstream(last_check):       # admin revoked the caller mid-stream → cut (FR-012)
-                yield sse.error_frame("auth.required", "caller access revoked")
+    def _for_row(run):
+        return dataclasses.replace(run, version_id="") if is_draft else run   # D3: a draft names no stored version
+
+    async def _persist_abandoned(stream) -> None:
+        """026 review-2 #5: the consumer went away before the normal persist (disconnect, Stop, proxy cut, revoke).
+        Close the runtime so it emits its RunRecord (`cancelled`), then store it: the provider may already have
+        billed, and the Runs page + spend cap are computed from runs. Commit explicitly — the request's transaction
+        is about to be rolled back by the disconnect. If the request session is already gone (a late asyncgen
+        finalizer after dependency teardown), fall back to a fresh tenant session (no deadlock: the request
+        session no longer holds a connection)."""
+        await stream.aclose()
+        if not runs:
+            return
+        run = _for_row(runs[-1])
+        # Only reuse the request session while it is still inside its own (GUC-scoped) transaction. A closed session
+        # would silently autobegin on a fresh pooled connection with no tenant GUC, outside the dependency's control.
+        if session.in_transaction():
+            try:
+                await persist_run_record(session, ws, run)
+                await session.commit()
                 return
-            if ev.type is EventType.ERROR:
-                error_emitted = True
-            if ev.type is EventType.CITATIONS:
-                yield sse.frame("citations", citations_payload(ev.data, denied=ka.denied if ka else set(),
-                                                               published=published))
-                continue
-            encoded = sse.encode_event(ev)
-            if encoded is not None:
-                yield encoded
-        run = runs[-1] if runs else None
-        if run is not None and is_draft:
-            run = dataclasses.replace(run, version_id="")   # D3: a draft run names no stored version → NULL
-        if run is not None:
-            await persist_run_record(session, ws, run)   # durable run record on the request session (FR-013, P8)
-        if run is not None and run.error and not error_emitted:
-            yield sse.error_frame(run.error.get("type", "error"), run.error.get("message", ""))
-        status = run.outcome.value if run is not None else "unknown"
-        # 026 L8: the run's OWN latency/cost, so the turn shows exactly what the Runs row stores.
-        yield sse.frame("done", {"run_id": run.run_id if run is not None else "", "status": status,
-                                 "latency_ms": run.latency_ms if run is not None else None,
-                                 "cost_usd": float(run.cost_usd) if run is not None and run.cost_usd is not None
-                                 else None})
+            except Exception:                               # noqa: BLE001 — try a fresh session below
+                try:
+                    await session.rollback()
+                except Exception:                           # noqa: BLE001
+                    pass
+        try:
+            async with tenant_session(ws) as fresh:
+                await persist_run_record(fresh, ws, run)
+        except Exception:                                   # noqa: BLE001 — never mask the disconnect itself
+            _log.exception("could not persist abandoned run run_id=%s", run.run_id)
+
+    async def _event_stream():
+        stream = runtime_invoke(snapshot, body.inputs, ctx)
+        persisted = False
+        try:
+            yield sse.frame("run_start", {"run_id": run_id, "version": "draft" if is_draft else snapshot.label,
+                                          "version_id": None if is_draft else snapshot.version_id,
+                                          "model": (snapshot.model_config or {}).get("model", "")})
+            last_check = [0.0]
+            error_emitted = False
+            async for ev in stream:
+                if await _revoked_midstream(last_check):       # admin revoked the caller mid-stream → cut (FR-012)
+                    yield sse.error_frame("auth.required", "caller access revoked")
+                    return                                     # the finally records the cut run (cancelled)
+                if ev.type is EventType.ERROR:
+                    error_emitted = True
+                if ev.type is EventType.CITATIONS:
+                    yield sse.frame("citations", citations_payload(ev.data, denied=ka.denied if ka else set(),
+                                                                   published=published))
+                    continue
+                encoded = sse.encode_event(ev)
+                if encoded is not None:
+                    yield encoded
+            run = runs[-1] if runs else None
+            if run is not None:
+                persisted = True                               # set first: a failed write is never retried twice
+                await persist_run_record(session, ws, _for_row(run))   # durable record on the request session (FR-013)
+            if run is not None and run.error and not error_emitted:
+                yield sse.error_frame(run.error.get("type", "error"), run.error.get("message", ""))
+            status = run.outcome.value if run is not None else "unknown"
+            # 026 L8: the run's OWN latency/cost, so the turn shows exactly what the Runs row stores.
+            yield sse.frame("done", {"run_id": run.run_id if run is not None else "", "status": status,
+                                     "latency_ms": run.latency_ms if run is not None else None,
+                                     "cost_usd": float(run.cost_usd) if run is not None and run.cost_usd is not None
+                                     else None})
+        finally:
+            if not persisted:
+                with anyio.CancelScope(shield=True):           # a cancelled task must still finish the write
+                    await _persist_abandoned(stream)
 
     # 026 (L10 live finding): forbid intermediaries from compressing/buffering the stream — a gzipping proxy (the
     # console's Next rewrite) held every frame until the body ended. `no-transform` is honoured by Next's bundled

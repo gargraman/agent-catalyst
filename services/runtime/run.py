@@ -27,6 +27,7 @@ class Outcome(str, Enum):
     DEGRADED = "degraded"                 # stream ended with no usage report (gateway degraded ERROR)
     OUTPUT_INVALID = "output_invalid"     # json output could not be made schema-valid within budget (M2b, F1/F2)
     TOOL_CALL_REJECTED = "tool_call_rejected"  # a tool call could not be made valid within budget (M2b, F3)
+    CANCELLED = "cancelled"               # consumer went away mid-run (disconnect / Stop) — spend still recorded (026)
     BOUNDED_EXIT = "bounded_exit"         # RESERVED — tool-call loop bound; not produced (M2a D6 / M2b unused)
 
 

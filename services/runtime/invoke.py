@@ -509,6 +509,7 @@ async def _pipeline(snapshot, inputs, ctx, state: _State):
     tool_schemas = tool_schemas_from_snapshot(snapshot) if snapshot.tools else {}
 
     outcome = Outcome.SUCCESS
+    terminal = False     # set once the model reached a terminal answer — a later consumer cancel doesn't undo it
 
     try:
         # Use the coerced `deadline` (not raw ctx.deadline_s) so a None deadline is still bounded (review
@@ -599,6 +600,7 @@ async def _pipeline(snapshot, inputs, ctx, state: _State):
                     if not tool_rejections and output_defect is None:
                         # SUCCESS — surface only the final validated events; populate state for invoke_result.
                         outcome = Outcome.SUCCESS
+                        terminal = True
                         state.text = turn.text
                         state.tool_calls = list(turn.tool_calls)
                         state.reasoning_parts = turn.reasoning_parts
@@ -666,8 +668,15 @@ async def _pipeline(snapshot, inputs, ctx, state: _State):
         # cancel (GeneratorExit when the stream is aclose()'d early) — review F4, FR-011/P8. But if an
         # UNEXPECTED exception is propagating (our own bug), do NOT emit a misleading run — let it surface
         # uncaught (honest failure). `emitted` guards double-emit.
+        # 026 review-2 #5: a task cancel (CancelledError — e.g. the ASGI server cancelling on client disconnect) is
+        # a consumer cancel too, and the provider may already have billed: emit it, honestly labelled `cancelled`
+        # unless the run had already reached a terminal outcome.
         _inflight = sys.exc_info()[1]
-        if _inflight is None or isinstance(_inflight, GeneratorExit):
+        if isinstance(_inflight, (GeneratorExit, asyncio.CancelledError)):
+            if outcome is Outcome.SUCCESS and not terminal:
+                outcome = Outcome.CANCELLED
+            await _finish(outcome)
+        elif _inflight is None:
             await _finish(outcome)
 
 
