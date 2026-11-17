@@ -26,6 +26,7 @@ ACTIONS: frozenset[str] = frozenset({
     "agent.repoint",
     "agent.archive",
     "agent.restore",
+    "agent.status",     # 026 review-2 #2: any other status transition (e.g. unpublish, clear eval_failing)
 })
 
 _ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")

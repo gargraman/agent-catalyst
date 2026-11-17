@@ -14,15 +14,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.resilience_wiring import get_guard
 from api.access_policy import PolicyPrincipal
-from api import call_log
+from api import audit, call_log
 from api.correlation import Correlation, correlation
-from api.deps import (access_principal, enforce_spend_cap, ensure_manage, ensure_use, require_permission,
-                      rate_limit, resolve_workspace, tenant_db)
+from api.deps import (Principal, access_principal, enforce_spend_cap, ensure_manage, ensure_use, require_permission,
+                      rate_limit, resolve_workspace, session_principal, tenant_db)
 from api.provider_keys import resolve_provider_key
 from api.run_sink import persist_run_record
 from api.retrieval_wiring import attach_knowledge, ensure_eval_can_use_knowledge
 from api.db_errors import check_active_version_now, integrity_mapped
-from api.errors import NotFound
+from api.errors import AgentArchived, NotFound
 from api.models import Agent
 from api.routers.agents import _version_belongs
 from api.routers.invoke import _load_version
@@ -56,12 +56,15 @@ async def create_eval_run(
         raise NotFound("agent not found", detail={"agent_id": agent_id})
     # Read ONLY the access_policy column for the gate (not the whole row); _load_version loads the version next.
     # NOT NULL column → None ⇒ absent row (same light-select pattern as patch_agent).
-    agent_policy = (await session.execute(
-        select(Agent.access_policy).where(Agent.id == aid))).scalar_one_or_none()
-    if agent_policy is None:
+    row = (await session.execute(
+        select(Agent.access_policy, Agent.status).where(Agent.id == aid))).first()
+    if row is None:
         raise NotFound("agent not found", detail={"agent_id": agent_id})
-    ensure_use(agent_policy, ap,
+    ensure_use(row.access_policy, ap,
                not_found=NotFound("agent not found", detail={"agent_id": agent_id}))
+    # 026 review-2 #7 (D4): an archived agent stops answering on EVERY plane — eval included (no case, no spend).
+    if row.status == "archived":
+        raise AgentArchived("an archived agent is read-only; restore it first", detail={"agent_id": agent_id})
 
     version = await _load_version(session, agent_id, body.version_id)
     if version is None:
@@ -134,6 +137,7 @@ async def publish_version(
     ws: str = Depends(resolve_workspace),
     session: AsyncSession = Depends(tenant_db),
     ap: PolicyPrincipal = Depends(access_principal),
+    principal: Principal = Depends(session_principal),
 ) -> PublishOut:
     try:
         aid = uuid.UUID(agent_id)
@@ -146,10 +150,17 @@ async def publish_version(
     ensure_manage(agent.access_policy, ap, not_found=NotFound("agent not found", detail={"agent_id": agent_id}))
     # The published version MUST belong to THIS agent (validated/scoped) — never a foreign version, never a
     # malformed id landing as a 500 / FK error (F2).
+    # 026 review-2 #1: publishing must not resurrect an archived agent — restore (admin, agent.delete) comes first.
+    if agent.status == "archived":
+        raise AgentArchived("an archived agent is read-only; restore it first", detail={"agent_id": agent_id})
     vid = await _version_belongs(session, agent_id, body.version_id)
+    prior = agent.status
     # ADVISORY (D6): publish proceeds regardless of eval state — NEVER raise publish.eval_gate here.
     agent.status = "published"
     agent.active_version_id = vid
     async with integrity_mapped():   # 025 US4: pre-check race → deferred same-agent FK → 400 input.invalid
         await check_active_version_now(session)
+    # FR-023: audited in the SAME transaction as the change (T042 builds the advisory on top of this).
+    await audit.record(session, principal, "agent.publish", "agent", aid,
+                       {"prior_status": prior, "version_id": vid})
     return PublishOut(agent_id=agent_id, version_id=body.version_id, status="published", advisory_verdict=None)

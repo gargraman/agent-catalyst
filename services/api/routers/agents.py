@@ -302,14 +302,21 @@ async def patch_agent(
             sba_set, events = True, [("agent.restore", {"restored_to": restore_to})]
         elif body.status == "archived":
             sba_set, sba_val, events = True, cur.status, [("agent.archive", {"prior_status": cur.status})]
+        elif body.status == "published":
+            # 026 review-2 #2: publishing via PATCH is the same act as POST /publish — publisher-gated + audited.
+            events = [("agent.publish", {"prior_status": cur.status,
+                                         "version_id": new_av or cur.active_version_id})]
+        else:
+            events = [("agent.status", {"from_status": cur.status, "to_status": body.status})]
     if new_av is not None and new_av != cur.active_version_id:
         events.append(("agent.repoint", {"from_version_id": cur.active_version_id, "to_version_id": new_av}))
-    # 026 (decision #9): the route's `agent.edit` (builder+) covers ordinary edits; lifecycle transitions carry the
-    # console's stricter gates server-side — archive/restore = `agent.delete` (admin), re-point = `agent.publish`
-    # (publisher). Only an actual transition is gated: re-sending the current version/status stays a builder no-op.
+    # 026 (decision #9 + review-2 #2): the route's `agent.edit` (builder+) covers ordinary edits; EVERY lifecycle
+    # transition carries the console's stricter gate server-side — archive/restore = `agent.delete` (admin); re-point,
+    # publish/unpublish and any other status change = `agent.publish` (publisher). Only an actual transition is gated:
+    # re-sending the current version/status stays a builder no-op.
     role = principal.workspace_claims.get(ws, "")
     for kind, _ in events:
-        needed = "agent.publish" if kind == "agent.repoint" else "agent.delete"
+        needed = "agent.delete" if kind in ("agent.archive", "agent.restore") else "agent.publish"
         if not has_permission(role, needed):
             raise AccessDenied("insufficient role for this operation",
                                detail={"required_permission": needed, "transition": kind})
