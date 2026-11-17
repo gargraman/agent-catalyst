@@ -952,15 +952,30 @@ async function publishAgentLive(id: string): Promise<boolean> {
   const ws = state.workspaces.find((w) => w.id === a?.workspaceId);
   if (!a || !ws?.backendId) return false;
   if (!a.activeVersionId) { toast("Publish — this agent has no active version yet. Create a version first.", "critical"); return false; }
+  // 026 US3 review #1: publish with the ETag of the copy the user is looking at. No cached ETag (agent known only from
+  // the list) → load it first, and publish the version THAT copy shows as active (what the user is about to confirm
+  // is what gets published).
+  if (!etags.has(id)) await loadAgent(id, { force: true });
+  const cur = state.agents.find((x) => x.id === id);
+  const etag = etags.get(id);
+  if (!cur?.activeVersionId || !etag) { toast("Publish failed: could not load the agent's current version — reload and try again.", "critical"); return false; }
   try {
-    const out = await publishVersion(callerFor(ws), id, a.activeVersionId);
-    set({ publishAdvisories: { ...state.publishAdvisories, [id]: { ...out.advisory, versionLabel: a.activeVersion, at: Date.now() } } });
+    const out = await publishVersion(callerFor(ws), id, cur.activeVersionId, etag);
+    set({ publishAdvisories: { ...state.publishAdvisories, [id]: { ...out.advisory, versionLabel: cur.activeVersion, at: Date.now() } } });
     await loadAgent(id, { force: true });   // publish bumps the row (status/active version) → fresh ETag for the next edit
     const v = out.advisory.verdict;
-    toast(`Published ${a.activeVersion} — advisory: ${v === "pass" ? "eval passing" : v === "fail" ? "eval failing" : "low confidence"}`,
+    toast(`Published ${cur.activeVersion} — advisory: ${v === "pass" ? "eval passing" : v === "fail" ? "eval failing" : "low confidence"}`,
       v === "fail" ? "critical" : v === "pass" ? undefined : "neutral");
     return true;
   } catch (e) {
+    if (e instanceof ApiError && e.status === 409 && e.code === "conflict.stale") {
+      // Someone changed the agent since this tab loaded it (e.g. re-pointed the active version). Never auto-retry —
+      // which version to publish is exactly what changed; reload and let the user decide again.
+      await loadAgent(id, { force: true });
+      set({ revisions: { ...state.revisions, [id]: (state.revisions[id] ?? 0) + 1 } });
+      toast("Publish refused: this agent was changed by someone else. It has been reloaded — review the active version and publish again.", "critical");
+      return false;
+    }
     toastRefusal("Publish", e);
     return false;
   }

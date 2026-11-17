@@ -204,10 +204,11 @@ export async function createAgent(
 }
 
 /** Publish a version (026 D5): the response carries an ADVISORY verdict read from persisted eval runs — it never
- *  blocks. No `If-Match` (the endpoint is not ETag-guarded); the caller reloads the agent for its new ETag. */
-export async function publishVersion(principal: DevPrincipal, agentId: string, versionId: string): Promise<PublishOut> {
+ *  blocks. `If-Match` is optional server-side (026 US3 review #1); the console always sends its cached ETag so a stale
+ *  tab can't silently undo a newer re-point → 409 `conflict.stale`. The caller reloads the agent for its new ETag. */
+export async function publishVersion(principal: DevPrincipal, agentId: string, versionId: string, etag?: string): Promise<PublishOut> {
   const res = await apiFetch(`/api/v1/agents/${encodeURIComponent(agentId)}/publish`, principal, {
-    method: "POST", body: JSON.stringify({ version_id: versionId }),
+    method: "POST", body: JSON.stringify({ version_id: versionId }), headers: etag ? { "If-Match": etag } : {},
   });
   return (await res.json()) as PublishOut;
 }

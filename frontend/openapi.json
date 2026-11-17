@@ -1076,6 +1076,22 @@
             }
           },
           {
+            "name": "If-Match",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "If-Match"
+            }
+          },
+          {
             "name": "X-Workspace-Id",
             "in": "header",
             "required": false,

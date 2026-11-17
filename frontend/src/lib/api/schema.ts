@@ -2872,6 +2872,7 @@ export interface operations {
                 workspace?: string | null;
             };
             header?: {
+                "If-Match"?: string | null;
                 "X-Workspace-Id"?: string | null;
             };
             path: {

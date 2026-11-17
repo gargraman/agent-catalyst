@@ -45,7 +45,11 @@ export function inputVariablesFromSchema(schema: unknown): InputVariable[] {
   return Object.entries(s.properties ?? {}).map(([name, p]) => {
     const raw = Array.isArray(p.enum) ? "enum" : p.type === "integer" ? "number" : String(p.type ?? "string");
     const type = (VAR_TYPES as readonly string[]).includes(raw) ? (raw as InputVariableType) : "string";
-    return { name, type, required: required.has(name), ...(p.default != null ? { default: String(p.default) } : {}) };
+    return {
+      name, type, required: required.has(name),
+      ...(p.default != null ? { default: String(p.default) } : {}),
+      ...(Array.isArray(p.enum) && p.enum.length ? { options: p.enum.map(String) } : {}),
+    };
   });
 }
 

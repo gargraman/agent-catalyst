@@ -166,7 +166,9 @@ export type GuardrailStage = { name: string; desc: string; on: boolean };
 export type InputVariableType = "string" | "number" | "boolean" | "enum";
 // A typed input declaration (name, type, required, default) injected into the prompt template and
 // validated at invoke. Maps to the backend's io_contract (spec B2.5 / backend/01 §4.2 io_contract).
-export type InputVariable = { name: string; type: InputVariableType; required: boolean; default?: string };
+// `options` (enum only, read-only): the allowed values from the backend schema — used for display/examples, never edited
+// here (the console's editor doesn't model enum values; schema round-trips keep them, see adapters.ts).
+export type InputVariable = { name: string; type: InputVariableType; required: boolean; default?: string; options?: string[] };
 
 export type AgentConfig = {
   // model params

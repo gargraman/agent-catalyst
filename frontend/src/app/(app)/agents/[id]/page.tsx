@@ -1396,9 +1396,25 @@ function RubricRows({ rubric, setRubric }: { rubric: RubricDimension[]; setRubri
 /* ================================================================= Publish */
 const noopSubscribe = () => () => {};
 /** Example value for an io_contract input variable (cURL body, D17). */
+/** A value the published endpoint will ACCEPT for this input (026 US3 review #6): never NaN (→ `null` in JSON), never
+ *  an empty enum. Enum → the default if it is an allowed value, else the first option. */
 function exampleValue(v: InputVariable): unknown {
-  if (v.default !== undefined && v.default !== "") return v.type === "number" ? Number(v.default) : v.type === "boolean" ? v.default === "true" : v.default;
-  return v.type === "number" ? 1 : v.type === "boolean" ? true : v.type === "enum" ? "" : "Hello";
+  const d = v.default !== undefined && v.default !== "" ? v.default : undefined;
+  switch (v.type) {
+    case "number": { const n = d === undefined ? NaN : Number(d); return Number.isFinite(n) ? n : 1; }
+    case "boolean": return d === undefined ? true : d === "true";
+    case "enum": return d !== undefined && (!v.options || v.options.includes(d)) ? d : v.options?.[0] ?? d ?? "";
+    default: return d ?? "Hello";
+  }
+}
+/** JSON value → a Python literal (review #4): a regex over JSON text also rewrote `true`/`null` INSIDE strings. */
+function toPython(v: unknown): string {
+  if (v === null || v === undefined) return "None";
+  if (typeof v === "boolean") return v ? "True" : "False";
+  if (typeof v === "number") return Number.isFinite(v) ? String(v) : "None";
+  if (typeof v === "string") return JSON.stringify(v); // a JSON string literal is a valid Python str literal
+  if (Array.isArray(v)) return `[${v.map(toPython).join(", ")}]`;
+  return `{${Object.entries(v as Record<string, unknown>).map(([k, x]) => `${JSON.stringify(k)}: ${toPython(x)}`).join(", ")}}`;
 }
 const ADVISORY_TEXT: Record<string, { label: string; tone: "good" | "critical" | "warning" }> = {
   pass: { label: "Eval passing", tone: "good" },
@@ -1450,9 +1466,11 @@ function Publish({ agent }: { agent: ReturnType<typeof getAgent> & {} }) {
     ? { inputs: Object.fromEntries(activeVars.map((v) => [v.name, exampleValue(v)])) }
     : { messages: [{ role: "user", content: "Hello" }], stream: true };
   const bodyJson = JSON.stringify(body);
-  const pyJson = bodyJson.replace(/\btrue\b/g, "True").replace(/\bfalse\b/g, "False").replace(/\bnull\b/g, "None");
+  const pyJson = toPython(body);
+  // review #5: the body sits inside a single-quoted shell string — a `'` in a default value would end it.
+  const shellJson = bodyJson.replace(/'/g, "'\\''");
   const snippets: Record<string, string> = {
-    curl: `curl -N ${url} \\\n  -H "Authorization: Bearer $${tokenVar}" \\\n  -H "Content-Type: application/json" \\\n  -d '${bodyJson}'`,
+    curl: `curl -N ${url} \\\n  -H "Authorization: Bearer $${tokenVar}" \\\n  -H "Content-Type: application/json" \\\n  -d '${shellJson}'`,
     ts: `const res = await fetch("${url}", {\n  method: "POST",\n  headers: {\n    Authorization: \`Bearer \${process.env.${tokenVar}}\`,\n    "Content-Type": "application/json",\n  },\n  body: JSON.stringify(${bodyJson}),\n});`,
     python: `import os, requests\nres = requests.post(\n    "${url}",\n    headers={"Authorization": f"Bearer {os.environ['${tokenVar}']}"},\n    json=${pyJson},\n    stream=True,\n)`,
   };
@@ -1758,9 +1776,14 @@ function CreateTokenDialog({ agent, open, onClose }: { agent: Agent; open: boole
   // The one-time secret lives ONLY in this component's state (cleared on close) - never in the store/localStorage.
   const [full, setFull] = React.useState<string | null>(null);
   const [busy, setBusy] = React.useState(false);
+  // review #3: no close while a live mint is in flight — the server would create the token and its one-time secret
+  // would land in a dialog that's gone (or show up when the dialog is next opened for a new token). A ref, not `busy`:
+  // an Escape/backdrop in the same tick as the click would still see the pre-render `busy=false` closure.
+  const minting = React.useRef(false);
   const live = useIsLiveWorkspace();
 
   function close() {
+    if (minting.current) return;
     setName("");
     setExpiry("none");
     setFull(null);
@@ -1769,9 +1792,12 @@ function CreateTokenDialog({ agent, open, onClose }: { agent: Agent; open: boole
   async function submit() {
     const tokenName = name.trim() || `${agent.endpoint ?? agent.id}-token`;
     if (live) {
+      if (minting.current) return;
+      minting.current = true;
       setBusy(true);
       const days = expiry === "none" ? null : Number(expiry);
-      const out = await mintTokenLive(agent.id, tokenName, days ? new Date(Date.now() + days * 86_400_000).toISOString() : undefined);
+      const out = await mintTokenLive(agent.id, tokenName, days ? new Date(Date.now() + days * 86_400_000).toISOString() : undefined)
+        .finally(() => { minting.current = false; });
       setBusy(false);
       if (out) setFull(out.secret);
       return;
@@ -1800,7 +1826,7 @@ function CreateTokenDialog({ agent, open, onClose }: { agent: Agent; open: boole
           <Button variant="primary" onClick={close}>Done</Button>
         ) : (
           <>
-            <Button variant="ghost" onClick={close}>Cancel</Button>
+            <Button variant="ghost" disabled={busy} onClick={close}>Cancel</Button>
             <Button variant="primary" disabled={busy} onClick={() => void submit()}>{busy ? "Creating..." : "Create token"}</Button>
           </>
         )
@@ -1822,7 +1848,8 @@ function CreateTokenDialog({ agent, open, onClose }: { agent: Agent; open: boole
           <Field label="Token name"><Input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. prod-dashboard" /></Field>
           <Field label="Expiry">
             <Select value={expiry} onChange={(e) => setExpiry(e.target.value)}>
-              <option value="none">{live ? "Maximum (90 days)" : "No expiry"}</option><option value="30">30 days</option><option value="90">90 days</option>
+              {/* review #2: live max IS 90 days (server cap) — a separate "90 days" option would be a duplicate of the default. */}
+              <option value="none">{live ? "Maximum (90 days)" : "No expiry"}</option><option value="30">30 days</option>{!live && <option value="90">90 days</option>}
             </Select>
           </Field>
         </div>
