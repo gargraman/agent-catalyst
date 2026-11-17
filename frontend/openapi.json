@@ -5669,6 +5669,52 @@
         "title": "AccessPolicy",
         "description": "Wire/stored access-policy. Unknown keys are rejected (fail-closed input); unknown `visibility` is rejected\nat write time by the Literal \u2014 the evaluator still fails closed on any value it doesn't recognize on read."
       },
+      "Advisory": {
+        "properties": {
+          "verdict": {
+            "type": "string",
+            "enum": [
+              "pass",
+              "fail",
+              "low_confidence"
+            ],
+            "title": "Verdict"
+          },
+          "reason_code": {
+            "type": "string",
+            "title": "Reason Code"
+          },
+          "eval_run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Eval Run Id"
+          },
+          "suite_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Suite Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "verdict",
+          "reason_code"
+        ],
+        "title": "Advisory",
+        "description": "026 D5: the newest COMPLETED eval run of the published version (any suite); none \u2192 low_confidence/no_eval_run."
+      },
       "AgentCreate": {
         "properties": {
           "name": {
@@ -7666,6 +7712,9 @@
             "const": "published",
             "title": "Status"
           },
+          "advisory": {
+            "$ref": "#/components/schemas/Advisory"
+          },
           "advisory_verdict": {
             "anyOf": [
               {
@@ -7692,7 +7741,8 @@
         "required": [
           "agent_id",
           "version_id",
-          "status"
+          "status",
+          "advisory"
         ],
         "title": "PublishOut"
       },

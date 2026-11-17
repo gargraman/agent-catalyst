@@ -1062,6 +1062,23 @@ export interface components {
             owner?: string | null;
         };
         /**
+         * Advisory
+         * @description 026 D5: the newest COMPLETED eval run of the published version (any suite); none → low_confidence/no_eval_run.
+         */
+        Advisory: {
+            /**
+             * Verdict
+             * @enum {string}
+             */
+            verdict: "pass" | "fail" | "low_confidence";
+            /** Reason Code */
+            reason_code: string;
+            /** Eval Run Id */
+            eval_run_id?: string | null;
+            /** Suite Id */
+            suite_id?: string | null;
+        };
+        /**
          * AgentCreate
          * @description Create a draft agent + its first version fields (workspace comes from the request scope).
          */
@@ -1839,6 +1856,7 @@ export interface components {
              * @constant
              */
             status: "published";
+            advisory: components["schemas"]["Advisory"];
             /** Advisory Verdict */
             advisory_verdict?: ("pass" | "fail" | "low_confidence") | null;
             /**

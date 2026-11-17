@@ -3,10 +3,11 @@
 import { useEffect, useRef, useSyncExternalStore } from "react";
 import {
   LIVE_API, ApiError, createAgent, getAgentWithEtag, listAgents, listMyWorkspaces, patchAgent,
-  createVersion as apiCreateVersion,
-  type AgentOut, type AgentPatch, type DevPrincipal, type WorkspaceMembershipOut,
+  createVersion as apiCreateVersion, publishVersion, listTokens, mintToken as apiMintToken,
+  revokeToken as apiRevokeToken,
+  type Advisory, type AgentOut, type AgentPatch, type DevPrincipal, type TokenMintOut, type WorkspaceMembershipOut,
 } from "./api/client";
-import { agentOutToAgent, agentToCreate, draftWithEdit, inputVariablesFromSchema, providerKey, type DraftEdit } from "./api/adapters";
+import { agentOutToAgent, agentToCreate, tokenOutToApiToken, draftWithEdit, inputVariablesFromSchema, providerKey, type DraftEdit } from "./api/adapters";
 import { refusalMessage } from "./api/refusals";
 import { streamInvoke, type InvokeFrame, type InvokeIn, type StreamResult } from "./api/stream";
 import {
@@ -133,6 +134,8 @@ type State = {
   editConflicts: Record<string, EditConflict>;
   // Live mode: bumped when an agent is reloaded after a conflict, so its edit forms re-initialise from the server.
   revisions: Record<string, number>;
+  // Live mode (026 D5): the advisory verdict returned by the last publish of each agent in this tab, keyed by agent id.
+  publishAdvisories: Record<string, Advisory & { versionLabel: string; at: number }>;
 };
 export type EditConflict = { reapply: () => Promise<boolean> };
 
@@ -168,6 +171,7 @@ let state: State = {
   remote: {},
   editConflicts: {},
   revisions: {},
+  publishAdvisories: {},
 };
 
 const listeners = new Set<() => void>();
@@ -911,10 +915,11 @@ export function updateAgentConfig(id: string, patch: Partial<AgentConfig>, notif
 // @backend PATCH /v1/agents/:id - lifecycle transitions below are dedicated wrappers over the same
 //   endpoint; they centralize the guards (publish requires a passing eval) the UI previously duplicated.
 /** Publish the active version. Blocked when the agent is eval_failing. Returns false if blocked. */
-// TODO(fe-wiring): wire to POST /api/v1/agents/:id/publish (BUILT, advisory verdict) — the server's eval gate
-//   should replace the client-side policy check below. Local-only today.
+// @backend wired(026) live: POST /api/v1/agents/:id/publish {version_id: active}. The server is ADVISORY-only (D5):
+//   it never blocks, so a live agent skips every client-side gate below; the returned `advisory` is kept in
+//   `publishAdvisories` and shown on the Publish tab. Audited server-side as agent.publish.
 export function publishAgent(id: string): boolean {
-  warnLocalOnly(id, "Publish");
+  if (isLiveAgent(id)) { void publishAgentLive(id); return true; }
   const a = state.agents.find((x) => x.id === id);
   if (!a) return false;
   if (a.status === "eval_failing") {
@@ -942,6 +947,25 @@ export function publishAgent(id: string): boolean {
   toast(`Published ${a.activeVersion}`);
   return true;
 }
+async function publishAgentLive(id: string): Promise<boolean> {
+  const a = state.agents.find((x) => x.id === id);
+  const ws = state.workspaces.find((w) => w.id === a?.workspaceId);
+  if (!a || !ws?.backendId) return false;
+  if (!a.activeVersionId) { toast("Publish — this agent has no active version yet. Create a version first.", "critical"); return false; }
+  try {
+    const out = await publishVersion(callerFor(ws), id, a.activeVersionId);
+    set({ publishAdvisories: { ...state.publishAdvisories, [id]: { ...out.advisory, versionLabel: a.activeVersion, at: Date.now() } } });
+    await loadAgent(id, { force: true });   // publish bumps the row (status/active version) → fresh ETag for the next edit
+    const v = out.advisory.verdict;
+    toast(`Published ${a.activeVersion} — advisory: ${v === "pass" ? "eval passing" : v === "fail" ? "eval failing" : "low confidence"}`,
+      v === "fail" ? "critical" : v === "pass" ? undefined : "neutral");
+    return true;
+  } catch (e) {
+    toastRefusal("Publish", e);
+    return false;
+  }
+}
+export const usePublishAdvisory = (id: string) => useSelector((s) => s.publishAdvisories[id]);
 /** Unpublish back to draft (the endpoint stops serving until re-published). */
 // Live: there is no unpublish transition in 026 (the server's lifecycle is archive/restore + publish) → not available.
 export function unpublishAgent(id: string) {
@@ -1352,13 +1376,55 @@ export function addEvalRun(e: EvalRun) {
 export function resolveEvalRun(id: string, patch: Partial<EvalRun>) {
   set({ evalRuns: state.evalRuns.map((e) => (e.id === id ? { ...e, ...patch } : e)) });
 }
+// @backend wired(026) GET /api/v1/agents/:id/tokens — the masked roster (prefix, expiry, last used). Replaces this
+//   agent's slice of `tokens` wholesale; the secret is never part of it (FR-011).
+export function loadTokens(agentId: string, opts?: LoadOpts): Promise<void> {
+  const a = state.agents.find((x) => x.id === agentId);
+  const ws = state.workspaces.find((w) => w.id === a?.workspaceId);
+  if (!LIVE_API || !a || !ws?.backendId) return Promise.resolve();
+  return load(`tokens:${agentId}`, async () => {
+    const rows = (await listTokens(callerFor(ws), agentId)).filter((t) => !t.revoked_at).map((t) => tokenOutToApiToken(t, a.name));
+    set({ tokens: [...rows, ...state.tokens.filter((t) => t.agentId !== agentId)] });
+  }, opts);
+}
+export function useEnsureTokens(agentId: string, enabled: boolean) {
+  useEffect(() => { if (enabled) void loadTokens(agentId); }, [agentId, enabled]);
+}
+/** Live mint (POST /api/v1/agents/:id/tokens). Resolves the ONE-TIME secret to the caller (the dialog) and stores only
+ *  the masked row — the secret never enters the store or localStorage (FR-010). */
+// @backend wired(026) POST /api/v1/agents/:id/tokens
+export async function mintTokenLive(agentId: string, name: string, expiresAt?: string): Promise<TokenMintOut | null> {
+  const a = state.agents.find((x) => x.id === agentId);
+  const ws = state.workspaces.find((w) => w.id === a?.workspaceId);
+  if (!a || !ws?.backendId) return null;
+  try {
+    const out = await apiMintToken(callerFor(ws), agentId, { name, expires_at: expiresAt ?? null });
+    const { secret: _secret, ...masked } = out;   // eslint-disable-line @typescript-eslint/no-unused-vars
+    set({ tokens: [tokenOutToApiToken({ ...masked, last_used_at: null, revoked_at: null }, a.name), ...state.tokens] });
+    toast(`Token "${out.name}" created — copy the secret now, it is shown only once`);
+    return out;
+  } catch (e) {
+    toastRefusal("Create token", e);
+    return null;
+  }
+}
 // @backend POST /v1/agents/:id/tokens - mint a caller token (shown once); scoped to the endpoint.
 export function addToken(t: ApiToken) {
   set({ tokens: [t, ...state.tokens] });
   toast(`Token "${t.name}" created`);
 }
-// @backend DELETE /v1/tokens/:id - revoke a token immediately.
+// @backend wired(026) DELETE /api/v1/tokens/:id (live token = one carrying `agentId`) — the server deny-lists it, so an
+//   open stream is cut within ~2 s and the next call is 401. Removed from the list only after the server confirms.
 export function revokeToken(id: string) {
+  const t = state.tokens.find((x) => x.id === id);
+  if (t?.agentId && isLiveAgent(t.agentId)) {
+    const a = state.agents.find((x) => x.id === t.agentId);
+    const ws = state.workspaces.find((w) => w.id === a?.workspaceId);
+    void apiRevokeToken(callerFor(ws), id).then(
+      () => { set({ tokens: state.tokens.filter((x) => x.id !== id) }); toast("Token revoked — open streams stop within ~2 s", "neutral"); },
+      (e: unknown) => toastRefusal("Revoke token", e));
+    return;
+  }
   set({ tokens: state.tokens.filter((t) => t.id !== id) });
   toast("Token revoked", "neutral");
 }

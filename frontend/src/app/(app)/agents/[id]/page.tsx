@@ -30,7 +30,7 @@ import {
   addSuite, renameSuite, deleteSuite, upsertCase, deleteCase,
   updateAgent, updateAgentConfig, deleteAgent, duplicateAgent, toast, genId, nowIso,
   publishAgent, unpublishAgent, archiveAgent, restoreAgent, rollbackVersion, reFreezeBaseline,
-  useEnsureAgent, useRemoteStatus, useIsLiveWorkspace, loadAgent,
+  useEnsureAgent, useRemoteStatus, useIsLiveWorkspace, loadAgent, usePublishAdvisory, useEnsureTokens, mintTokenLive,
   versionsOf, saveLiveDraft, createVersion, useEditConflict, useAgentRevision, resolveEditConflict,
 } from "@/lib/store";
 import { LIVE_API } from "@/lib/api/client";
@@ -86,7 +86,9 @@ function SectionCard({ title, desc, children, action }: { title: React.ReactNode
  *  - @backend wired(026) Versions tab: versions from the live AgentOut embed [via versionsOf]; re-point = PATCH active_version_id by version id [via rollbackVersion]; "Save as new version" -> POST …/versions [via createVersion]. "Re-freeze baseline" is still a mock toast (US4).
  *  - @backend Playground moved to its own route (/playground); header "Open in Playground" deep-links there. Invoke contract lives on that page and in src/components/playground.tsx.
  *  - @backend Evals tab: GET /v1/agents/:id/evals [via useEvalRunsForAgent]; POST /v1/agents/:id/evals async run [via addEvalRun]
- *  - @backend Publish & Export: endpoint URL + cURL/TS/Python snippets + OpenAPI are GET; POST /v1/agents/:id/tokens (addToken); DELETE /v1/tokens/:id (revokeToken); GET /v1/agents/:id/tokens (useTokens)
+ *  - @backend wired(026) Publish & Export: publish -> POST /api/v1/agents/:id/publish, advisory shown [via publishAgent/usePublishAdvisory];
+ *    tokens -> GET/POST /api/v1/agents/:id/tokens + DELETE /api/v1/tokens/:id [via useEnsureTokens/mintTokenLive/revokeToken];
+ *    the cURL targets ${NEXT_PUBLIC_PUBLIC_API_BASE || origin}/v1/agents/:id/invoke with `Bearer $AC_TOKEN` (D17). Mock agents keep the seeds.
  * See src/lib/store.ts markers + docs/backend-integration-map.md for the authoritative contracts.
  */
 export default function AgentDetailPage() {
@@ -158,7 +160,7 @@ export default function AgentDetailPage() {
       {live && (
         <LiveStatus live status={remote.status === "error" ? { status: "ready" } : remote} label="this agent"
           onRetry={() => void loadAgent(params.id, { force: true })}
-          note="name, description, model, prompt, I/O contract, versions, re-point and archive/restore are live; publish, eval runs, tokens, bindings, guardrails, memory, spend and tags are not saved to the server yet" />
+          note="name, description, model, prompt, I/O contract, versions, re-point, archive/restore, publish (advisory) and API tokens are live; eval runs, bindings, guardrails, memory, spend and tags are not saved to the server yet" />
       )}
       <ConflictDialog agentId={agent.id} />
       <div>
@@ -187,7 +189,7 @@ export default function AgentDetailPage() {
                   disabled={!manage}
                   title={manageTitle}
                   variant="primary"
-                  onClick={() => setGate(publishGateDecision(agent, evals[0]?.verdict, policy))}
+                  onClick={() => setGate(live ? "ok" : publishGateDecision(agent, evals[0]?.verdict, policy))}
                 >
                   <Rocket className="size-4" /> Publish {agent.activeVersion}
                 </GateButton>
@@ -573,7 +575,7 @@ function Configure({ agent, model }: { agent: ReturnType<typeof getAgent> & {}; 
             className="mt-4 w-full"
             disabled={!manage || readOnly}
             title={readOnly ? "Archived — restore to publish" : manageTitle}
-            onClick={() => setGate(publishGateDecision(agent, evals[0]?.verdict, policy))}
+            onClick={() => setGate(live ? "ok" : publishGateDecision(agent, evals[0]?.verdict, policy))}
           >
             <Rocket className="size-4" /> Publish {agent.activeVersion}
           </GateButton>
@@ -1392,21 +1394,79 @@ function RubricRows({ rubric, setRubric }: { rubric: RubricDimension[]; setRubri
 }
 
 /* ================================================================= Publish */
+const noopSubscribe = () => () => {};
+/** Example value for an io_contract input variable (cURL body, D17). */
+function exampleValue(v: InputVariable): unknown {
+  if (v.default !== undefined && v.default !== "") return v.type === "number" ? Number(v.default) : v.type === "boolean" ? v.default === "true" : v.default;
+  return v.type === "number" ? 1 : v.type === "boolean" ? true : v.type === "enum" ? "" : "Hello";
+}
+const ADVISORY_TEXT: Record<string, { label: string; tone: "good" | "critical" | "warning" }> = {
+  pass: { label: "Eval passing", tone: "good" },
+  fail: { label: "Eval failing", tone: "critical" },
+  low_confidence: { label: "Low confidence", tone: "warning" },
+};
+function PublishAdvisoryCard({ agentId }: { agentId: string }) {
+  const adv = usePublishAdvisory(agentId);
+  if (!adv) return null;
+  const t = ADVISORY_TEXT[adv.verdict] ?? ADVISORY_TEXT.low_confidence;
+  return (
+    <SectionCard title="Publish advisory" desc={`From the last publish of ${adv.versionLabel} in this session. Advisory only: the verdict never blocks publishing.`}
+      action={<Badge tone={t.tone}><StatusDot tone={t.tone} />{t.label}</Badge>}>
+      <div className="grid gap-3 text-sm sm:grid-cols-3">
+        <div><p className="text-xs text-muted">Reason</p><p className="font-mono text-xs text-ink">{adv.reason_code}</p></div>
+        {adv.eval_run_id ? (
+          <>
+            <div><p className="text-xs text-muted">Eval run</p><p className="font-mono text-xs text-ink" title={adv.eval_run_id}>{adv.eval_run_id.slice(0, 8)}</p></div>
+            <div><p className="text-xs text-muted">Suite</p><p className="font-mono text-xs text-ink" title={adv.suite_id ?? ""}>{adv.suite_id?.slice(0, 8)}</p></div>
+          </>
+        ) : (
+          <p className="text-xs text-muted sm:col-span-2">No completed eval run exists for this version. Run an eval to get a real verdict.</p>
+        )}
+      </div>
+    </SectionCard>
+  );
+}
+
 function Publish({ agent }: { agent: ReturnType<typeof getAgent> & {} }) {
   const [fmt, setFmt] = React.useState("curl");
-  const tokens = useTokens().filter((t) => t.agent === agent.name);
+  const live = useIsLiveWorkspace();
+  const { can } = useAuth();
+  // GET tokens is agent.publish server-side: a builder never fetches (it would only 403) - FR-020.
+  useEnsureTokens(agent.id, live && can("agent.publish"));
+  const tokens = useTokens().filter((t) => (live ? t.agentId === agent.id : t.agent === agent.name));
   const channels = useChannelsForAgent(agent.id);
   const [createOpen, setCreateOpen] = React.useState(false);
   const [revokeId, setRevokeId] = React.useState<string | null>(null);
   const [runEvalOpen, setRunEvalOpen] = React.useState(false);
+  const origin = React.useSyncExternalStore(noopSubscribe, () => window.location.origin, () => "");
   const endpoint = agent.endpoint ?? agent.id;
-  const url = `https://agent-platform.internal/v1/agents/${endpoint}/invoke`;
+  // D17: the published plane is /v1/agents/{id}/invoke on the public API base; the token is NEVER interpolated.
+  const url = live
+    ? `${process.env.NEXT_PUBLIC_PUBLIC_API_BASE || origin}/v1/agents/${agent.id}/invoke`
+    : `https://agent-platform.internal/v1/agents/${endpoint}/invoke`;
+  const tokenVar = live ? "AC_TOKEN" : "AGENT_PLATFORM_TOKEN";
+  const activeVars = versionsOf(agent).find((v) => v.isActive)?.inputVariables ?? [];
+  const body: Record<string, unknown> = live
+    ? { inputs: Object.fromEntries(activeVars.map((v) => [v.name, exampleValue(v)])) }
+    : { messages: [{ role: "user", content: "Hello" }], stream: true };
+  const bodyJson = JSON.stringify(body);
+  const pyJson = bodyJson.replace(/\btrue\b/g, "True").replace(/\bfalse\b/g, "False").replace(/\bnull\b/g, "None");
   const snippets: Record<string, string> = {
-    curl: `curl -N ${url} \\\n  -H "Authorization: Bearer $AGENT_PLATFORM_TOKEN" \\\n  -H "Content-Type: application/json" \\\n  -d '{"messages":[{"role":"user","content":"Hello"}],"stream":true}'`,
-    ts: `const res = await fetch("${url}", {\n  method: "POST",\n  headers: {\n    Authorization: \`Bearer \${process.env.AGENT_PLATFORM_TOKEN}\`,\n    "Content-Type": "application/json",\n  },\n  body: JSON.stringify({ messages: [{ role: "user", content: "Hello" }], stream: true }),\n});`,
-    python: `import os, requests\nres = requests.post(\n    "${url}",\n    headers={"Authorization": f"Bearer {os.environ['AGENT_PLATFORM_TOKEN']}"},\n    json={"messages": [{"role": "user", "content": "Hello"}], "stream": True},\n)`,
+    curl: `curl -N ${url} \\\n  -H "Authorization: Bearer $${tokenVar}" \\\n  -H "Content-Type: application/json" \\\n  -d '${bodyJson}'`,
+    ts: `const res = await fetch("${url}", {\n  method: "POST",\n  headers: {\n    Authorization: \`Bearer \${process.env.${tokenVar}}\`,\n    "Content-Type": "application/json",\n  },\n  body: JSON.stringify(${bodyJson}),\n});`,
+    python: `import os, requests\nres = requests.post(\n    "${url}",\n    headers={"Authorization": f"Bearer {os.environ['${tokenVar}']}"},\n    json=${pyJson},\n    stream=True,\n)`,
   };
 
+  if (live && agent.status === "draft") {
+    return (
+      <div className="space-y-4">
+        <PublishAdvisoryCard agentId={agent.id} />
+        <SectionCard title="Not published yet" desc="Publish the active version from the header. The latest completed eval of that version is shown as an advisory verdict and never blocks publishing.">
+          <p className="text-sm text-muted">Once published, this tab shows the endpoint, a cURL snippet and the API tokens that can call it.</p>
+        </SectionCard>
+      </div>
+    );
+  }
   if (agent.status === "draft") {
     return (
       <div className="space-y-4">
@@ -1429,15 +1489,16 @@ function Publish({ agent }: { agent: ReturnType<typeof getAgent> & {} }) {
 
   return (
     <div className="space-y-6">
-      <SectionCard title="Published endpoint" action={<Badge tone="good"><StatusDot tone="good" />Live</Badge>}>
+      {live && <PublishAdvisoryCard agentId={agent.id} />}
+      <SectionCard title="Published endpoint" action={agent.status === "archived" ? <Badge tone="neutral">Archived: calls return 404</Badge> : <Badge tone="good"><StatusDot tone="good" />Live</Badge>}>
         <div className="flex items-center gap-2">
           <code className="flex-1 truncate rounded-lg border border-border bg-canvas px-3 py-2 font-mono text-xs text-ink-2">{url}</code>
           <CopyButton value={url} />
         </div>
         <div className="mt-4 grid gap-4 sm:grid-cols-3 text-sm">
           <div><p className="text-xs text-muted">Pinned version</p><p className="font-medium text-ink">{agent.activeVersion}</p></div>
-          <div><p className="text-xs text-muted">Auth</p><p className="font-medium text-ink">Caller&apos;s {ORG.idpName} token</p></div>
-          <div><p className="text-xs text-muted">Rate limit</p><p className="font-medium text-ink">60 req/min</p></div>
+          <div><p className="text-xs text-muted">Auth</p><p className="font-medium text-ink">{live ? "API token (Bearer)" : <>Caller&apos;s {ORG.idpName} token</>}</p></div>
+          <div><p className="text-xs text-muted">Rate limit</p><p className="font-medium text-ink">{live ? "Workspace policy" : "60 req/min"}</p></div>
         </div>
       </SectionCard>
 
@@ -1477,17 +1538,18 @@ function Publish({ agent }: { agent: ReturnType<typeof getAgent> & {} }) {
 
       <SectionCard title="API tokens" desc="Tokens are shown once at creation and scoped to this endpoint." action={<GateButton permission="agent.publish" variant="primary" size="sm" onClick={() => setCreateOpen(true)}>Create token</GateButton>}>
         <Table>
-          <THead><TR><TH>Name</TH><TH>Prefix</TH><TH>Created</TH><TH>Last used</TH><TH></TH></TR></THead>
+          <THead><TR><TH>Name</TH><TH>Prefix</TH><TH>Created</TH><TH>Expires</TH><TH>Last used</TH><TH></TH></TR></THead>
           <tbody>
             {tokens.length === 0 ? (
-              <TR><TD colSpan={5} className="py-6 text-center text-xs text-muted">No tokens yet. Create one to call this endpoint.</TD></TR>
+              <TR><TD colSpan={6} className="py-6 text-center text-xs text-muted">No tokens yet. Create one to call this endpoint.</TD></TR>
             ) : (
               tokens.map((t) => (
                 <TR key={t.id}>
                   <TD className="text-ink">{t.name}</TD>
                   <TD className="font-mono text-xs text-muted">{t.prefix}</TD>
                   <TD className="text-xs text-muted">{dateShort(t.created)}</TD>
-                  <TD className="text-xs text-muted">{t.lastUsed === "-" ? "-" : relative(t.lastUsed)}</TD>
+                  <TD className="text-xs text-muted">{t.expires ? dateShort(t.expires) : "-"}</TD>
+                  <TD className="text-xs text-muted">{!t.lastUsed || t.lastUsed === "-" ? "Never" : relative(t.lastUsed)}</TD>
                   <TD className="text-right"><GateButton permission="agent.publish" variant="ghost" size="sm" className="text-critical" onClick={() => setRevokeId(t.id)}>Revoke</GateButton></TD>
                 </TR>
               ))
@@ -1503,7 +1565,7 @@ function Publish({ agent }: { agent: ReturnType<typeof getAgent> & {} }) {
         onConfirm={() => { if (revokeId) revokeToken(revokeId); }}
         title="Revoke token"
         confirmLabel="Revoke"
-        body="Revoking this token immediately breaks any integration using it. This cannot be undone."
+        body={live ? "Revoking cuts open streams within about 2 seconds and every later call gets 401. This cannot be undone." : "Revoking this token immediately breaks any integration using it. This cannot be undone."}
       />
     </div>
   );
@@ -1693,7 +1755,10 @@ function ToolsDialog({ agent, open, onClose }: { agent: Agent; open: boolean; on
 function CreateTokenDialog({ agent, open, onClose }: { agent: Agent; open: boolean; onClose: () => void }) {
   const [name, setName] = React.useState("");
   const [expiry, setExpiry] = React.useState("none");
+  // The one-time secret lives ONLY in this component's state (cleared on close) - never in the store/localStorage.
   const [full, setFull] = React.useState<string | null>(null);
+  const [busy, setBusy] = React.useState(false);
+  const live = useIsLiveWorkspace();
 
   function close() {
     setName("");
@@ -1701,11 +1766,20 @@ function CreateTokenDialog({ agent, open, onClose }: { agent: Agent; open: boole
     setFull(null);
     onClose();
   }
-  function submit() {
+  async function submit() {
+    const tokenName = name.trim() || `${agent.endpoint ?? agent.id}-token`;
+    if (live) {
+      setBusy(true);
+      const days = expiry === "none" ? null : Number(expiry);
+      const out = await mintTokenLive(agent.id, tokenName, days ? new Date(Date.now() + days * 86_400_000).toISOString() : undefined);
+      setBusy(false);
+      if (out) setFull(out.secret);
+      return;
+    }
     const f = `ac_live_${genId("")}${genId("")}`.replace(/-/g, "");
     addToken({
       id: genId("tok"),
-      name: name.trim() || `${agent.endpoint ?? agent.id}-token`,
+      name: tokenName,
       agent: agent.name,
       prefix: f.slice(0, 14) + "…",
       created: nowIso(),
@@ -1727,7 +1801,7 @@ function CreateTokenDialog({ agent, open, onClose }: { agent: Agent; open: boole
         ) : (
           <>
             <Button variant="ghost" onClick={close}>Cancel</Button>
-            <Button variant="primary" onClick={submit}>Create token</Button>
+            <Button variant="primary" disabled={busy} onClick={() => void submit()}>{busy ? "Creating..." : "Create token"}</Button>
           </>
         )
       }
@@ -1748,7 +1822,7 @@ function CreateTokenDialog({ agent, open, onClose }: { agent: Agent; open: boole
           <Field label="Token name"><Input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. prod-dashboard" /></Field>
           <Field label="Expiry">
             <Select value={expiry} onChange={(e) => setExpiry(e.target.value)}>
-              <option value="none">No expiry</option><option value="30">30 days</option><option value="90">90 days</option>
+              <option value="none">{live ? "Maximum (90 days)" : "No expiry"}</option><option value="30">30 days</option><option value="90">90 days</option>
             </Select>
           </Field>
         </div>

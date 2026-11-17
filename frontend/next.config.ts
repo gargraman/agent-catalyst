@@ -18,6 +18,15 @@ const nextConfig: NextConfig = {
   // the server's whole 30 s deadline (slow first token / reasoning), and then must still deliver its `error`+`done`
   // frames — at the default the proxy wins the race and the browser sees "connection lost" (026 L10 live finding).
   experimental: { proxyTimeout: 120_000 },
+  // The Publish tab's endpoint + cURL snippet target `${NEXT_PUBLIC_PUBLIC_API_BASE || origin}/v1/agents/:id/invoke`
+  // (D17). /v1 is NOT proxied (see above), so in dev the console origin (:3000) would hand callers a 404 URL
+  // (026 US3 UI live finding). Dev default = the API origin that really serves /v1. In a production build it is
+  // left unset unless NEXT_PUBLIC_PUBLIC_API_BASE is given: `env` values are inlined into the browser bundle, and
+  // AC_API_ORIGIN may be an internal hostname there — prod falls back to the console origin (one shared ingress).
+  env: {
+    NEXT_PUBLIC_PUBLIC_API_BASE:
+      process.env.NEXT_PUBLIC_PUBLIC_API_BASE ?? (process.env.NODE_ENV === "production" ? "" : API_ORIGIN),
+  },
   async rewrites() {
     return [{ source: "/api/v1/:path*", destination: `${API_ORIGIN}/api/v1/:path*` }];
   },

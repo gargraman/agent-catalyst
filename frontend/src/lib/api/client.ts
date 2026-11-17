@@ -17,6 +17,11 @@ export type DraftIn = components["schemas"]["Draft"];
 export type DraftOut = components["schemas"]["DraftOut"];
 export type VersionOut = components["schemas"]["VersionOut"];
 export type WorkspaceMembershipOut = components["schemas"]["WorkspaceMembershipOut"];
+export type PublishOut = components["schemas"]["PublishOut"];
+export type Advisory = components["schemas"]["Advisory"];
+export type TokenOut = components["schemas"]["TokenOut"];
+export type TokenMintIn = components["schemas"]["TokenMintIn"];
+export type TokenMintOut = components["schemas"]["TokenMintOut"];
 type PageAgentOut = components["schemas"]["Page_AgentOut_"];
 
 /** Live mode: when "live", the store's wired families read/write the real backend; otherwise the console is
@@ -196,4 +201,33 @@ export async function createAgent(
   const headers: Record<string, string> = opts.idempotencyKey ? { "Idempotency-Key": opts.idempotencyKey } : {};
   const res = await apiFetch("/api/v1/agents", principal, { method: "POST", body: JSON.stringify(body), headers });
   return (await res.json()) as AgentOut;
+}
+
+/** Publish a version (026 D5): the response carries an ADVISORY verdict read from persisted eval runs — it never
+ *  blocks. No `If-Match` (the endpoint is not ETag-guarded); the caller reloads the agent for its new ETag. */
+export async function publishVersion(principal: DevPrincipal, agentId: string, versionId: string): Promise<PublishOut> {
+  const res = await apiFetch(`/api/v1/agents/${encodeURIComponent(agentId)}/publish`, principal, {
+    method: "POST", body: JSON.stringify({ version_id: versionId }),
+  });
+  return (await res.json()) as PublishOut;
+}
+
+/** The agent's token roster — masked prefix only, never the secret (FR-011). */
+export async function listTokens(principal: DevPrincipal, agentId: string): Promise<TokenOut[]> {
+  const res = await apiFetch(`/api/v1/agents/${encodeURIComponent(agentId)}/tokens`, principal);
+  return (await res.json()) as TokenOut[];
+}
+
+/** Mint a token. The response is the ONLY time the full `secret` exists client-side (FR-010) — callers must show it
+ *  once and never persist it (not in the store, not in localStorage). */
+export async function mintToken(principal: DevPrincipal, agentId: string, body: TokenMintIn): Promise<TokenMintOut> {
+  const res = await apiFetch(`/api/v1/agents/${encodeURIComponent(agentId)}/tokens`, principal, {
+    method: "POST", body: JSON.stringify(body),
+  });
+  return (await res.json()) as TokenMintOut;
+}
+
+/** Revoke a token (204). The server deny-lists it in Redis, so an open stream is cut within ~2 s. */
+export async function revokeToken(principal: DevPrincipal, tokenId: string): Promise<void> {
+  await apiFetch(`/api/v1/tokens/${encodeURIComponent(tokenId)}`, principal, { method: "DELETE" });
 }

@@ -5,11 +5,11 @@
 // restore_status and the version embed (created_by/is_active). It still does NOT carry owner/tags or the 30-day
 // metrics the console renders — those stay safe placeholders until a metrics rollup exists.
 import type {
-  Agent, AgentConfig, InputVariable, InputVariableType, LiveDraft, ModelRef, OutputFormat, Version,
+  Agent, AgentConfig, ApiToken, InputVariable, InputVariableType, LiveDraft, ModelRef, OutputFormat, Version,
 } from "../data";
 import type { AccessPolicy } from "../access-policy";
 import type { Role } from "../permissions";
-import type { AgentCreate, AgentOut, DraftIn, DraftOut, VersionOut } from "./client";
+import type { AgentCreate, AgentOut, DraftIn, DraftOut, TokenOut, VersionOut } from "./client";
 
 function accessPolicyOut(p: AgentOut["access_policy"]): AccessPolicy {
   return {
@@ -200,5 +200,13 @@ export function agentToCreate(a: Agent): AgentCreate {
     },
     // The form's chosen policy; omitted → the server applies its default ("workspace").
     ...(a.accessPolicy ? { access_policy: { ...a.accessPolicy } } : {}),
+  };
+}
+
+/** Backend TokenOut (masked) → console ApiToken. `lastUsed` is "" when never used (the UI renders "Never"). */
+export function tokenOutToApiToken(t: TokenOut, agentName: string): ApiToken {
+  return {
+    id: t.id, name: t.name, agent: agentName, agentId: t.agent_id, prefix: `${t.prefix}…`, created: t.created_at,
+    lastUsed: t.last_used_at ?? "", scopes: "invoke", expires: t.expires_at ?? undefined,
   };
 }

@@ -1067,7 +1067,8 @@ export const TOOL_APPROVALS: ToolApproval[] = [
 
 /* ------------------------------------------------------ Tokens & keys */
 // `agent` names the published endpoint this token is bound to (one token -> one endpoint, 01 §4.7).
-export type ApiToken = { id: string; name: string; agent: string; prefix: string; created: string; lastUsed: string; scopes: string; expires?: string };
+// `agentId` is set for a server-owned (live) token — the roster is then keyed by id, not by the display name (G24).
+export type ApiToken = { id: string; name: string; agent: string; agentId?: string; prefix: string; created: string; lastUsed: string; scopes: string; expires?: string };
 export const API_TOKENS: ApiToken[] = [
   { id: "tok-1", name: "soc-dashboard-prod", agent: "SOC Triage Copilot", prefix: "ac_live_7Q2…", created: "2026-09-10T10:00:00Z", lastUsed: "2026-10-04T09:13:00Z", scopes: "invoke" },
   { id: "tok-2", name: "support-widget", agent: "Product Docs Assistant", prefix: "ac_live_Kp9…", created: "2026-08-02T14:00:00Z", lastUsed: "2026-10-04T09:14:00Z", scopes: "invoke" },
