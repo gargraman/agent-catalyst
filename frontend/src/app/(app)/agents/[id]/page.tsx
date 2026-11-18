@@ -11,7 +11,7 @@ import {
 } from "lucide-react";
 import {
   Badge, Button, Card, CardContent, CardHeader, CardTitle, CodeBlock, EmptyState,
-  Field, Input, Progress, Select, Separator, StatusDot, Table, TD, TH, THead, TR, Textarea,
+  Field, Input, Select, Separator, StatusDot, Table, TD, TH, THead, TR, Textarea,
 } from "@/components/ui";
 import { Tabs, Segmented } from "@/components/tabs";
 import { CopyButton } from "@/components/copy-button";
@@ -20,7 +20,7 @@ import {
   getAgent, getKb, getModel, resolveConfig, parseNum,
   MODELS, driftTone, statusLabel, statusTone, verdictLabel, verdictTone,
   ASSERTION_KINDS, newRubric,
-  type Agent, type EvalRun, type EvalSuite, type EvalCaseDef, type Assertion, type AssertionKind, type RubricDimension,
+  type Agent, type EvalSuite, type EvalCaseDef, type Assertion, type AssertionKind, type RubricDimension,
   type ReasoningEffort, type OutputFormat, type TruncationStrategy, type InjectionStrategy, type Reranker, type GuardrailStage,
   type InputVariable, type InputVariableType,
 } from "@/lib/data";
@@ -31,10 +31,12 @@ import {
   updateAgent, updateAgentConfig, deleteAgent, duplicateAgent, toast, genId, nowIso,
   publishAgent, unpublishAgent, archiveAgent, restoreAgent, rollbackVersion, reFreezeBaseline,
   useEnsureAgent, useRemoteStatus, useIsLiveWorkspace, loadAgent, usePublishAdvisory, useEnsureTokens, mintTokenLive,
+  useEnsureEvals, loadEvalRunDetail, loadEvalRuns, freezeBaseline, clearBaseline,
   versionsOf, saveLiveDraft, createVersion, useEditConflict, useAgentRevision, resolveEditConflict,
 } from "@/lib/store";
 import { LIVE_API } from "@/lib/api/client";
 import { LiveStatus } from "@/components/live-status";
+import { EvalRunDetail, LiveRunEvalDialog } from "@/components/eval-run-live";
 import { useAuth, usePrincipal } from "@/lib/auth";
 import { ORG } from "@/lib/org";
 import { GateButton } from "@/components/gate";
@@ -85,7 +87,10 @@ function SectionCard({ title, desc, children, action }: { title: React.ReactNode
  *  - @backend Access tab: PUT /v1/agents/:id/access-policy - access policy [via setAccessPolicy]
  *  - @backend wired(026) Versions tab: versions from the live AgentOut embed [via versionsOf]; re-point = PATCH active_version_id by version id [via rollbackVersion]; "Save as new version" -> POST …/versions [via createVersion]. "Re-freeze baseline" is still a mock toast (US4).
  *  - @backend Playground moved to its own route (/playground); header "Open in Playground" deep-links there. Invoke contract lives on that page and in src/components/playground.tsx.
- *  - @backend Evals tab: GET /v1/agents/:id/evals [via useEvalRunsForAgent]; POST /v1/agents/:id/evals async run [via addEvalRun]
+ *  - @backend wired(026) Evals tab: GET /api/v1/agents/:id/eval-runs + /eval-suites [via useEnsureEvals]; GET /api/v1/eval-runs/:id
+ *    [loadEvalRunDetail]; POST /api/v1/agents/:id/eval-runs {version_id, suite_id} [LiveRunEvalDialog → runEvalLive];
+ *    suite/case CRUD [addSuite/renameSuite/deleteSuite/upsertCase/deleteCase]; PUT/DELETE /api/v1/eval-suites/:sid/baseline
+ *    [freezeBaseline/clearBaseline]. Mock mode keeps addEvalRun/simulateEvalRun.
  *  - @backend wired(026) Publish & Export: publish -> POST /api/v1/agents/:id/publish, advisory shown [via publishAgent/usePublishAdvisory];
  *    tokens -> GET/POST /api/v1/agents/:id/tokens + DELETE /api/v1/tokens/:id [via useEnsureTokens/mintTokenLive/revokeToken];
  *    the cURL targets ${NEXT_PUBLIC_PUBLIC_API_BASE || origin}/v1/agents/:id/invoke with `Bearer $AC_TOKEN` (D17). Mock agents keep the seeds.
@@ -160,7 +165,7 @@ export default function AgentDetailPage() {
       {live && (
         <LiveStatus live status={remote.status === "error" ? { status: "ready" } : remote} label="this agent"
           onRetry={() => void loadAgent(params.id, { force: true })}
-          note="name, description, model, prompt, I/O contract, versions, re-point, archive/restore, publish (advisory) and API tokens are live; eval runs, bindings, guardrails, memory, spend and tags are not saved to the server yet" />
+          note="name, description, model, prompt, I/O contract, versions, re-point, archive/restore, publish (advisory), API tokens and eval suites / runs / baselines are live; bindings, guardrails, memory, spend and tags are not saved to the server yet" />
       )}
       <ConflictDialog agentId={agent.id} />
       <div>
@@ -1019,55 +1024,23 @@ function Versions({ agent, versions }: { agent: ReturnType<typeof getAgent> & {}
 }
 
 /* ================================================================= Evals */
-function EvalRunDetail({ run }: { run: EvalRun }) {
-  const hasDetail = !!run.reason || !!run.dimensions?.length || !!run.failingCases?.length;
-  return (
-    <div className="space-y-3">
-      {run.reason && <p className="max-w-[80ch] text-xs leading-relaxed text-ink-2">{run.reason}</p>}
-      {run.dimensions && run.dimensions.length > 0 && (
-        <div className="space-y-1.5">
-          <p className="text-[11px] font-medium uppercase tracking-wide text-muted">Dimensions vs baseline</p>
-          {run.dimensions.map((d) => {
-            const delta = Math.round((d.score - d.baseline) * 10) / 10;
-            const regressed = delta < 0;
-            return (
-              <div key={d.name} className="flex items-center gap-3 text-xs">
-                <span className="w-28 shrink-0 truncate text-ink-2" title={d.name}>{d.name}</span>
-                <Progress value={d.score} tone={regressed ? "critical" : "good"} className="max-w-xs flex-1" />
-                <span className="w-20 shrink-0 text-right tnum text-muted">{d.score} / {d.baseline}</span>
-                <span className={`w-12 shrink-0 text-right tnum ${regressed ? "text-critical" : "text-good"}`}>{delta > 0 ? "+" : ""}{delta}</span>
-              </div>
-            );
-          })}
-        </div>
-      )}
-      {run.failingCases && run.failingCases.length > 0 && (
-        <div className="space-y-1.5">
-          <p className="text-[11px] font-medium uppercase tracking-wide text-muted">Example failing cases</p>
-          <ul className="space-y-1.5">
-            {run.failingCases.map((c, i) => (
-              <li key={i} className="rounded-lg border border-border bg-surface px-3 py-2 text-xs">
-                <p className="font-medium text-ink-2">{c.input}</p>
-                <p className="mt-0.5 text-muted">{c.issue}</p>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-      {!hasDetail && <p className="text-xs text-muted">No additional detail for this run.</p>}
-    </div>
-  );
-}
-
 function Evals({ agent }: { agent: ReturnType<typeof getAgent> & {} }) {
+  const live = useIsLiveWorkspace();
+  useEnsureEvals(agent.id, live);
   const evals = useEvalRunsForAgent(agent.id);
+  const evalRemote = useRemoteStatus(`evalRuns:${agent.id}`);
   const [runEvalOpen, setRunEvalOpen] = React.useState(false);
   const [expandedId, setExpandedId] = React.useState<string | null>(null);
+  function toggle(id: string, open: boolean) {
+    setExpandedId(open ? null : id);
+    if (!open && live) void loadEvalRunDetail(id);
+  }
   return (
     <div className="space-y-6">
+      {live && <LiveStatus live status={evalRemote} label="eval runs" onRetry={() => void loadEvalRuns(agent.id, { force: true })} />}
       <div className="grid gap-4 sm:grid-cols-3">
         <SectionCard title={<Term id="eval-pass">Eval pass rate</Term>}><p className="text-3xl font-semibold tnum text-ink">{pct(agent.evalPass)}</p></SectionCard>
-        <SectionCard title={<Term id="baseline">Baseline</Term>}><p className="text-sm text-ink-2">Frozen at <span className="font-medium text-ink">{agent.activeVersion === "v7" ? "v6" : "previous version"}</span></p><GateButton permission="eval.govern" variant="outline" size="sm" className="mt-3" onClick={() => reFreezeBaseline(agent.id)}>Re-freeze baseline</GateButton></SectionCard>
+        {live ? <LiveBaselineCard agentId={agent.id} /> : <SectionCard title={<Term id="baseline">Baseline</Term>}><p className="text-sm text-ink-2">Frozen at <span className="font-medium text-ink">{agent.activeVersion === "v7" ? "v6" : "previous version"}</span></p><GateButton permission="eval.govern" variant="outline" size="sm" className="mt-3" onClick={() => reFreezeBaseline(agent.id)}>Re-freeze baseline</GateButton></SectionCard>}
         <SectionCard title={<Term id="drift">Drift</Term>}><Badge tone={driftTone[agent.drift]}>{agent.drift}</Badge><p className="mt-2 text-xs text-muted">Model, prompt or knowledge changes trigger a re-eval.</p></SectionCard>
       </div>
       <SectionCard title="Eval runs" action={<GateButton permission="eval.run" variant="primary" size="sm" onClick={() => setRunEvalOpen(true)}><FlaskConical className="size-4" /> Run eval</GateButton>}>
@@ -1079,18 +1052,18 @@ function Evals({ agent }: { agent: ReturnType<typeof getAgent> & {} }) {
                 const open = expandedId === e.id;
                 return (
                   <React.Fragment key={e.id}>
-                    <TR className="cursor-pointer" onClick={() => setExpandedId(open ? null : e.id)}>
+                    <TR className="cursor-pointer" onClick={() => toggle(e.id, open)}>
                       <TD className="font-mono text-xs text-muted">
                         <span className="inline-flex items-center gap-1.5">
-                          {open ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}{e.id}
+                          {open ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}{live ? e.id.slice(0, 8) : e.id}
                         </span>
                       </TD>
                       <TD className="font-mono text-xs text-ink-2">{e.version} vs {e.baseline}</TD>
                       <TD><Badge tone="neutral">{e.trigger}</Badge></TD>
-                      <TD className="text-right tnum font-medium text-ink">{e.quality.toFixed(1)}</TD>
+                      <TD className="text-right tnum font-medium text-ink">{e.scored === false ? "—" : e.quality.toFixed(1)}</TD>
                       <TD className={`text-right tnum ${e.costDelta > 0 ? "text-critical" : "text-good"}`}>{e.costDelta > 0 ? "+" : ""}{e.costDelta}%</TD>
                       <TD className={`text-right tnum ${e.latencyDelta > 0 ? "text-critical" : "text-good"}`}>{e.latencyDelta > 0 ? "+" : ""}{e.latencyDelta}ms</TD>
-                      <TD><Badge tone={verdictTone[e.verdict]}>{verdictLabel[e.verdict]}</Badge></TD>
+                      <TD>{e.status === "failed" ? <Badge tone="critical">Failed</Badge> : <Badge tone={verdictTone[e.verdict]}>{verdictLabel[e.verdict]}</Badge>}</TD>
                       <TD className="whitespace-nowrap text-xs text-muted">{relative(e.date)}</TD>
                     </TR>
                     {open && (
@@ -1110,6 +1083,48 @@ function Evals({ agent }: { agent: ReturnType<typeof getAgent> & {} }) {
 
       <RunEvalDialog agent={agent} open={runEvalOpen} onClose={() => setRunEvalOpen(false)} />
     </div>
+  );
+}
+
+/** Live Baseline card (026 US4, D7/O2): the baseline is per SUITE — frozen pointer, else the active version's latest
+ *  completed run, else none. Freeze/unfreeze are admin-only (eval.govern); a server 403 is toasted by the store. */
+function LiveBaselineCard({ agentId }: { agentId: string }) {
+  const suites = useSuitesForAgent(agentId);
+  const evals = useEvalRunsForAgent(agentId);
+  const [sid, setSid] = React.useState("");
+  const [busy, setBusy] = React.useState(false);
+  const suite = suites.find((x) => x.id === sid) ?? suites[0];
+  const latest = suite ? evals.find((e) => e.suiteId === suite.id && e.status === "completed") : undefined;
+  const b = suite?.baseline;
+  async function act(fn: () => Promise<boolean>) { setBusy(true); try { await fn(); } finally { setBusy(false); } }
+  return (
+    <SectionCard title={<Term id="baseline">Baseline</Term>}>
+      {!suite ? (
+        <p className="text-sm text-ink-2">None yet — a baseline is a completed run of an eval suite.</p>
+      ) : (
+        <div className="space-y-2">
+          {suites.length > 1 && (
+            <Select value={suite.id} onChange={(e) => setSid(e.target.value)} aria-label="Suite">
+              {suites.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}
+            </Select>
+          )}
+          <p className="text-sm text-ink-2">
+            {b?.origin === "frozen" ? <>Frozen{b.frozenBy ? <> by <span className="font-medium text-ink">{b.frozenBy}</span></> : null}</>
+              : b?.origin === "automatic" ? "Automatic — the active version's latest run"
+              : "None yet — run the active version first"}
+          </p>
+          {b?.evalRunId && <p className="font-mono text-[11px] text-muted">run {b.evalRunId.slice(0, 8)}</p>}
+          <div className="flex flex-wrap gap-2 pt-1">
+            <GateButton permission="eval.govern" variant="outline" size="sm" disabled={busy || !latest || (b?.origin === "frozen" && b.evalRunId === latest?.id)}
+              title={latest ? `Pin run ${latest.id.slice(0, 8)} (${latest.version})` : "No completed run of this suite yet"}
+              onClick={() => latest && void act(() => freezeBaseline(suite.id, latest.id))}>Freeze latest run</GateButton>
+            {b?.origin === "frozen" && (
+              <GateButton permission="eval.govern" variant="ghost" size="sm" disabled={busy} onClick={() => void act(() => clearBaseline(suite.id))}>Unfreeze</GateButton>
+            )}
+          </div>
+        </div>
+      )}
+    </SectionCard>
   );
 }
 
@@ -1181,7 +1196,10 @@ function SuiteCard({
             <Badge tone={thin ? "warning" : "good"}>{suite.cases.length} {suite.cases.length === 1 ? "case" : "cases"}</Badge>
             {thin && <span className="text-[11px] text-warning">below min {minCases}</span>}
           </div>
-          <p className="mt-0.5 text-[11px] text-muted">Updated {relative(suite.updatedAt)}</p>
+          <p className="mt-0.5 text-[11px] text-muted">
+            Updated {relative(suite.updatedAt)}
+            {suite.baseline !== undefined && <> · baseline {suite.baseline?.origin === "frozen" ? "frozen" : suite.baseline?.origin === "automatic" ? "automatic" : "none"}</>}
+          </p>
         </div>
         <div className="flex shrink-0 items-center gap-2">
           <GateButton permission="eval.author" variant="ghost" size="sm" onClick={onRename}>Rename</GateButton>
@@ -1240,7 +1258,10 @@ function SuiteNameDialog({ agentId, initial, onClose }: { agentId: string; initi
   );
 }
 
+/** Live (026 US4): the engine's deterministic layer only checks `required_fields`, and the rubric is capped at 8. */
+const LIVE_MAX_RUBRIC = 8;
 function CaseEditorDialog({ agent, suiteId, initial, onClose }: { agent: Agent; suiteId: string; initial: EvalCaseDef | null; onClose: () => void }) {
+  const live = useIsLiveWorkspace();
   const inputVars = resolveConfig(agent).inputVariables;
   const [input, setInput] = React.useState(initial?.input ?? "");
   const [vars, setVars] = React.useState<Record<string, string>>(() => {
@@ -1249,7 +1270,9 @@ function CaseEditorDialog({ agent, suiteId, initial, onClose }: { agent: Agent; 
     return seed;
   });
   // Clone arrays so editing never aliases the stored case (seed cases share a rubric reference).
-  const [assertions, setAssertions] = React.useState<Assertion[]>(() => (initial ? initial.assertions.map((a) => ({ ...a })) : [{ kind: "no_refusal", hard: true }]));
+  const [assertions, setAssertions] = React.useState<Assertion[]>(() =>
+    initial ? initial.assertions.filter((a) => !live || a.kind === "required_fields").map((a) => ({ ...a }))
+      : live ? [] : [{ kind: "no_refusal", hard: true }]);
   const [rubric, setRubric] = React.useState<RubricDimension[]>(() => (initial ? initial.rubric.map((d) => ({ ...d })) : newRubric()));
   const [expected, setExpected] = React.useState(initial?.expected ?? "");
 
@@ -1259,12 +1282,17 @@ function CaseEditorDialog({ agent, suiteId, initial, onClose }: { agent: Agent; 
     const needsDetail = (ASSERTION_KINDS.find((x) => x.kind === a.kind)?.detailHint ?? "") !== "";
     return !needsDetail || !!a.detail?.trim();
   });
-  const valid = input.trim().length > 0 && assertionsValid && rubric.length > 0 && rubric.every((d) => d.name.trim() && d.weight > 0);
+  const liveValid = !live || (rubric.length <= LIVE_MAX_RUBRIC && assertions.every((a) => a.kind === "required_fields"));
+  const valid = input.trim().length > 0 && assertionsValid && liveValid && rubric.length > 0 && rubric.every((d) => d.name.trim() && d.weight > 0);
 
   function submit() {
     if (!valid) return;
     // Only persist vars the agent actually declares, dropping blanks.
-    const keptVars: Record<string, string> = {};
+    // Vars the agent doesn't declare (e.g. an API-authored case) aren't editable here — carry them through unchanged
+    // so saving never silently rewrites the server case (review #5).
+    const declared = new Set(inputVars.map((v) => v.name));
+    const keptVars: Record<string, string> = Object.fromEntries(
+      Object.entries(initial?.vars ?? {}).filter(([k]) => !declared.has(k)));
     for (const v of inputVars) if (vars[v.name]?.trim()) keptVars[v.name] = vars[v.name].trim();
     const c: EvalCaseDef = {
       id: initial?.id ?? genId("case"),
@@ -1273,9 +1301,11 @@ function CaseEditorDialog({ agent, suiteId, initial, onClose }: { agent: Agent; 
       assertions: assertions.map((a) => ({ ...a, detail: a.detail?.trim() || undefined })),
       rubric: rubric.map((d) => ({ name: d.name.trim(), weight: d.weight })),
       ...(expected.trim() ? { expected: expected.trim() } : {}),
+      // live: the server's original non-string values, so unedited fields round-trip exactly (adapters.restore)
+      ...(initial?.raw ? { raw: initial.raw } : {}),
     };
-    upsertCase(suiteId, c);
-    toast(initial ? "Case updated" : "Case added");
+    upsertCase(suiteId, c);   // live: the store toasts the server result (or its refusal)
+    if (!live) toast(initial ? "Case updated" : "Case added");
     onClose();
   }
 
@@ -1313,8 +1343,8 @@ function CaseEditorDialog({ agent, suiteId, initial, onClose }: { agent: Agent; 
           </div>
         )}
 
-        <AssertionRows assertions={assertions} setAssertions={setAssertions} />
-        <RubricRows rubric={rubric} setRubric={setRubric} />
+        <AssertionRows assertions={assertions} setAssertions={setAssertions} live={live} />
+        <RubricRows rubric={rubric} setRubric={setRubric} max={live ? LIVE_MAX_RUBRIC : undefined} />
 
         <Field label="Reference answer" hint="Optional. The pairwise judge compares to the frozen baseline, so a golden answer isn't required.">
           <Textarea rows={2} value={expected} onChange={(e) => setExpected(e.target.value)} placeholder="(optional) expected answer sketch" />
@@ -1324,15 +1354,16 @@ function CaseEditorDialog({ agent, suiteId, initial, onClose }: { agent: Agent; 
   );
 }
 
-function AssertionRows({ assertions, setAssertions }: { assertions: Assertion[]; setAssertions: React.Dispatch<React.SetStateAction<Assertion[]>> }) {
+function AssertionRows({ assertions, setAssertions, live = false }: { assertions: Assertion[]; setAssertions: React.Dispatch<React.SetStateAction<Assertion[]>>; live?: boolean }) {
   const update = (i: number, patch: Partial<Assertion>) => setAssertions((p) => p.map((a, j) => (j === i ? { ...a, ...patch } : a)));
   const detailHintFor = (k: AssertionKind) => ASSERTION_KINDS.find((x) => x.kind === k)?.detailHint ?? "";
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between">
         <p className="text-xs font-medium text-ink-2">Deterministic assertions</p>
-        <Button variant="ghost" size="sm" onClick={() => setAssertions((p) => [...p, { kind: "no_refusal", hard: false }])}><Plus className="size-4" /> Add assertion</Button>
+        <Button variant="ghost" size="sm" onClick={() => setAssertions((p) => [...p, live ? { kind: "required_fields", hard: true } : { kind: "no_refusal", hard: false }])}><Plus className="size-4" /> Add assertion</Button>
       </div>
+      {live && <p className="text-[11px] text-muted">Only <span className="text-ink-2">Required fields</span> is checked by the eval engine today (always hard); the other kinds are not available yet.</p>}
       {assertions.length === 0 ? (
         <p className="text-[11px] text-muted">No assertions — this case is scored by the rubric alone.</p>
       ) : (
@@ -1342,11 +1373,14 @@ function AssertionRows({ assertions, setAssertions }: { assertions: Assertion[];
             return (
               <div key={i} className="flex flex-wrap items-center gap-2 rounded-lg border border-border bg-elevated/40 px-2.5 py-2">
                 <Select className="w-auto" value={a.kind} onChange={(e) => update(i, { kind: e.target.value as AssertionKind })}>
-                  {ASSERTION_KINDS.map((x) => <option key={x.kind} value={x.kind}>{x.label}</option>)}
+                  {ASSERTION_KINDS.map((x) => {
+                    const off = live && x.kind !== "required_fields";
+                    return <option key={x.kind} value={x.kind} disabled={off}>{x.label}{off ? " — not available yet" : ""}</option>;
+                  })}
                 </Select>
                 {hint && <Input className={`min-w-40 flex-1 ${!a.detail?.trim() ? "border-warning/60" : ""}`} value={a.detail ?? ""} onChange={(e) => update(i, { detail: e.target.value })} placeholder={`${hint} (required)`} />}
                 <button
-                  type="button" onClick={() => update(i, { hard: !a.hard })}
+                  type="button" disabled={live} onClick={() => update(i, { hard: !a.hard })}
                   className={`rounded-md border px-2.5 py-1 text-xs font-medium transition-colors ${a.hard ? "border-transparent bg-accent-soft text-accent" : "border-border bg-elevated text-ink-2"}`}
                   title={a.hard ? "Hard: failing this fails the case" : "Soft: informs the judge only"}
                 >
@@ -1362,7 +1396,7 @@ function AssertionRows({ assertions, setAssertions }: { assertions: Assertion[];
   );
 }
 
-function RubricRows({ rubric, setRubric }: { rubric: RubricDimension[]; setRubric: React.Dispatch<React.SetStateAction<RubricDimension[]>> }) {
+function RubricRows({ rubric, setRubric, max }: { rubric: RubricDimension[]; setRubric: React.Dispatch<React.SetStateAction<RubricDimension[]>>; max?: number }) {
   const update = (i: number, patch: Partial<RubricDimension>) => setRubric((p) => p.map((d, j) => (j === i ? { ...d, ...patch } : d)));
   return (
     <div className="space-y-2">
@@ -1371,8 +1405,9 @@ function RubricRows({ rubric, setRubric }: { rubric: RubricDimension[]; setRubri
           <p className="text-xs font-medium text-ink-2">Judge rubric</p>
           <p className="text-[11px] text-muted">The judge scores each dimension 1–5; the weighted blend is the case quality.</p>
         </div>
-        <Button variant="ghost" size="sm" onClick={() => setRubric((p) => [...p, { name: "", weight: 1 }])}><Plus className="size-4" /> Add dimension</Button>
+        <Button variant="ghost" size="sm" disabled={max !== undefined && rubric.length >= max} onClick={() => setRubric((p) => [...p, { name: "", weight: 1 }])}><Plus className="size-4" /> Add dimension</Button>
       </div>
+      {max !== undefined && rubric.length > max && <p className="text-[11px] text-warning">At most {max} dimensions — remove {rubric.length - max}.</p>}
       {rubric.length === 0 ? (
         <p className="text-[11px] text-warning">Add at least one rubric dimension.</p>
       ) : (
@@ -1590,7 +1625,14 @@ function Publish({ agent }: { agent: ReturnType<typeof getAgent> & {} }) {
 }
 
 /* ================================================================= Dialogs */
-function RunEvalDialog({ agent, open, onClose }: { agent: Agent; open: boolean; onClose: () => void }) {
+/** Live vs mock run surface. Live (026 US4) sends ONLY {version_id, suite_id}: the server picks the baseline (no
+ *  picker) and applies the workspace policy, then returns the persisted run, which is shown inline. */
+function RunEvalDialog(props: { agent: Agent; open: boolean; onClose: () => void }) {
+  const live = useIsLiveWorkspace();
+  return live ? <LiveRunEvalDialog {...props} /> : <MockRunEvalDialog {...props} />;
+}
+
+function MockRunEvalDialog({ agent, open, onClose }: { agent: Agent; open: boolean; onClose: () => void }) {
   const versions = versionsOf(agent);
   const policy = useEvalPolicyFor(agent.workspaceId);
   const suites = useSuitesForAgent(agent.id);

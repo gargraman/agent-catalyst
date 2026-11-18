@@ -964,6 +964,7 @@
           "evals"
         ],
         "summary": "Create Eval Run",
+        "description": "026 US4: the suite, baseline and policy all come from the SERVER (O3 \u2014 body extras dropped unread); the run is\npersisted (completed or failed) with its per-case evidence, in this request's single transaction.",
         "operationId": "create_eval_run_api_v1_agents__agent_id__eval_runs_post",
         "parameters": [
           {
@@ -1019,12 +1020,116 @@
           }
         },
         "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvalRunDetailOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "evals"
+        ],
+        "summary": "List Agent Eval Runs",
+        "operationId": "list_agent_eval_runs_api_v1_agents__agent_id__eval_runs_get",
+        "parameters": [
+          {
+            "name": "agent_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Agent Id"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "name": "workspace",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Workspace"
+            }
+          },
+          {
+            "name": "X-Workspace-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace-Id"
+            }
+          }
+        ],
+        "responses": {
           "200": {
             "description": "Successful Response",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/EvalRunOut"
+                  "$ref": "#/components/schemas/Page_EvalRunOut_"
                 }
               }
             }
@@ -1128,6 +1233,959 @@
                 }
               }
             }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/eval-runs": {
+      "get": {
+        "tags": [
+          "evals"
+        ],
+        "summary": "List Eval Runs",
+        "description": "Workspace-wide (RLS), post-filtered to agents the caller can USE \u2014 a short page is acceptable (G4, as\n`list_agents`); the keyset still advances on (finished_at, id), so nothing hidden is ever listed.",
+        "operationId": "list_eval_runs_api_v1_eval_runs_get",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "name": "workspace",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Workspace"
+            }
+          },
+          {
+            "name": "X-Workspace-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_EvalRunOut_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/eval-runs/{run_id}": {
+      "get": {
+        "tags": [
+          "evals"
+        ],
+        "summary": "Get Eval Run",
+        "operationId": "get_eval_run_api_v1_eval_runs__run_id__get",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          },
+          {
+            "name": "workspace",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Workspace"
+            }
+          },
+          {
+            "name": "X-Workspace-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvalRunDetailOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/agents/{agent_id}/eval-suites": {
+      "get": {
+        "tags": [
+          "eval-suites"
+        ],
+        "summary": "List Suites",
+        "operationId": "list_suites_api_v1_agents__agent_id__eval_suites_get",
+        "parameters": [
+          {
+            "name": "agent_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Agent Id"
+            }
+          },
+          {
+            "name": "workspace",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Workspace"
+            }
+          },
+          {
+            "name": "X-Workspace-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/EvalSuiteOut"
+                  },
+                  "title": "Response List Suites Api V1 Agents  Agent Id  Eval Suites Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "eval-suites"
+        ],
+        "summary": "Create Suite",
+        "operationId": "create_suite_api_v1_agents__agent_id__eval_suites_post",
+        "parameters": [
+          {
+            "name": "agent_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Agent Id"
+            }
+          },
+          {
+            "name": "workspace",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Workspace"
+            }
+          },
+          {
+            "name": "X-Workspace-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EvalSuiteIn"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvalSuiteOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/eval-suites/{suite_id}": {
+      "get": {
+        "tags": [
+          "eval-suites"
+        ],
+        "summary": "Get Suite",
+        "operationId": "get_suite_api_v1_eval_suites__suite_id__get",
+        "parameters": [
+          {
+            "name": "suite_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Suite Id"
+            }
+          },
+          {
+            "name": "workspace",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Workspace"
+            }
+          },
+          {
+            "name": "X-Workspace-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvalSuiteDetailOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "eval-suites"
+        ],
+        "summary": "Rename Suite",
+        "operationId": "rename_suite_api_v1_eval_suites__suite_id__patch",
+        "parameters": [
+          {
+            "name": "suite_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Suite Id"
+            }
+          },
+          {
+            "name": "workspace",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Workspace"
+            }
+          },
+          {
+            "name": "X-Workspace-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EvalSuiteIn"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvalSuiteOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "eval-suites"
+        ],
+        "summary": "Delete Suite",
+        "operationId": "delete_suite_api_v1_eval_suites__suite_id__delete",
+        "parameters": [
+          {
+            "name": "suite_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Suite Id"
+            }
+          },
+          {
+            "name": "workspace",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Workspace"
+            }
+          },
+          {
+            "name": "X-Workspace-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace-Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/eval-suites/{suite_id}/cases": {
+      "post": {
+        "tags": [
+          "eval-suites"
+        ],
+        "summary": "Create Case",
+        "operationId": "create_case_api_v1_eval_suites__suite_id__cases_post",
+        "parameters": [
+          {
+            "name": "suite_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Suite Id"
+            }
+          },
+          {
+            "name": "workspace",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Workspace"
+            }
+          },
+          {
+            "name": "X-Workspace-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EvalCaseIn"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvalCaseOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/eval-suites/{suite_id}/cases/{case_id}": {
+      "put": {
+        "tags": [
+          "eval-suites"
+        ],
+        "summary": "Replace Case",
+        "operationId": "replace_case_api_v1_eval_suites__suite_id__cases__case_id__put",
+        "parameters": [
+          {
+            "name": "suite_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Suite Id"
+            }
+          },
+          {
+            "name": "case_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Case Id"
+            }
+          },
+          {
+            "name": "workspace",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Workspace"
+            }
+          },
+          {
+            "name": "X-Workspace-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EvalCaseIn"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvalCaseOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "eval-suites"
+        ],
+        "summary": "Delete Case",
+        "operationId": "delete_case_api_v1_eval_suites__suite_id__cases__case_id__delete",
+        "parameters": [
+          {
+            "name": "suite_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Suite Id"
+            }
+          },
+          {
+            "name": "case_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Case Id"
+            }
+          },
+          {
+            "name": "workspace",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Workspace"
+            }
+          },
+          {
+            "name": "X-Workspace-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace-Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/eval-suites/{suite_id}/baseline": {
+      "put": {
+        "tags": [
+          "eval-suites"
+        ],
+        "summary": "Freeze Baseline",
+        "operationId": "freeze_baseline_api_v1_eval_suites__suite_id__baseline_put",
+        "parameters": [
+          {
+            "name": "suite_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Suite Id"
+            }
+          },
+          {
+            "name": "workspace",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Workspace"
+            }
+          },
+          {
+            "name": "X-Workspace-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BaselineFreezeIn"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BaselineOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "eval-suites"
+        ],
+        "summary": "Clear Baseline",
+        "operationId": "clear_baseline_api_v1_eval_suites__suite_id__baseline_delete",
+        "parameters": [
+          {
+            "name": "suite_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Suite Id"
+            }
+          },
+          {
+            "name": "workspace",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Workspace"
+            }
+          },
+          {
+            "name": "X-Workspace-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace-Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
           },
           "422": {
             "description": "Validation Error",
@@ -5985,35 +7043,82 @@
         "title": "AgentPatch",
         "description": "Partial edit. Requires an `If-Match` header (the prior ETag); status \u2208 the agent_status enum.\nFeature 026: `description` + `draft` (FULL replacement, validated \u2192 422) ride the same xmin ETag. Archive is\n`status:\"archived\"`; restore is `status:<restore_status>`; any other transition out of `archived` \u2192 400."
       },
-      "BaselineIn": {
+      "BaselineFreezeIn": {
         "properties": {
-          "quality": {
-            "type": "number",
-            "title": "Quality"
-          },
-          "cost_usd": {
-            "type": "number",
-            "title": "Cost Usd"
-          },
-          "latency_ms": {
-            "type": "integer",
-            "title": "Latency Ms"
-          },
-          "per_case": {
-            "additionalProperties": {
-              "type": "string"
-            },
-            "type": "object",
-            "title": "Per Case"
+          "eval_run_id": {
+            "type": "string",
+            "title": "Eval Run Id"
           }
         },
         "type": "object",
         "required": [
-          "quality",
-          "cost_usd",
-          "latency_ms"
+          "eval_run_id"
         ],
-        "title": "BaselineIn"
+        "title": "BaselineFreezeIn"
+      },
+      "BaselineOut": {
+        "properties": {
+          "origin": {
+            "type": "string",
+            "enum": [
+              "frozen",
+              "automatic",
+              "none"
+            ],
+            "title": "Origin"
+          },
+          "eval_run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Eval Run Id"
+          },
+          "version_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Version Id"
+          },
+          "frozen_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Frozen By"
+          },
+          "frozen_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Frozen At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "origin"
+        ],
+        "title": "BaselineOut",
+        "description": "Resolved by `api.baseline.resolve_baseline` \u2014 the same rule the next eval run compares against (D7)."
       },
       "Body_upload_document_api_v1_knowledge_bases__kb_id__documents_post": {
         "properties": {
@@ -6028,60 +7133,6 @@
           "file"
         ],
         "title": "Body_upload_document_api_v1_knowledge_bases__kb_id__documents_post"
-      },
-      "CaseIn": {
-        "properties": {
-          "id": {
-            "type": "string",
-            "title": "Id"
-          },
-          "input": {
-            "type": "string",
-            "title": "Input"
-          },
-          "rubric": {
-            "items": {
-              "$ref": "#/components/schemas/RubricDimIn"
-            },
-            "type": "array",
-            "title": "Rubric"
-          },
-          "required_fields": {
-            "anyOf": [
-              {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Required Fields"
-          },
-          "expected": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "additionalProperties": true,
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Expected"
-          }
-        },
-        "type": "object",
-        "required": [
-          "id",
-          "input"
-        ],
-        "title": "CaseIn"
       },
       "DashboardOut": {
         "properties": {
@@ -6380,68 +7431,343 @@
         "title": "DraftOut",
         "description": "The resolved draft as READ (feature 026). Deliberately unvalidated: a stored draft may reference a KB deleted\nsince, or a profile retired since \u2014 reading must still work; validation happens at save / version create."
       },
-      "EvalRunIn": {
+      "EvalCaseIn": {
         "properties": {
-          "version_id": {
-            "type": "string",
-            "title": "Version Id"
+          "input": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Input"
           },
-          "cases": {
+          "rubric": {
             "items": {
-              "$ref": "#/components/schemas/CaseIn"
+              "$ref": "#/components/schemas/RubricDimensionIn"
             },
             "type": "array",
-            "title": "Cases"
+            "maxItems": 8,
+            "minItems": 1,
+            "title": "Rubric"
           },
-          "baseline": {
-            "$ref": "#/components/schemas/BaselineIn"
+          "required_fields": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Required Fields"
           },
-          "policy": {
-            "$ref": "#/components/schemas/PolicyIn"
+          "expected": {
+            "title": "Expected"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "input",
+          "rubric"
+        ],
+        "title": "EvalCaseIn",
+        "description": "A case authored on the server. `content_hash` is never accepted from the client (extra=\"forbid\")."
+      },
+      "EvalCaseOut": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "suite_id": {
+            "type": "string",
+            "title": "Suite Id"
+          },
+          "input": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Input"
+          },
+          "rubric": {
+            "items": {
+              "$ref": "#/components/schemas/RubricDimensionIn"
+            },
+            "type": "array",
+            "title": "Rubric"
+          },
+          "required_fields": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Required Fields"
+          },
+          "expected": {
+            "title": "Expected"
+          },
+          "content_hash": {
+            "type": "string",
+            "title": "Content Hash"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
           }
         },
         "type": "object",
         "required": [
-          "version_id",
-          "cases",
-          "baseline"
+          "id",
+          "suite_id",
+          "input",
+          "rubric",
+          "required_fields",
+          "content_hash",
+          "updated_at"
         ],
-        "title": "EvalRunIn"
+        "title": "EvalCaseOut"
       },
-      "EvalRunOut": {
+      "EvalResultOut": {
         "properties": {
-          "verdict": {
+          "case_id": {
+            "type": "string",
+            "title": "Case Id"
+          },
+          "passed_deterministic": {
+            "type": "boolean",
+            "title": "Passed Deterministic"
+          },
+          "quality": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quality"
+          },
+          "in_comparison": {
+            "type": "boolean",
+            "title": "In Comparison"
+          },
+          "failure_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Reason"
+          },
+          "cost_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cost Usd"
+          },
+          "latency_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latency Ms"
+          }
+        },
+        "type": "object",
+        "required": [
+          "case_id",
+          "passed_deterministic",
+          "in_comparison"
+        ],
+        "title": "EvalResultOut",
+        "description": "Per-case evidence. `candidate_output` is deliberately NOT returned in v1 (judge evidence only)."
+      },
+      "EvalRunDetailOut": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "agent_id": {
+            "type": "string",
+            "title": "Agent Id"
+          },
+          "suite_id": {
+            "type": "string",
+            "title": "Suite Id"
+          },
+          "suite_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Suite Name"
+          },
+          "version_id": {
+            "type": "string",
+            "title": "Version Id"
+          },
+          "version_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Version Label"
+          },
+          "status": {
             "type": "string",
             "enum": [
-              "pass",
-              "fail",
-              "low_confidence"
+              "completed",
+              "failed"
+            ],
+            "title": "Status"
+          },
+          "verdict": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "pass",
+                  "fail",
+                  "low_confidence"
+                ]
+              },
+              {
+                "type": "null"
+              }
             ],
             "title": "Verdict"
+          },
+          "reason_code": {
+            "type": "string",
+            "title": "Reason Code"
           },
           "reason": {
             "type": "string",
             "title": "Reason"
           },
           "quality": {
-            "type": "number",
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Quality"
           },
           "quality_delta": {
-            "type": "number",
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Quality Delta"
           },
-          "cost_delta": {
-            "type": "number",
-            "title": "Cost Delta"
+          "cost_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cost Usd"
           },
-          "latency_delta": {
-            "type": "number",
-            "title": "Latency Delta"
+          "cost_delta_pct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cost Delta Pct"
           },
-          "cases": {
+          "latency_ms": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latency Ms"
+          },
+          "latency_delta_ms": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latency Delta Ms"
+          },
+          "compared_cases": {
             "type": "integer",
-            "title": "Cases"
+            "title": "Compared Cases"
+          },
+          "new_cases": {
+            "type": "integer",
+            "title": "New Cases"
+          },
+          "dropped_cases": {
+            "type": "integer",
+            "title": "Dropped Cases"
+          },
+          "total_cases": {
+            "type": "integer",
+            "title": "Total Cases"
+          },
+          "baseline": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RunBaselineOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "created_by": {
+            "type": "string",
+            "title": "Created By"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
           },
           "dimensions": {
             "items": {
@@ -6457,21 +7783,272 @@
             "type": "array",
             "title": "Failing Cases"
           },
+          "results": {
+            "items": {
+              "$ref": "#/components/schemas/EvalResultOut"
+            },
+            "type": "array",
+            "title": "Results"
+          },
+          "policy": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Policy"
+          },
+          "judge_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Judge Version"
+          },
           "pairwise_rate": {
-            "type": "number",
-            "title": "Pairwise Rate",
-            "default": 0.0
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pairwise Rate"
           }
         },
         "type": "object",
         "required": [
-          "verdict",
+          "id",
+          "agent_id",
+          "suite_id",
+          "version_id",
+          "status",
+          "reason_code",
           "reason",
-          "quality",
-          "quality_delta",
-          "cost_delta",
-          "latency_delta",
-          "cases"
+          "compared_cases",
+          "new_cases",
+          "dropped_cases",
+          "total_cases",
+          "created_by"
+        ],
+        "title": "EvalRunDetailOut"
+      },
+      "EvalRunIn": {
+        "properties": {
+          "version_id": {
+            "type": "string",
+            "title": "Version Id"
+          },
+          "suite_id": {
+            "type": "string",
+            "title": "Suite Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "version_id",
+          "suite_id"
+        ],
+        "title": "EvalRunIn",
+        "description": "Owner O3: a client `baseline` / `policy` / `cases` is accepted and dropped unread (extra=\"ignore\") \u2014 the server\nowns all three, so a flattering body can never change a verdict (SC-004)."
+      },
+      "EvalRunOut": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "agent_id": {
+            "type": "string",
+            "title": "Agent Id"
+          },
+          "suite_id": {
+            "type": "string",
+            "title": "Suite Id"
+          },
+          "suite_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Suite Name"
+          },
+          "version_id": {
+            "type": "string",
+            "title": "Version Id"
+          },
+          "version_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Version Label"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "completed",
+              "failed"
+            ],
+            "title": "Status"
+          },
+          "verdict": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "pass",
+                  "fail",
+                  "low_confidence"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Verdict"
+          },
+          "reason_code": {
+            "type": "string",
+            "title": "Reason Code"
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason"
+          },
+          "quality": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quality"
+          },
+          "quality_delta": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quality Delta"
+          },
+          "cost_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cost Usd"
+          },
+          "cost_delta_pct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cost Delta Pct"
+          },
+          "latency_ms": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latency Ms"
+          },
+          "latency_delta_ms": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latency Delta Ms"
+          },
+          "compared_cases": {
+            "type": "integer",
+            "title": "Compared Cases"
+          },
+          "new_cases": {
+            "type": "integer",
+            "title": "New Cases"
+          },
+          "dropped_cases": {
+            "type": "integer",
+            "title": "Dropped Cases"
+          },
+          "total_cases": {
+            "type": "integer",
+            "title": "Total Cases"
+          },
+          "baseline": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RunBaselineOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "created_by": {
+            "type": "string",
+            "title": "Created By"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "agent_id",
+          "suite_id",
+          "version_id",
+          "status",
+          "reason_code",
+          "reason",
+          "compared_cases",
+          "new_cases",
+          "dropped_cases",
+          "total_cases",
+          "created_by"
         ],
         "title": "EvalRunOut"
       },
@@ -6493,6 +8070,117 @@
           "by_outcome"
         ],
         "title": "EvalStatsOut"
+      },
+      "EvalSuiteDetailOut": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "agent_id": {
+            "type": "string",
+            "title": "Agent Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "case_count": {
+            "type": "integer",
+            "title": "Case Count"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          },
+          "baseline": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BaselineOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "cases": {
+            "items": {
+              "$ref": "#/components/schemas/EvalCaseOut"
+            },
+            "type": "array",
+            "title": "Cases"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "agent_id",
+          "name",
+          "case_count",
+          "updated_at"
+        ],
+        "title": "EvalSuiteDetailOut"
+      },
+      "EvalSuiteIn": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Name"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "title": "EvalSuiteIn"
+      },
+      "EvalSuiteOut": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "agent_id": {
+            "type": "string",
+            "title": "Agent Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "case_count": {
+            "type": "integer",
+            "title": "Case Count"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          },
+          "baseline": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BaselineOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "agent_id",
+          "name",
+          "case_count",
+          "updated_at"
+        ],
+        "title": "EvalSuiteOut"
       },
       "FailingCaseOut": {
         "properties": {
@@ -7371,6 +9059,33 @@
         ],
         "title": "Page[DocumentOut]"
       },
+      "Page_EvalRunOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/EvalRunOut"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "title": "Page[EvalRunOut]"
+      },
       "Page_IngestionJobOut_": {
         "properties": {
           "items": {
@@ -7559,32 +9274,6 @@
           "items"
         ],
         "title": "Page[ToolOut]"
-      },
-      "PolicyIn": {
-        "properties": {
-          "min_cases": {
-            "type": "integer",
-            "title": "Min Cases",
-            "default": 10
-          },
-          "quality_threshold": {
-            "type": "number",
-            "title": "Quality Threshold",
-            "default": 90.0
-          },
-          "efficiency_budget_pct": {
-            "type": "number",
-            "title": "Efficiency Budget Pct",
-            "default": 10.0
-          },
-          "allow_low_confidence_override": {
-            "type": "boolean",
-            "title": "Allow Low Confidence Override",
-            "default": false
-          }
-        },
-        "type": "object",
-        "title": "PolicyIn"
       },
       "ProviderKeyCreate": {
         "properties": {
@@ -7905,23 +9594,60 @@
         "title": "RevokeUserIn",
         "description": "Admin immediate-revocation target: a console `subject` and/or a caller `token_id` (at least one)."
       },
-      "RubricDimIn": {
+      "RubricDimensionIn": {
         "properties": {
           "name": {
             "type": "string",
+            "maxLength": 80,
+            "minLength": 1,
             "title": "Name"
           },
           "weight": {
             "type": "number",
+            "exclusiveMinimum": 0.0,
             "title": "Weight",
             "default": 1.0
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "required": [
           "name"
         ],
-        "title": "RubricDimIn"
+        "title": "RubricDimensionIn"
+      },
+      "RunBaselineOut": {
+        "properties": {
+          "origin": {
+            "type": "string",
+            "enum": [
+              "automatic",
+              "frozen"
+            ],
+            "title": "Origin"
+          },
+          "eval_run_id": {
+            "type": "string",
+            "title": "Eval Run Id"
+          },
+          "version_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Version Label"
+          }
+        },
+        "type": "object",
+        "required": [
+          "origin",
+          "eval_run_id"
+        ],
+        "title": "RunBaselineOut"
       },
       "RunOut": {
         "properties": {

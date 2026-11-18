@@ -5,11 +5,15 @@
 // restore_status and the version embed (created_by/is_active). It still does NOT carry owner/tags or the 30-day
 // metrics the console renders — those stay safe placeholders until a metrics rollup exists.
 import type {
-  Agent, AgentConfig, ApiToken, InputVariable, InputVariableType, LiveDraft, ModelRef, OutputFormat, Version,
+  Agent, AgentConfig, ApiToken, EvalCaseDef, EvalRun, EvalSuite, InputVariable, InputVariableType, LiveDraft, ModelRef,
+  OutputFormat, SuiteBaseline, Verdict, Version,
 } from "../data";
 import type { AccessPolicy } from "../access-policy";
 import type { Role } from "../permissions";
-import type { AgentCreate, AgentOut, DraftIn, DraftOut, TokenOut, VersionOut } from "./client";
+import type {
+  AgentCreate, AgentOut, BaselineOut, DraftIn, DraftOut, EvalCaseIn, EvalCaseOut, EvalRunDetailOut, EvalRunOut,
+  EvalSuiteOut, TokenOut, VersionOut,
+} from "./client";
 
 function accessPolicyOut(p: AgentOut["access_policy"]): AccessPolicy {
   return {
@@ -213,4 +217,117 @@ export function tokenOutToApiToken(t: TokenOut, agentName: string): ApiToken {
     id: t.id, name: t.name, agent: agentName, agentId: t.agent_id, prefix: `${t.prefix}…`, created: t.created_at,
     lastUsed: t.last_used_at ?? "", scopes: "invoke", expires: t.expires_at ?? undefined,
   };
+}
+
+/* ---- evals (feature 026 US4) ----
+ * Case input: the backend stores the invoke `input` object as-is; the console models it as a `message` + string
+ * vars. Round-trip: {message, ...vars} ↔ (input, vars). Non-string values are JSON-stringified for display and kept in
+ * `raw`; on save an unedited field sends its original value back and an edited one is re-parsed as JSON (review #5:
+ * a lossy round-trip re-hashed the case out of the baseline and turned a field match into a substring check).
+ * Assertions: only `required_fields` exists server-side (the engine's deterministic layer) — it maps to one HARD
+ * `required_fields` assertion whose detail is the comma list. Other kinds are not sent (the editor disables them). */
+export function evalCaseOutToCase(c: EvalCaseOut): EvalCaseDef {
+  const { message, ...rest } = (c.input ?? {}) as Record<string, unknown>;
+  const vars = Object.fromEntries(Object.entries(rest).map(([k, v]) => [k, typeof v === "string" ? v : JSON.stringify(v)]));
+  const rawVars = Object.fromEntries(Object.entries(rest).filter(([, v]) => typeof v !== "string"));
+  const raw: NonNullable<EvalCaseDef["raw"]> = {
+    ...(message !== undefined && typeof message !== "string" ? { message } : {}),
+    ...(Object.keys(rawVars).length ? { vars: rawVars } : {}),
+    ...(c.expected !== null && c.expected !== undefined && typeof c.expected !== "string" ? { expected: c.expected } : {}),
+  };
+  const rubric = (c.rubric as { name: string; weight?: number }[]).map((d) => ({ name: d.name, weight: d.weight ?? 1 }));
+  return {
+    id: c.id,
+    input: typeof message === "string" ? message : message === undefined ? "" : JSON.stringify(message),
+    ...(Object.keys(vars).length ? { vars } : {}),
+    assertions: c.required_fields.length ? [{ kind: "required_fields", detail: c.required_fields.join(", "), hard: true }] : [],
+    rubric,
+    ...(c.expected !== null && c.expected !== undefined
+      ? { expected: typeof c.expected === "string" ? c.expected : JSON.stringify(c.expected) } : {}),
+    contentHash: c.content_hash,
+    ...(Object.keys(raw).length ? { raw } : {}),
+  };
+}
+
+/** A displayed string back to its wire value: unedited → the server's original; edited JSON-origin → parsed JSON
+ *  (falls back to the text if it no longer parses); string-origin or console-authored → the string as typed. */
+function restore(display: string, origin: Record<string, unknown> | undefined, key: string): unknown {
+  if (!origin || !(key in origin)) return display;
+  const original = origin[key];
+  if (display === JSON.stringify(original)) return original;
+  try { return JSON.parse(display); } catch { return display; }
+}
+
+export function caseToEvalCaseIn(c: EvalCaseDef): EvalCaseIn {
+  const required = c.assertions
+    .filter((a) => a.kind === "required_fields")
+    .flatMap((a) => (a.detail ?? "").split(","))
+    .map((f) => f.trim())
+    .filter(Boolean);
+  const raw = c.raw ?? {};
+  const vars = Object.fromEntries(Object.entries(c.vars ?? {}).map(([k, v]) => [k, restore(v, raw.vars, k)]));
+  return {
+    input: { message: restore(c.input, raw, "message"), ...vars },
+    rubric: c.rubric.map((d) => ({ name: d.name.trim(), weight: d.weight })),
+    required_fields: Array.from(new Set(required)),
+    expected: c.expected?.trim() ? restore(c.expected, raw, "expected") : null,
+  };
+}
+
+export function baselineOutToBaseline(b: BaselineOut | null | undefined): SuiteBaseline | null {
+  if (!b) return null;
+  return {
+    origin: (b.origin === "frozen" || b.origin === "automatic" ? b.origin : "none") as SuiteBaseline["origin"],
+    evalRunId: b.eval_run_id ?? null, versionId: b.version_id ?? null,
+    frozenBy: b.frozen_by ?? null, frozenAt: b.frozen_at ?? null,
+  };
+}
+
+export function evalSuiteOutToSuite(s: EvalSuiteOut, cases: EvalCaseOut[] | null | undefined, consoleWorkspaceId: string): EvalSuite {
+  return {
+    id: s.id, agentId: s.agent_id, name: s.name, workspaceId: consoleWorkspaceId, updatedAt: s.updated_at,
+    cases: (cases ?? []).map(evalCaseOutToCase),
+    baseline: baselineOutToBaseline(s.baseline),
+  };
+}
+
+const VERDICTS: readonly Verdict[] = ["pass", "fail", "low_confidence"];
+
+/** EvalRunOut (list) or EvalRunDetailOut → the console's EvalRun. A failed (timeout) run has no verdict server-side;
+ *  it renders as low_confidence with `status: "failed"` so no surface reads it as a pass or an agent regression.
+ *  `caseInputs` (case id → message) lets failing cases show their input instead of an opaque id. */
+export function evalRunOutToEvalRun(
+  r: EvalRunOut | EvalRunDetailOut, agentName: string, consoleWorkspaceId: string, caseInputs?: Map<string, string>,
+): EvalRun {
+  const d = r as Partial<EvalRunDetailOut>;
+  const verdict: Verdict = r.verdict && VERDICTS.includes(r.verdict as Verdict) ? (r.verdict as Verdict) : "low_confidence";
+  return {
+    id: r.id, agentId: r.agent_id, agent: agentName, workspaceId: consoleWorkspaceId,
+    version: r.version_label ?? r.version_id.slice(0, 8),
+    baseline: r.baseline ? (r.baseline.version_label ?? r.baseline.eval_run_id.slice(0, 8)) : "none",
+    baselineRef: r.baseline
+      ? { origin: r.baseline.origin as "automatic" | "frozen", evalRunId: r.baseline.eval_run_id, versionLabel: r.baseline.version_label ?? null }
+      : null,
+    quality: r.quality ?? 0, qualityDelta: r.quality_delta ?? 0, ...(r.quality == null ? { scored: false } : {}),
+    costDelta: r.cost_delta_pct ?? 0, latencyDelta: r.latency_delta_ms ?? 0,
+    cases: r.total_cases, verdict, date: r.finished_at ?? new Date().toISOString(), trigger: "Manual run",
+    reason: r.reason, reasonCode: r.reason_code, status: r.status === "failed" ? "failed" : "completed",
+    suiteId: r.suite_id, suiteName: r.suite_name ?? undefined, versionId: r.version_id,
+    comparedCases: r.compared_cases, newCases: r.new_cases, droppedCases: r.dropped_cases, createdBy: r.created_by,
+    ...(d.dimensions?.length
+      ? { dimensions: d.dimensions.map((x) => ({ name: x.name, score: x.candidate, baseline: x.baseline ?? null })) } : {}),
+    ...(d.failing_cases?.length
+      ? { failingCases: d.failing_cases.map((f) => ({
+          input: caseInputs?.get(f.case_id) ?? `case ${f.case_id.slice(0, 8)}`,
+          issue: f.hard && !/hard/i.test(f.reason) ? `${f.reason} (hard check)` : f.reason,
+        })) } : {}),
+  };
+}
+
+/** The provenance line every run surface shows (T062). */
+export function baselineProvenance(r: Pick<EvalRun, "baselineRef">, frozenBy?: string | null): string {
+  const b = r.baselineRef;
+  if (!b) return "baseline: none";
+  const run = `run ${b.evalRunId.slice(0, 8)}${b.versionLabel ? ` (${b.versionLabel})` : ""}`;
+  return b.origin === "frozen" ? `baseline: frozen${frozenBy ? ` by ${frozenBy}` : ""} · ${run}` : `baseline: automatic · ${run}`;
 }

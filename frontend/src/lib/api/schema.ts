@@ -227,9 +227,14 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /** List Agent Eval Runs */
+        get: operations["list_agent_eval_runs_api_v1_agents__agent_id__eval_runs_get"];
         put?: never;
-        /** Create Eval Run */
+        /**
+         * Create Eval Run
+         * @description 026 US4: the suite, baseline and policy all come from the SERVER (O3 — body extras dropped unread); the run is
+         *     persisted (completed or failed) with its per-case evidence, in this request's single transaction.
+         */
         post: operations["create_eval_run_api_v1_agents__agent_id__eval_runs_post"];
         delete?: never;
         options?: never;
@@ -249,6 +254,134 @@ export interface paths {
         /** Publish Version */
         post: operations["publish_version_api_v1_agents__agent_id__publish_post"];
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/eval-runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Eval Runs
+         * @description Workspace-wide (RLS), post-filtered to agents the caller can USE — a short page is acceptable (G4, as
+         *     `list_agents`); the keyset still advances on (finished_at, id), so nothing hidden is ever listed.
+         */
+        get: operations["list_eval_runs_api_v1_eval_runs_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/eval-runs/{run_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Eval Run */
+        get: operations["get_eval_run_api_v1_eval_runs__run_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/agents/{agent_id}/eval-suites": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Suites */
+        get: operations["list_suites_api_v1_agents__agent_id__eval_suites_get"];
+        put?: never;
+        /** Create Suite */
+        post: operations["create_suite_api_v1_agents__agent_id__eval_suites_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/eval-suites/{suite_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Suite */
+        get: operations["get_suite_api_v1_eval_suites__suite_id__get"];
+        put?: never;
+        post?: never;
+        /** Delete Suite */
+        delete: operations["delete_suite_api_v1_eval_suites__suite_id__delete"];
+        options?: never;
+        head?: never;
+        /** Rename Suite */
+        patch: operations["rename_suite_api_v1_eval_suites__suite_id__patch"];
+        trace?: never;
+    };
+    "/api/v1/eval-suites/{suite_id}/cases": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Create Case */
+        post: operations["create_case_api_v1_eval_suites__suite_id__cases_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/eval-suites/{suite_id}/cases/{case_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Replace Case */
+        put: operations["replace_case_api_v1_eval_suites__suite_id__cases__case_id__put"];
+        post?: never;
+        /** Delete Case */
+        delete: operations["delete_case_api_v1_eval_suites__suite_id__cases__case_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/eval-suites/{suite_id}/baseline": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Freeze Baseline */
+        put: operations["freeze_baseline_api_v1_eval_suites__suite_id__baseline_put"];
+        post?: never;
+        /** Clear Baseline */
+        delete: operations["clear_baseline_api_v1_eval_suites__suite_id__baseline_delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -1169,38 +1302,34 @@ export interface components {
             description?: string | null;
             draft?: components["schemas"]["Draft"] | null;
         };
-        /** BaselineIn */
-        BaselineIn: {
-            /** Quality */
-            quality: number;
-            /** Cost Usd */
-            cost_usd: number;
-            /** Latency Ms */
-            latency_ms: number;
-            /** Per Case */
-            per_case?: {
-                [key: string]: string;
-            };
+        /** BaselineFreezeIn */
+        BaselineFreezeIn: {
+            /** Eval Run Id */
+            eval_run_id: string;
+        };
+        /**
+         * BaselineOut
+         * @description Resolved by `api.baseline.resolve_baseline` — the same rule the next eval run compares against (D7).
+         */
+        BaselineOut: {
+            /**
+             * Origin
+             * @enum {string}
+             */
+            origin: "frozen" | "automatic" | "none";
+            /** Eval Run Id */
+            eval_run_id?: string | null;
+            /** Version Id */
+            version_id?: string | null;
+            /** Frozen By */
+            frozen_by?: string | null;
+            /** Frozen At */
+            frozen_at?: string | null;
         };
         /** Body_upload_document_api_v1_knowledge_bases__kb_id__documents_post */
         Body_upload_document_api_v1_knowledge_bases__kb_id__documents_post: {
             /** File */
             file: string;
-        };
-        /** CaseIn */
-        CaseIn: {
-            /** Id */
-            id: string;
-            /** Input */
-            input: string;
-            /** Rubric */
-            rubric?: components["schemas"]["RubricDimIn"][];
-            /** Required Fields */
-            required_fields?: string[] | null;
-            /** Expected */
-            expected?: string | {
-                [key: string]: unknown;
-            } | null;
         };
         /** DashboardOut */
         DashboardOut: {
@@ -1329,43 +1458,192 @@ export interface components {
              */
             restricted_bindings: number;
         };
-        /** EvalRunIn */
-        EvalRunIn: {
+        /**
+         * EvalCaseIn
+         * @description A case authored on the server. `content_hash` is never accepted from the client (extra="forbid").
+         */
+        EvalCaseIn: {
+            /** Input */
+            input: {
+                [key: string]: unknown;
+            };
+            /** Rubric */
+            rubric: components["schemas"]["RubricDimensionIn"][];
+            /** Required Fields */
+            required_fields?: string[];
+            /** Expected */
+            expected?: unknown;
+        };
+        /** EvalCaseOut */
+        EvalCaseOut: {
+            /** Id */
+            id: string;
+            /** Suite Id */
+            suite_id: string;
+            /** Input */
+            input: {
+                [key: string]: unknown;
+            };
+            /** Rubric */
+            rubric: components["schemas"]["RubricDimensionIn"][];
+            /** Required Fields */
+            required_fields: string[];
+            /** Expected */
+            expected?: unknown;
+            /** Content Hash */
+            content_hash: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /**
+         * EvalResultOut
+         * @description Per-case evidence. `candidate_output` is deliberately NOT returned in v1 (judge evidence only).
+         */
+        EvalResultOut: {
+            /** Case Id */
+            case_id: string;
+            /** Passed Deterministic */
+            passed_deterministic: boolean;
+            /** Quality */
+            quality?: number | null;
+            /** In Comparison */
+            in_comparison: boolean;
+            /** Failure Reason */
+            failure_reason?: string | null;
+            /** Cost Usd */
+            cost_usd?: number | null;
+            /** Latency Ms */
+            latency_ms?: number | null;
+        };
+        /** EvalRunDetailOut */
+        EvalRunDetailOut: {
+            /** Id */
+            id: string;
+            /** Agent Id */
+            agent_id: string;
+            /** Suite Id */
+            suite_id: string;
+            /** Suite Name */
+            suite_name?: string | null;
             /** Version Id */
             version_id: string;
-            /** Cases */
-            cases: components["schemas"]["CaseIn"][];
-            baseline: components["schemas"]["BaselineIn"];
-            policy?: components["schemas"]["PolicyIn"];
-        };
-        /** EvalRunOut */
-        EvalRunOut: {
+            /** Version Label */
+            version_label?: string | null;
             /**
-             * Verdict
+             * Status
              * @enum {string}
              */
-            verdict: "pass" | "fail" | "low_confidence";
+            status: "completed" | "failed";
+            /** Verdict */
+            verdict?: ("pass" | "fail" | "low_confidence") | null;
+            /** Reason Code */
+            reason_code: string;
             /** Reason */
             reason: string;
             /** Quality */
-            quality: number;
+            quality?: number | null;
             /** Quality Delta */
-            quality_delta: number;
-            /** Cost Delta */
-            cost_delta: number;
-            /** Latency Delta */
-            latency_delta: number;
-            /** Cases */
-            cases: number;
+            quality_delta?: number | null;
+            /** Cost Usd */
+            cost_usd?: number | null;
+            /** Cost Delta Pct */
+            cost_delta_pct?: number | null;
+            /** Latency Ms */
+            latency_ms?: number | null;
+            /** Latency Delta Ms */
+            latency_delta_ms?: number | null;
+            /** Compared Cases */
+            compared_cases: number;
+            /** New Cases */
+            new_cases: number;
+            /** Dropped Cases */
+            dropped_cases: number;
+            /** Total Cases */
+            total_cases: number;
+            baseline?: components["schemas"]["RunBaselineOut"] | null;
+            /** Created By */
+            created_by: string;
+            /** Finished At */
+            finished_at?: string | null;
             /** Dimensions */
             dimensions?: components["schemas"]["DimensionOut"][];
             /** Failing Cases */
             failing_cases?: components["schemas"]["FailingCaseOut"][];
+            /** Results */
+            results?: components["schemas"]["EvalResultOut"][];
+            /** Policy */
+            policy?: {
+                [key: string]: unknown;
+            };
+            /** Judge Version */
+            judge_version?: string | null;
+            /** Pairwise Rate */
+            pairwise_rate?: number | null;
+        };
+        /**
+         * EvalRunIn
+         * @description Owner O3: a client `baseline` / `policy` / `cases` is accepted and dropped unread (extra="ignore") — the server
+         *     owns all three, so a flattering body can never change a verdict (SC-004).
+         */
+        EvalRunIn: {
+            /** Version Id */
+            version_id: string;
+            /** Suite Id */
+            suite_id: string;
+        };
+        /** EvalRunOut */
+        EvalRunOut: {
+            /** Id */
+            id: string;
+            /** Agent Id */
+            agent_id: string;
+            /** Suite Id */
+            suite_id: string;
+            /** Suite Name */
+            suite_name?: string | null;
+            /** Version Id */
+            version_id: string;
+            /** Version Label */
+            version_label?: string | null;
             /**
-             * Pairwise Rate
-             * @default 0
+             * Status
+             * @enum {string}
              */
-            pairwise_rate: number;
+            status: "completed" | "failed";
+            /** Verdict */
+            verdict?: ("pass" | "fail" | "low_confidence") | null;
+            /** Reason Code */
+            reason_code: string;
+            /** Reason */
+            reason: string;
+            /** Quality */
+            quality?: number | null;
+            /** Quality Delta */
+            quality_delta?: number | null;
+            /** Cost Usd */
+            cost_usd?: number | null;
+            /** Cost Delta Pct */
+            cost_delta_pct?: number | null;
+            /** Latency Ms */
+            latency_ms?: number | null;
+            /** Latency Delta Ms */
+            latency_delta_ms?: number | null;
+            /** Compared Cases */
+            compared_cases: number;
+            /** New Cases */
+            new_cases: number;
+            /** Dropped Cases */
+            dropped_cases: number;
+            /** Total Cases */
+            total_cases: number;
+            baseline?: components["schemas"]["RunBaselineOut"] | null;
+            /** Created By */
+            created_by: string;
+            /** Finished At */
+            finished_at?: string | null;
         };
         /** EvalStatsOut */
         EvalStatsOut: {
@@ -1375,6 +1653,47 @@ export interface components {
             by_outcome: {
                 [key: string]: unknown;
             };
+        };
+        /** EvalSuiteDetailOut */
+        EvalSuiteDetailOut: {
+            /** Id */
+            id: string;
+            /** Agent Id */
+            agent_id: string;
+            /** Name */
+            name: string;
+            /** Case Count */
+            case_count: number;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+            baseline?: components["schemas"]["BaselineOut"] | null;
+            /** Cases */
+            cases?: components["schemas"]["EvalCaseOut"][];
+        };
+        /** EvalSuiteIn */
+        EvalSuiteIn: {
+            /** Name */
+            name: string;
+        };
+        /** EvalSuiteOut */
+        EvalSuiteOut: {
+            /** Id */
+            id: string;
+            /** Agent Id */
+            agent_id: string;
+            /** Name */
+            name: string;
+            /** Case Count */
+            case_count: number;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+            baseline?: components["schemas"]["BaselineOut"] | null;
         };
         /** FailingCaseOut */
         FailingCaseOut: {
@@ -1721,6 +2040,13 @@ export interface components {
             /** Next Cursor */
             next_cursor?: string | null;
         };
+        /** Page[EvalRunOut] */
+        Page_EvalRunOut_: {
+            /** Items */
+            items: components["schemas"]["EvalRunOut"][];
+            /** Next Cursor */
+            next_cursor?: string | null;
+        };
         /** Page[IngestionJobOut] */
         Page_IngestionJobOut_: {
             /** Items */
@@ -1769,29 +2095,6 @@ export interface components {
             items: components["schemas"]["ToolOut"][];
             /** Next Cursor */
             next_cursor?: string | null;
-        };
-        /** PolicyIn */
-        PolicyIn: {
-            /**
-             * Min Cases
-             * @default 10
-             */
-            min_cases: number;
-            /**
-             * Quality Threshold
-             * @default 90
-             */
-            quality_threshold: number;
-            /**
-             * Efficiency Budget Pct
-             * @default 10
-             */
-            efficiency_budget_pct: number;
-            /**
-             * Allow Low Confidence Override
-             * @default false
-             */
-            allow_low_confidence_override: boolean;
         };
         /**
          * ProviderKeyCreate
@@ -1917,8 +2220,8 @@ export interface components {
             /** Token Id */
             token_id?: string | null;
         };
-        /** RubricDimIn */
-        RubricDimIn: {
+        /** RubricDimensionIn */
+        RubricDimensionIn: {
             /** Name */
             name: string;
             /**
@@ -1926,6 +2229,18 @@ export interface components {
              * @default 1
              */
             weight: number;
+        };
+        /** RunBaselineOut */
+        RunBaselineOut: {
+            /**
+             * Origin
+             * @enum {string}
+             */
+            origin: "automatic" | "frozen";
+            /** Eval Run Id */
+            eval_run_id: string;
+            /** Version Label */
+            version_label?: string | null;
         };
         /** RunOut */
         RunOut: {
@@ -2827,6 +3142,43 @@ export interface operations {
             };
         };
     };
+    list_agent_eval_runs_api_v1_agents__agent_id__eval_runs_get: {
+        parameters: {
+            query?: {
+                limit?: number | null;
+                cursor?: string | null;
+                workspace?: string | null;
+            };
+            header?: {
+                "X-Workspace-Id"?: string | null;
+            };
+            path: {
+                agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_EvalRunOut_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     create_eval_run_api_v1_agents__agent_id__eval_runs_post: {
         parameters: {
             query?: {
@@ -2847,12 +3199,12 @@ export interface operations {
         };
         responses: {
             /** @description Successful Response */
-            200: {
+            201: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["EvalRunOut"];
+                    "application/json": components["schemas"]["EvalRunDetailOut"];
                 };
             };
             /** @description Validation Error */
@@ -2894,6 +3246,442 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["PublishOut"];
                 };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_eval_runs_api_v1_eval_runs_get: {
+        parameters: {
+            query?: {
+                limit?: number | null;
+                cursor?: string | null;
+                workspace?: string | null;
+            };
+            header?: {
+                "X-Workspace-Id"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_EvalRunOut_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_eval_run_api_v1_eval_runs__run_id__get: {
+        parameters: {
+            query?: {
+                workspace?: string | null;
+            };
+            header?: {
+                "X-Workspace-Id"?: string | null;
+            };
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EvalRunDetailOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_suites_api_v1_agents__agent_id__eval_suites_get: {
+        parameters: {
+            query?: {
+                workspace?: string | null;
+            };
+            header?: {
+                "X-Workspace-Id"?: string | null;
+            };
+            path: {
+                agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EvalSuiteOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_suite_api_v1_agents__agent_id__eval_suites_post: {
+        parameters: {
+            query?: {
+                workspace?: string | null;
+            };
+            header?: {
+                "X-Workspace-Id"?: string | null;
+            };
+            path: {
+                agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EvalSuiteIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EvalSuiteOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_suite_api_v1_eval_suites__suite_id__get: {
+        parameters: {
+            query?: {
+                workspace?: string | null;
+            };
+            header?: {
+                "X-Workspace-Id"?: string | null;
+            };
+            path: {
+                suite_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EvalSuiteDetailOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_suite_api_v1_eval_suites__suite_id__delete: {
+        parameters: {
+            query?: {
+                workspace?: string | null;
+            };
+            header?: {
+                "X-Workspace-Id"?: string | null;
+            };
+            path: {
+                suite_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    rename_suite_api_v1_eval_suites__suite_id__patch: {
+        parameters: {
+            query?: {
+                workspace?: string | null;
+            };
+            header?: {
+                "X-Workspace-Id"?: string | null;
+            };
+            path: {
+                suite_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EvalSuiteIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EvalSuiteOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_case_api_v1_eval_suites__suite_id__cases_post: {
+        parameters: {
+            query?: {
+                workspace?: string | null;
+            };
+            header?: {
+                "X-Workspace-Id"?: string | null;
+            };
+            path: {
+                suite_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EvalCaseIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EvalCaseOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    replace_case_api_v1_eval_suites__suite_id__cases__case_id__put: {
+        parameters: {
+            query?: {
+                workspace?: string | null;
+            };
+            header?: {
+                "X-Workspace-Id"?: string | null;
+            };
+            path: {
+                suite_id: string;
+                case_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EvalCaseIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EvalCaseOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_case_api_v1_eval_suites__suite_id__cases__case_id__delete: {
+        parameters: {
+            query?: {
+                workspace?: string | null;
+            };
+            header?: {
+                "X-Workspace-Id"?: string | null;
+            };
+            path: {
+                suite_id: string;
+                case_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    freeze_baseline_api_v1_eval_suites__suite_id__baseline_put: {
+        parameters: {
+            query?: {
+                workspace?: string | null;
+            };
+            header?: {
+                "X-Workspace-Id"?: string | null;
+            };
+            path: {
+                suite_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BaselineFreezeIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BaselineOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    clear_baseline_api_v1_eval_suites__suite_id__baseline_delete: {
+        parameters: {
+            query?: {
+                workspace?: string | null;
+            };
+            header?: {
+                "X-Workspace-Id"?: string | null;
+            };
+            path: {
+                suite_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {

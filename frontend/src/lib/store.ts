@@ -5,8 +5,14 @@ import {
   LIVE_API, ApiError, createAgent, getAgentWithEtag, listAgents, listMyWorkspaces, patchAgent,
   createVersion as apiCreateVersion, publishVersion, listTokens, mintToken as apiMintToken,
   revokeToken as apiRevokeToken,
+  listSuites, getSuite, createSuite, patchSuite, deleteSuiteApi, createCase, putCase, deleteCaseApi,
+  freezeBaselineApi, clearBaselineApi, createEvalRun, getEvalRun, listAgentEvalRuns, listEvalRuns,
+  type EvalSuiteOut,
   type Advisory, type AgentOut, type AgentPatch, type DevPrincipal, type TokenMintOut, type WorkspaceMembershipOut,
 } from "./api/client";
+import {
+  evalSuiteOutToSuite, evalCaseOutToCase, caseToEvalCaseIn, evalRunOutToEvalRun,
+} from "./api/adapters";
 import { agentOutToAgent, agentToCreate, tokenOutToApiToken, draftWithEdit, inputVariablesFromSchema, providerKey, type DraftEdit } from "./api/adapters";
 import { refusalMessage } from "./api/refusals";
 import { streamInvoke, type InvokeFrame, type InvokeIn, type StreamResult } from "./api/stream";
@@ -685,8 +691,8 @@ export function setEvalPolicy(wsId: string, patch: Partial<EvalPolicy>) {
 // @backend POST /v1/versions/:vid/baseline - re-freeze the trusted baseline to the active version; this is
 //   explicit + audited (writes an audit_logs row) so quality can't erode one silent step at a time
 //   (backend/05 §4, backend/08). Admin / eval.govern. Mock: records the action via a toast.
-// TODO(backend): there is NO baseline re-freeze endpoint — the baseline is only an input field of
-//   POST /api/v1/agents/:id/eval-runs (EvalRunIn.baseline). Build the audited re-freeze (backend/05 §4), then wire.
+// Mock only. Live agents use freezeBaseline(suiteId, runId) / clearBaseline(suiteId) (026 US4: the baseline is per
+//   SUITE — PUT/DELETE /api/v1/eval-suites/:sid/baseline, admin-only + audited).
 export function reFreezeBaseline(agentId: string) {
   warnLocalOnly(agentId, "Re-freeze baseline");
   const a = state.agents.find((x) => x.id === agentId);
@@ -695,8 +701,10 @@ export function reFreezeBaseline(agentId: string) {
 }
 
 /* ---------------------------------------------------- eval suite / case authoring (eval.author) */
-// @backend POST /v1/agents/:id/eval-suites - create a suite (01 §4.5, 08 eval-suites). Mock: append in-memory.
+// @backend wired(026) POST /api/v1/agents/:id/eval-suites — live: server-owned (name unique per agent → 409). Returns
+//   "" for a live agent (the row lands asynchronously); `cases` are mock-only (the starter set).
 export function addSuite(agentId: string, name: string, cases: EvalCaseDef[] = []): string {
+  if (isLiveAgent(agentId)) { void addSuiteLive(agentId, name); return ""; }
   const id = genId("suite");
   const workspaceId = state.agents.find((a) => a.id === agentId)?.workspaceId ?? state.activeWorkspaceId;
   const suite: EvalSuite = { id, agentId, name: name.trim() || "Untitled suite", cases, workspaceId, updatedAt: nowIso() };
@@ -704,18 +712,24 @@ export function addSuite(agentId: string, name: string, cases: EvalCaseDef[] = [
   toast(`Suite "${suite.name}" created`);
   return id;
 }
-// @backend PATCH /v1/eval-suites/:sid - rename a suite.
+// @backend wired(026) PATCH /api/v1/eval-suites/:sid - rename a suite.
 export function renameSuite(suiteId: string, name: string) {
+  if (liveSuite(suiteId)) { void renameSuiteLive(suiteId, name); return; }
   set({ evalSuites: state.evalSuites.map((s) => (s.id === suiteId ? { ...s, name: name.trim() || s.name, updatedAt: nowIso() } : s)) });
 }
-// @backend DELETE /v1/eval-suites/:sid - delete a suite and its cases.
+// @backend wired(026) DELETE /api/v1/eval-suites/:sid - delete a suite and its cases. Live: a suite any run references
+//   is refused 409 `eval.suite_has_runs` (runs are evidence) — toasted with its message, the suite stays.
 export function deleteSuite(suiteId: string) {
+  if (liveSuite(suiteId)) { void deleteSuiteLive(suiteId); return; }
   set({ evalSuites: state.evalSuites.filter((s) => s.id !== suiteId) });
   toast("Suite deleted");
 }
 // @backend POST|PUT /v1/eval-suites/:sid/cases[/:cid] - create or update a case. The case object carries its
 //   own freshly-cloned assertions[]/rubric[] from the editor, so this never aliases another case's arrays.
+// @backend wired(026) live: POST /api/v1/eval-suites/:sid/cases (new) | PUT …/cases/:cid (existing). Only rubric +
+//   required_fields are sent (caseToEvalCaseIn); a PUT re-hashes the case, so it leaves the baseline comparison (D8).
 export function upsertCase(suiteId: string, c: EvalCaseDef) {
+  if (liveSuite(suiteId)) { void upsertCaseLive(suiteId, c); return; }
   set({
     evalSuites: state.evalSuites.map((s) => {
       if (s.id !== suiteId) return s;
@@ -725,8 +739,9 @@ export function upsertCase(suiteId: string, c: EvalCaseDef) {
     }),
   });
 }
-// @backend DELETE /v1/eval-suites/:sid/cases/:cid - delete a case.
+// @backend wired(026) DELETE /api/v1/eval-suites/:sid/cases/:cid - delete a case.
 export function deleteCase(suiteId: string, caseId: string) {
+  if (liveSuite(suiteId)) { void deleteCaseLive(suiteId, caseId); return; }
   set({ evalSuites: state.evalSuites.map((s) => (s.id === suiteId ? { ...s, cases: s.cases.filter((c) => c.id !== caseId), updatedAt: nowIso() } : s)) });
 }
 // @backend PUT /v1/{agents|knowledge|tools|mcp|channels|skills}/:id/access-policy - persist per-resource
@@ -1391,6 +1406,206 @@ export function addEvalRun(e: EvalRun) {
 export function resolveEvalRun(id: string, patch: Partial<EvalRun>) {
   set({ evalRuns: state.evalRuns.map((e) => (e.id === id ? { ...e, ...patch } : e)) });
 }
+/* ---------------------------------------------------- live evals (feature 026 US4) */
+/** The agent + its live workspace, or null when the agent is mock-owned. */
+function liveAgentCtx(agentId: string) {
+  const a = state.agents.find((x) => x.id === agentId);
+  const ws = state.workspaces.find((w) => w.id === a?.workspaceId);
+  return a && ws && isLiveWorkspace(ws) ? { a, ws, p: callerFor(ws) } : null;
+}
+/** A suite is live when its agent is (live suites carry server UUIDs). */
+function liveSuite(suiteId: string) {
+  const s = state.evalSuites.find((x) => x.id === suiteId);
+  return s ? liveAgentCtx(s.agentId) : null;
+}
+function replaceSuite(next: EvalSuite) {
+  const exists = state.evalSuites.some((s) => s.id === next.id);
+  set({ evalSuites: exists ? state.evalSuites.map((s) => (s.id === next.id ? next : s)) : [...state.evalSuites, next] });
+}
+async function fetchSuite(ctx: NonNullable<ReturnType<typeof liveAgentCtx>>, row: EvalSuiteOut): Promise<EvalSuite> {
+  const d = await getSuite(ctx.p, row.id);
+  return evalSuiteOutToSuite(d, d.cases, ctx.ws.id);
+}
+
+// @backend wired(026) GET /api/v1/agents/:id/eval-suites (+ GET /api/v1/eval-suites/:sid per suite for its cases) —
+//   replaces this agent's slice of `evalSuites` wholesale; each suite carries its CURRENT resolved baseline (D7).
+export function loadSuites(agentId: string, opts?: LoadOpts): Promise<void> {
+  const ctx = liveAgentCtx(agentId);
+  if (!ctx) return Promise.resolve();
+  return load(`evalSuites:${agentId}`, async () => {
+    const rows = await listSuites(ctx.p, agentId);
+    const suites = await Promise.all(rows.map((r) => fetchSuite(ctx, r)));
+    set({ evalSuites: [...state.evalSuites.filter((s) => s.agentId !== agentId), ...suites] });
+  }, opts);
+}
+
+/** Case id → input message, across the agent's loaded suites (so failing cases render their input, not a uuid). */
+function caseInputsFor(agentId: string) {
+  const m = new Map<string, string>();
+  for (const s of state.evalSuites) if (s.agentId === agentId) for (const c of s.cases) m.set(c.id, c.input);
+  return m;
+}
+/** Merge server runs into the store, newest first. Detail fields already fetched for a run are kept. */
+function mergeRuns(fresh: EvalRun[], dropWhere: (e: EvalRun) => boolean) {
+  const prev = new Map(state.evalRuns.map((e) => [e.id, e]));
+  const merged = fresh.map((e) => {
+    const old = prev.get(e.id);
+    return old?.dimensions || old?.failingCases ? { ...e, dimensions: old.dimensions, failingCases: old.failingCases } : e;
+  });
+  const freshIds = new Set(fresh.map((e) => e.id));
+  const rest = state.evalRuns.filter((e) => !freshIds.has(e.id) && !dropWhere(e));
+  set({ evalRuns: [...merged, ...rest].sort((x, y) => (x.date < y.date ? 1 : x.date > y.date ? -1 : 0)) });
+}
+
+// @backend wired(026) GET /api/v1/agents/:id/eval-runs — persisted history (newest first, keyset-paged, followed).
+export function loadEvalRuns(agentId: string, opts?: LoadOpts): Promise<void> {
+  const ctx = liveAgentCtx(agentId);
+  if (!ctx) return Promise.resolve();
+  return load(`evalRuns:${agentId}`, async () => {
+    const rows = await listAgentEvalRuns(ctx.p, agentId);
+    const inputs = caseInputsFor(agentId);
+    mergeRuns(rows.map((r) => evalRunOutToEvalRun(r, ctx.a.name, ctx.ws.id, inputs)), (e) => e.agentId === agentId);
+  }, opts);
+}
+// @backend wired(026) GET /api/v1/eval-runs — the workspace history (server post-filters to agents the caller may use).
+export function loadWorkspaceEvalRuns(opts?: LoadOpts): Promise<void> {
+  const ws = activeWorkspace();
+  if (!isLiveWorkspace(ws) || !ws) return Promise.resolve();
+  return load(`evalRuns:ws:${ws.id}`, async () => {
+    const rows = await listEvalRuns(callerFor(ws));
+    const name = (id: string) => state.agents.find((a) => a.id === id)?.name ?? id.slice(0, 8);
+    mergeRuns(rows.map((r) => evalRunOutToEvalRun(r, name(r.agent_id), ws.id)), (e) => e.workspaceId === ws.id);
+  }, opts);
+}
+/** Mount hook for the agent Evals tab: suites (with baselines) then history (so failing cases resolve inputs). */
+export function useEnsureEvals(agentId: string, enabled: boolean) {
+  useEffect(() => {
+    if (!enabled) return;
+    void loadSuites(agentId).then(() => loadEvalRuns(agentId));
+  }, [agentId, enabled]);
+}
+export function useEnsureWorkspaceEvalRuns(enabled: boolean) {
+  const wsId = useSyncExternalStore(subscribe, () => state.activeWorkspaceId, () => state.activeWorkspaceId);
+  useEffect(() => { if (enabled) void loadWorkspaceEvalRuns(); }, [enabled, wsId]);
+}
+// @backend wired(026) GET /api/v1/eval-runs/:id — the drill-down (dimensions, failing cases) the list omits.
+export async function loadEvalRunDetail(runId: string): Promise<void> {
+  const run = state.evalRuns.find((e) => e.id === runId);
+  const ctx = run ? liveAgentCtx(run.agentId) : null;
+  if (!run || !ctx || run.dimensions || run.failingCases) return;
+  try {
+    const d = await getEvalRun(ctx.p, runId);
+    const full = evalRunOutToEvalRun(d, ctx.a.name, ctx.ws.id, caseInputsFor(run.agentId));
+    set({ evalRuns: state.evalRuns.map((e) => (e.id === runId ? { ...full, dimensions: full.dimensions ?? [], failingCases: full.failingCases ?? [] } : e)) });
+  } catch (e) {
+    toastRefusal("Load eval run", e);
+  }
+}
+
+async function addSuiteLive(agentId: string, name: string) {
+  const ctx = liveAgentCtx(agentId);
+  if (!ctx) return;
+  try {
+    const row = await createSuite(ctx.p, agentId, name.trim());
+    replaceSuite(evalSuiteOutToSuite(row, [], ctx.ws.id));
+    toast(`Suite "${row.name}" created`);
+  } catch (e) { toastRefusal("Create suite", e); }
+}
+async function renameSuiteLive(suiteId: string, name: string) {
+  const ctx = liveSuite(suiteId);
+  const cur = state.evalSuites.find((s) => s.id === suiteId);
+  if (!ctx || !cur) return;
+  try {
+    const row = await patchSuite(ctx.p, suiteId, name.trim());
+    replaceSuite({ ...evalSuiteOutToSuite(row, null, ctx.ws.id), cases: cur.cases });
+    toast("Suite renamed");
+  } catch (e) { toastRefusal("Rename suite", e); }
+}
+async function deleteSuiteLive(suiteId: string) {
+  const ctx = liveSuite(suiteId);
+  if (!ctx) return;
+  try {
+    await deleteSuiteApi(ctx.p, suiteId);
+    set({ evalSuites: state.evalSuites.filter((s) => s.id !== suiteId) });
+    toast("Suite deleted");
+  } catch (e) { toastRefusal("Delete suite", e); }
+}
+/** Re-read one suite after a case write: case_count, updated_at and the resolved baseline all move server-side. */
+async function refreshSuite(suiteId: string) {
+  const ctx = liveSuite(suiteId);
+  if (!ctx) return;
+  const d = await getSuite(ctx.p, suiteId);
+  replaceSuite(evalSuiteOutToSuite(d, d.cases, ctx.ws.id));
+}
+async function upsertCaseLive(suiteId: string, c: EvalCaseDef) {
+  const ctx = liveSuite(suiteId);
+  const suite = state.evalSuites.find((s) => s.id === suiteId);
+  if (!ctx || !suite) return;
+  const exists = suite.cases.some((x) => x.id === c.id);
+  try {
+    const out = exists ? await putCase(ctx.p, suiteId, c.id, caseToEvalCaseIn(c)) : await createCase(ctx.p, suiteId, caseToEvalCaseIn(c));
+    const saved = evalCaseOutToCase(out);
+    const latest = state.evalSuites.find((s) => s.id === suiteId) ?? suite;
+    replaceSuite({ ...latest, cases: exists ? latest.cases.map((x) => (x.id === c.id ? saved : x)) : [...latest.cases, saved], updatedAt: out.updated_at });
+    toast(exists ? "Case updated" : "Case added");
+    await refreshSuite(suiteId);
+  } catch (e) { toastRefusal(exists ? "Save case" : "Add case", e); }
+}
+async function deleteCaseLive(suiteId: string, caseId: string) {
+  const ctx = liveSuite(suiteId);
+  if (!ctx) return;
+  try {
+    await deleteCaseApi(ctx.p, suiteId, caseId);
+    set({ evalSuites: state.evalSuites.map((s) => (s.id === suiteId ? { ...s, cases: s.cases.filter((x) => x.id !== caseId) } : s)) });
+    toast("Case deleted");
+    await refreshSuite(suiteId);
+  } catch (e) { toastRefusal("Delete case", e); }
+}
+
+// @backend wired(026) POST /api/v1/agents/:id/eval-runs — body is ONLY {version_id, suite_id}; the server resolves the
+//   baseline + policy (O3) and persists the run (synchronous, ≤25 cases). The agent's lifecycle/read-models are NOT
+//   touched client-side (server-owned). Resolves the stored run (or null on a refusal, which is toasted).
+export async function runEvalLive(agentId: string, versionId: string, suiteId: string): Promise<EvalRun | null> {
+  const ctx = liveAgentCtx(agentId);
+  if (!ctx) return null;
+  try {
+    const d = await createEvalRun(ctx.p, agentId, versionId, suiteId);
+    const run = evalRunOutToEvalRun(d, ctx.a.name, ctx.ws.id, caseInputsFor(agentId));
+    const full = { ...run, dimensions: run.dimensions ?? [], failingCases: run.failingCases ?? [] };
+    set({ evalRuns: [full, ...state.evalRuns.filter((e) => e.id !== full.id)] });
+    toast(run.status === "failed" ? "Eval run failed — a provider call hit its deadline (recorded)" : `Eval run recorded: ${run.verdict.replace("_", " ")}`,
+      run.status === "failed" ? "critical" : run.verdict === "pass" ? "good" : "neutral");
+    void loadSuites(agentId, { force: true });   // an automatic baseline may have moved
+    return full;
+  } catch (e) {
+    toastRefusal("Run eval", e);
+    return null;
+  }
+}
+
+// @backend wired(026) PUT /api/v1/eval-suites/:sid/baseline — admin-only (eval.govern, O2), audited. Pins the suite's
+//   baseline to a completed run of THIS suite; a server 403/400 is toasted with its message.
+export async function freezeBaseline(suiteId: string, evalRunId: string): Promise<boolean> {
+  const ctx = liveSuite(suiteId);
+  if (!ctx) return false;
+  try {
+    await freezeBaselineApi(ctx.p, suiteId, evalRunId);
+    await refreshSuite(suiteId);
+    toast("Baseline frozen (audited)");
+    return true;
+  } catch (e) { toastRefusal("Freeze baseline", e); return false; }
+}
+// @backend wired(026) DELETE /api/v1/eval-suites/:sid/baseline — back to automatic (idempotent; audited when set).
+export async function clearBaseline(suiteId: string): Promise<boolean> {
+  const ctx = liveSuite(suiteId);
+  if (!ctx) return false;
+  try {
+    await clearBaselineApi(ctx.p, suiteId);
+    await refreshSuite(suiteId);
+    toast("Baseline unfrozen — back to automatic (audited)", "neutral");
+    return true;
+  } catch (e) { toastRefusal("Clear baseline", e); return false; }
+}
 // @backend wired(026) GET /api/v1/agents/:id/tokens — the masked roster (prefix, expiry, last used). Replaces this
 //   agent's slice of `tokens` wholesale; the secret is never part of it (FR-011).
 export function loadTokens(agentId: string, opts?: LoadOpts): Promise<void> {
@@ -1587,7 +1802,7 @@ export const useTool = (name: string) => useSelector((s) => s.tools.find((t) => 
 export const useSkills = () => useSelector((s) => inWs(s.skills, s.activeWorkspaceId));
 // @backend GET /v1/skills/:id - single skill (instructions, resources, signing/provenance, access).
 export const useSkill = (id: string) => useSelector((s) => s.skills.find((sk) => sk.id === id));
-// @backend GET /v1/evals?workspace=:id - list eval runs.
+// @backend wired(026) GET /api/v1/eval-runs (live: filled by loadWorkspaceEvalRuns) - list eval runs.
 export const useEvalRuns = () => useSelector((s) => inWs(s.evalRuns, s.activeWorkspaceId));
 // @backend GET /v1/runs?workspace=:id - list observability runs (caller/tenant attributed).
 export const useRuns = () => useSelector((s) => inWs(s.runs, s.activeWorkspaceId));
@@ -1601,14 +1816,14 @@ export const useChannel = (id: string) => useSelector((s) => s.channels.find((c)
 /** Channels that route to a given agent — for the agent detail "Reachable via channels" cross-link. */
 export const useChannelsForAgent = (agentId: string) =>
   useSelector((s) => inWs(s.channels, s.activeWorkspaceId).filter((c) => c.agentIds.includes(agentId)));
-// @backend GET /v1/agents/:id/evals and /runs - per-agent lists for the detail tabs.
+// @backend wired(026) GET /api/v1/agents/:id/eval-runs (live: loadEvalRuns); GET /v1/agents/:id/runs still mock.
 /** Per-agent, store-backed so new eval/run mutations show on the agent detail tabs. Filtered by
    agentId only — an agentId already pins the rows to that agent's single workspace, and useAgent
    itself is not workspace-scoped, so adding an activeWorkspaceId filter here would wrongly empty the
    tabs when the active workspace is switched while viewing an agent from another one. */
 export const useEvalRunsForAgent = (agentId: string) => useSelector((s) => s.evalRuns.filter((e) => e.agentId === agentId));
 export const useRunsForAgent = (agentId: string) => useSelector((s) => s.runs.filter((r) => r.agentId === agentId));
-// @backend GET /v1/agents/:id/eval-suites - authored eval suites + cases for this agent (eval.author to edit).
+// @backend wired(026) GET /api/v1/agents/:id/eval-suites (live: loadSuites) - authored suites + cases (eval.author to edit).
 export const useSuitesForAgent = (agentId: string) => useSelector((s) => s.evalSuites.filter((x) => x.agentId === agentId));
 // @backend GET /v1/agents/:id/tokens - list endpoint tokens (prefixes only, never the secret).
 export const useTokens = () => useSelector((s) => s.tokens);

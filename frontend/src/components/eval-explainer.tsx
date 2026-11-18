@@ -15,7 +15,7 @@ import { Button, Progress } from "@/components/ui";
 import { GateButton } from "@/components/gate";
 import { Dialog, ConfirmDialog } from "@/components/dialog";
 import { Term } from "@/components/term";
-import { addEvalRun, addSuite, computeVerdict, updateAgent, useEvalPolicyFor, useEvalRunsForAgent, genId, nowIso, toast } from "@/lib/store";
+import { addEvalRun, addSuite, computeVerdict, updateAgent, useEvalPolicyFor, useEvalRunsForAgent, genId, nowIso, toast, isLiveAgent } from "@/lib/store";
 import { usePrincipal } from "@/lib/auth";
 import { canManage } from "@/lib/access-policy";
 import { newRubric, type Agent, type EvalCaseDef, type EvalDimension, type EvalPolicy, type EvalRun, type Verdict } from "@/lib/data";
@@ -72,6 +72,11 @@ const STARTER_INPUTS = [
     edit/expand it. The verdict is computed against the workspace EvalPolicy — NOT hardcoded "pass" — so a
     stricter policy (higher minCases / qualityThreshold) correctly leaves the agent gated. */
 export function generateStarterEval(agent: Agent, policy: EvalPolicy) {
+  // Live (026 US4): runs are server evidence — never fabricate one client-side. A server-side starter set is not built.
+  if (isLiveAgent(agent.id)) {
+    toast("Starter eval sets are not available yet for live agents — add a suite and cases under Evals, then run it.", "neutral");
+    return;
+  }
   const cases: EvalCaseDef[] = STARTER_INPUTS.map((input) => ({
     id: genId("case"),
     input,
@@ -170,14 +175,14 @@ function Stat({ label, value, tone }: { label: string; value: React.ReactNode; t
 }
 
 function DimensionRow({ d }: { d: EvalDimension }) {
-  const delta = Math.round((d.score - d.baseline) * 10) / 10;
-  const regressed = delta < 0;
+  const delta = d.baseline === null ? null : Math.round((d.score - d.baseline) * 10) / 10;
+  const regressed = delta !== null && delta < 0;
   return (
     <div className="flex items-center gap-3 text-xs">
       <span className="w-28 shrink-0 truncate text-ink-2" title={d.name}>{d.name}</span>
       <Progress value={d.score} tone={regressed ? "critical" : "good"} className="flex-1" />
-      <span className="w-20 shrink-0 text-right tnum text-muted">{d.score}<span className="text-muted/70"> / {d.baseline}</span></span>
-      <span className={`w-12 shrink-0 text-right tnum ${regressed ? "text-critical" : "text-good"}`}>{delta > 0 ? "+" : ""}{delta}</span>
+      <span className="w-20 shrink-0 text-right tnum text-muted">{d.score}<span className="text-muted/70"> / {d.baseline ?? "—"}</span></span>
+      <span className={`w-12 shrink-0 text-right tnum ${regressed ? "text-critical" : "text-good"}`}>{delta === null ? "—" : `${delta > 0 ? "+" : ""}${delta}`}</span>
     </div>
   );
 }
@@ -219,7 +224,7 @@ export function EvalFailureSummary({ agent, onRunEval }: { agent: Agent; onRunEv
 
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
         <Stat label="Trigger" value={run.trigger} />
-        <Stat label="Quality" value={`${run.quality.toFixed(1)} (${fmtDelta(run.qualityDelta, "pts")})`} tone={run.qualityDelta < 0 ? "bad" : "good"} />
+        <Stat label="Quality" value={run.scored === false ? "—" : `${run.quality.toFixed(1)} (${fmtDelta(run.qualityDelta, "pts")})`} tone={run.qualityDelta < 0 ? "bad" : "good"} />
         <Stat label="Cost" value={fmtDelta(run.costDelta, "%")} tone={run.costDelta > 0 ? "bad" : "good"} />
         <Stat label="Latency" value={fmtDelta(run.latencyDelta, "ms")} tone={run.latencyDelta > 0 ? "bad" : "good"} />
       </div>

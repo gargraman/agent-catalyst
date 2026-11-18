@@ -887,17 +887,38 @@ export const TOOLS_REPO: RepoTool[] = [
 ];
 
 /* ------------------------------------------------------------------- Evals */
-export type EvalDimension = { name: string; score: number; baseline: number };
+export type EvalDimension = { name: string; score: number; baseline: number | null };  // null = no baseline score (live)
 export type EvalCase = { input: string; issue: string };
 export type EvalRun = {
   id: string; agentId: string; agent: string; version: string; baseline: string;
   quality: number; qualityDelta: number; costDelta: number; latencyDelta: number;
   cases: number; verdict: Verdict; date: string; trigger: string;
   workspaceId?: string;
+  // Live (026 US4): false when the judge produced no quality score (judge unavailable / failed run) — render "—",
+  // never the 0 placeholder in `quality`. Absent = scored (mock seeds).
+  scored?: boolean;
   // Why the run landed where it did, and (for failures) the drill-down detail.
   reason?: string;
   dimensions?: EvalDimension[];
   failingCases?: EvalCase[];
+  // ---- live-only (feature 026 US4) — server-owned evidence; absent on mock rows ----
+  /** Where the baseline came from (D7). `baseline` above stays the display label ("v1" / "none"). */
+  baselineRef?: EvalRunBaseline | null;
+  status?: "completed" | "failed";      // failed = a provider deadline hit mid-run (no verdict drawn)
+  reasonCode?: string;
+  suiteId?: string;
+  suiteName?: string;
+  versionId?: string;
+  comparedCases?: number;               // cases present in BOTH this run and the baseline (D8)
+  newCases?: number;
+  droppedCases?: number;
+  createdBy?: string;
+};
+export type EvalRunBaseline = { origin: "automatic" | "frozen"; evalRunId: string; versionLabel: string | null };
+/** A suite's CURRENT resolved baseline (GET eval-suites) — frozen pointer, else the active version's newest run. */
+export type SuiteBaseline = {
+  origin: "automatic" | "frozen" | "none";
+  evalRunId: string | null; versionId: string | null; frozenBy: string | null; frozenAt: string | null;
 };
 export const EVAL_RUNS: EvalRun[] = [
   { id: "ev-4821", agentId: "triage-copilot", agent: "SOC Triage Copilot", version: "v7", baseline: "v6", quality: 96.2, qualityDelta: 1.4, costDelta: -3.1, latencyDelta: -40, cases: 64, verdict: "pass", date: "2026-10-03T16:18:00Z", trigger: "Prompt edit", reason: "All dimensions at or above baseline; the prompt edit improved quality with no regressions." },
@@ -974,6 +995,10 @@ export type EvalCaseDef = {
   assertions: Assertion[];
   rubric: RubricDimension[];
   expected?: string;              // optional reference answer for the pairwise judge
+  contentHash?: string;           // live: server hash of input+rubric+required_fields+expected (D8 case identity)
+  // live: the server's ORIGINAL non-string values behind the string fields above (message / vars / expected), so an
+  // unedited field round-trips exactly (same content_hash, same deterministic check) — see adapters.caseToEvalCaseIn.
+  raw?: { message?: unknown; vars?: Record<string, unknown>; expected?: unknown };
 };
 export type EvalSuite = {
   id: string;
@@ -982,6 +1007,7 @@ export type EvalSuite = {
   cases: EvalCaseDef[];
   workspaceId?: string;
   updatedAt: string;
+  baseline?: SuiteBaseline | null;  // live only
 };
 
 export const DEFAULT_RUBRIC: RubricDimension[] = [

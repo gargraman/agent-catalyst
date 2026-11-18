@@ -13,7 +13,13 @@ import { Segmented } from "@/components/tabs";
 import { StatTile } from "@/components/stat-tile";
 import { BarChart, Donut } from "@/components/charts";
 import { getVersions, evalStats, verdictTone, verdictLabel, type Agent } from "@/lib/data";
-import { useEvalRuns, useAgents, useSuitesForAgent, addEvalRun, simulateEvalRun, useEvalPolicy } from "@/lib/store";
+import {
+  useEvalRuns, useAgents, useSuitesForAgent, addEvalRun, simulateEvalRun, useEvalPolicy, useIsLiveWorkspace,
+  useEnsureWorkspaceEvalRuns, useRemoteStatus, loadWorkspaceEvalRuns,
+} from "@/lib/store";
+import { LiveStatus } from "@/components/live-status";
+import { LiveRunEvalDialog } from "@/components/eval-run-live";
+import { baselineProvenance } from "@/lib/api/adapters";
 import { useWorkspace } from "@/lib/auth";
 import { pct, relative } from "@/lib/format";
 
@@ -35,12 +41,17 @@ function versionLabelsFor(a: Agent): string[] {
 
 
 /* @backend integration points (this page):
- *  - @backend GET /v1/evals - eval run history [via useEvalRuns]
- *  - @backend POST /v1/agents/:id/evals - run eval, async job [via addEvalRun]
- *  - @backend NOTE runEval() result values (quality/deltas/cases) are Math.random mock -> become the async job result
+ *  - @backend wired(026) GET /api/v1/eval-runs - workspace eval history [via useEnsureWorkspaceEvalRuns → useEvalRuns]
+ *  - @backend wired(026) POST /api/v1/agents/:id/eval-runs - {version_id, suite_id} only [via LiveRunEvalDialog → runEvalLive]
+ *  - @backend NOTE mock mode: runEval() result values (quality/deltas/cases) are Math.random (simulateEvalRun)
+ *  - @backend NOTE the stat tiles + "pass rate by agent" read seed/agent read-models (evalStats) — no rollup endpoint yet
  * See src/lib/store.ts markers + docs/backend-integration-map.md for the authoritative contracts.
  */
 export default function EvaluationsPage() {
+  const live = useIsLiveWorkspace();
+  useEnsureWorkspaceEvalRuns(live);
+  const { workspace: ws } = useWorkspace();
+  const remote = useRemoteStatus(`evalRuns:ws:${ws?.id ?? ""}`);
   const evalRuns = useEvalRuns();
   const agents = useAgents();
   const { workspace } = useWorkspace();
@@ -84,10 +95,10 @@ export default function EvaluationsPage() {
     setOpen(false);
   }
 
-  const total = evalRuns.length;
   const passes = evalRuns.filter((e) => e.verdict === "pass").length;
   const drift = evalRuns.filter((e) => e.verdict !== "pass").length;
-  const avgQuality = evalRuns.reduce((s, e) => s + e.quality, 0) / (total || 1);
+  const scoredRuns = evalRuns.filter((e) => e.scored !== false);
+  const avgQuality = scoredRuns.reduce((s, e) => s + e.quality, 0) / (scoredRuns.length || 1);
 
   const rows = evalRuns.filter((e) => filter === "all" || e.verdict === filter);
 
@@ -109,6 +120,8 @@ export default function EvaluationsPage() {
         </div>
         <GateButton permission="eval.run" variant="primary" onClick={() => { setThreshold(String(policy.qualityThreshold)); setOpen(true); }}><Play className="size-4" /> New eval run</GateButton>
       </div>
+
+      {live && <LiveStatus live status={remote} label="eval runs" onRetry={() => void loadWorkspaceEvalRuns({ force: true })} note="stat tiles are illustrative" />}
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <StatTile label="Eval runs (30d)" value={stats.runs30d} delta={stats.runs30dDelta} deltaGood hint="across agents" icon={<FlaskConical className="size-4" />} spark={stats.runs30dSpark} />
@@ -151,10 +164,11 @@ export default function EvaluationsPage() {
                     <TD>
                       <Link href={`/agents/${e.agentId}`} className="font-medium text-ink hover:text-accent">{e.agent}</Link>
                       <div className="font-mono text-xs text-muted">{e.version} vs {e.baseline}</div>
+                      {e.baselineRef !== undefined && <div className="font-mono text-[11px] text-muted">{baselineProvenance(e)}</div>}
                     </TD>
                     <TD className="text-ink-2">{e.trigger}</TD>
                     <TD className="text-right">
-                      <span className="tnum font-medium text-ink">{pct(e.quality)}</span>
+                      <span className="tnum font-medium text-ink">{e.scored === false ? "—" : pct(e.quality)}</span>
                       {e.qualityDelta !== 0 && (
                         <span className={`ml-1.5 text-xs tnum ${e.qualityDelta > 0 ? "text-good" : "text-critical"}`}>
                           {e.qualityDelta > 0 ? "+" : ""}{e.qualityDelta}
@@ -163,8 +177,10 @@ export default function EvaluationsPage() {
                     </TD>
                     <TD className={`text-right text-xs tnum ${e.costDelta <= 0 ? "text-good" : "text-critical"}`}>{e.costDelta > 0 ? "+" : ""}{e.costDelta}%</TD>
                     <TD className={`text-right text-xs tnum ${e.latencyDelta <= 0 ? "text-good" : "text-critical"}`}>{e.latencyDelta > 0 ? "+" : ""}{e.latencyDelta}ms</TD>
-                    <TD>{e.cases < 10 ? <Badge tone="warning">{e.cases} · low set</Badge> : <span className="tnum text-ink-2">{e.cases}</span>}</TD>
-                    <TD><Badge tone={verdictTone[e.verdict]}>{verdictLabel[e.verdict]}</Badge></TD>
+                    <TD>{e.baselineRef !== undefined
+                      ? <span className="tnum text-xs text-ink-2">{e.baselineRef ? `${e.comparedCases ?? 0} of ${e.cases}` : e.cases}</span>
+                      : e.cases < 10 ? <Badge tone="warning">{e.cases} · low set</Badge> : <span className="tnum text-ink-2">{e.cases}</span>}</TD>
+                    <TD>{e.status === "failed" ? <Badge tone="critical">Failed</Badge> : <Badge tone={verdictTone[e.verdict]}>{verdictLabel[e.verdict]}</Badge>}</TD>
                     <TD className="whitespace-nowrap text-xs text-muted">{relative(e.date)}</TD>
                   </TR>
                 ))}
@@ -190,8 +206,9 @@ export default function EvaluationsPage() {
         </CardContent>
       </Card>
 
+      {live && open && <LiveRunEvalDialog agents={activeAgents} open onClose={() => setOpen(false)} />}
       <Dialog
-        open={open}
+        open={open && !live}
         onClose={() => setOpen(false)}
         title="New eval run"
         description="Score a candidate version against a frozen baseline."

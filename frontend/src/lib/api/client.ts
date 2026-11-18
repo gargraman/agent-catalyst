@@ -23,6 +23,14 @@ export type TokenOut = components["schemas"]["TokenOut"];
 export type TokenMintIn = components["schemas"]["TokenMintIn"];
 export type TokenMintOut = components["schemas"]["TokenMintOut"];
 type PageAgentOut = components["schemas"]["Page_AgentOut_"];
+export type EvalSuiteOut = components["schemas"]["EvalSuiteOut"];
+export type EvalSuiteDetailOut = components["schemas"]["EvalSuiteDetailOut"];
+export type EvalCaseIn = components["schemas"]["EvalCaseIn"];
+export type EvalCaseOut = components["schemas"]["EvalCaseOut"];
+export type BaselineOut = components["schemas"]["BaselineOut"];
+export type EvalRunOut = components["schemas"]["EvalRunOut"];
+export type EvalRunDetailOut = components["schemas"]["EvalRunDetailOut"];
+type PageEvalRunOut = components["schemas"]["Page_EvalRunOut_"];
 
 /** Live mode: when "live", the store's wired families read/write the real backend; otherwise the console is
  *  pure mock (seed fixtures) exactly as before. Inlined at build time (NEXT_PUBLIC_*), so it is a build switch. */
@@ -232,3 +240,60 @@ export async function mintToken(principal: DevPrincipal, agentId: string, body: 
 export async function revokeToken(principal: DevPrincipal, tokenId: string): Promise<void> {
   await apiFetch(`/api/v1/tokens/${encodeURIComponent(tokenId)}`, principal, { method: "DELETE" });
 }
+
+/* ---- eval suites / cases / baseline / runs (feature 026 US4, contracts §C–§E) ---- */
+const enc = encodeURIComponent;
+async function json<T>(p: Promise<Response>): Promise<T> {
+  const res = await p;
+  return (res.status === 204 ? null : await res.json()) as T;
+}
+
+export const listSuites = (principal: DevPrincipal, agentId: string) =>
+  json<EvalSuiteOut[]>(apiFetch(`/api/v1/agents/${enc(agentId)}/eval-suites`, principal));
+export const createSuite = (principal: DevPrincipal, agentId: string, name: string) =>
+  json<EvalSuiteOut>(apiFetch(`/api/v1/agents/${enc(agentId)}/eval-suites`, principal, { method: "POST", body: JSON.stringify({ name }) }));
+export const getSuite = (principal: DevPrincipal, suiteId: string) =>
+  json<EvalSuiteDetailOut>(apiFetch(`/api/v1/eval-suites/${enc(suiteId)}`, principal));
+export const patchSuite = (principal: DevPrincipal, suiteId: string, name: string) =>
+  json<EvalSuiteOut>(apiFetch(`/api/v1/eval-suites/${enc(suiteId)}`, principal, { method: "PATCH", body: JSON.stringify({ name }) }));
+/** 409 `eval.suite_has_runs` once a run references the suite (runs are evidence, never cascaded away). */
+export const deleteSuiteApi = (principal: DevPrincipal, suiteId: string) =>
+  json<null>(apiFetch(`/api/v1/eval-suites/${enc(suiteId)}`, principal, { method: "DELETE" }));
+export const createCase = (principal: DevPrincipal, suiteId: string, body: EvalCaseIn) =>
+  json<EvalCaseOut>(apiFetch(`/api/v1/eval-suites/${enc(suiteId)}/cases`, principal, { method: "POST", body: JSON.stringify(body) }));
+export const putCase = (principal: DevPrincipal, suiteId: string, caseId: string, body: EvalCaseIn) =>
+  json<EvalCaseOut>(apiFetch(`/api/v1/eval-suites/${enc(suiteId)}/cases/${enc(caseId)}`, principal, { method: "PUT", body: JSON.stringify(body) }));
+export const deleteCaseApi = (principal: DevPrincipal, suiteId: string, caseId: string) =>
+  json<null>(apiFetch(`/api/v1/eval-suites/${enc(suiteId)}/cases/${enc(caseId)}`, principal, { method: "DELETE" }));
+/** Admin-only (eval.govern, O2): pin the suite's baseline to a completed run of THIS suite. Audited. */
+export const freezeBaselineApi = (principal: DevPrincipal, suiteId: string, evalRunId: string) =>
+  json<BaselineOut>(apiFetch(`/api/v1/eval-suites/${enc(suiteId)}/baseline`, principal, { method: "PUT", body: JSON.stringify({ eval_run_id: evalRunId }) }));
+export const clearBaselineApi = (principal: DevPrincipal, suiteId: string) =>
+  json<null>(apiFetch(`/api/v1/eval-suites/${enc(suiteId)}/baseline`, principal, { method: "DELETE" }));
+
+/** Run a suite against a version (synchronous, ≤25 cases). The body is ONLY `{version_id, suite_id}` — the server
+ *  resolves the baseline + policy itself (O3); a deadline-hit run returns 201 with `status: "failed"`. */
+export const createEvalRun = (principal: DevPrincipal, agentId: string, versionId: string, suiteId: string) =>
+  json<EvalRunDetailOut>(apiFetch(`/api/v1/agents/${enc(agentId)}/eval-runs`, principal, {
+    method: "POST", body: JSON.stringify({ version_id: versionId, suite_id: suiteId }),
+  }));
+export const getEvalRun = (principal: DevPrincipal, runId: string) =>
+  json<EvalRunDetailOut>(apiFetch(`/api/v1/eval-runs/${enc(runId)}`, principal));
+
+async function allPages(path: string, principal: DevPrincipal): Promise<EvalRunOut[]> {
+  const items: EvalRunOut[] = [];
+  let cursor: string | null | undefined;
+  for (let i = 0; i < MAX_PAGES; i++) {
+    const sep = path.includes("?") ? "&" : "?";
+    const page = await json<PageEvalRunOut>(apiFetch(cursor ? `${path}${sep}cursor=${enc(cursor)}` : path, principal));
+    items.push(...page.items);
+    cursor = page.next_cursor;
+    if (!cursor) return items;
+  }
+  throw new ApiError(0, "client.pagination", `eval-run list exceeded ${MAX_PAGES} pages`, path);
+}
+/** One agent's eval history, newest first (keyset-paged server-side; followed to the end here). */
+export const listAgentEvalRuns = (principal: DevPrincipal, agentId: string) =>
+  allPages(`/api/v1/agents/${enc(agentId)}/eval-runs`, principal);
+/** Workspace eval history — only agents the caller may use (server post-filters). */
+export const listEvalRuns = (principal: DevPrincipal) => allPages("/api/v1/eval-runs", principal);

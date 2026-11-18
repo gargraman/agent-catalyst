@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "gen:api": "openapi-typescript ./openapi.json -o ./src/lib/api/schema.ts"
+    "gen:api": "openapi-typescript ./openapi.json -o ./src/lib/api/schema.ts",
+    "test": "node --test tests/*.test.mjs"
   },
   "dependencies": {
     "lucide-react": "^1.52.0",
