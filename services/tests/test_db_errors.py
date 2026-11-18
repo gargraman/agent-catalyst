@@ -84,3 +84,17 @@ def test_mapped_message_never_echoes_db_text() -> None:
 def test_non_integrity_shape_without_orig_is_none() -> None:
     from api.db_errors import map_integrity_error
     assert map_integrity_error(IntegrityError("stmt", {}, Exception("no sqlstate"))) is None
+
+
+# ---- code review 2026-11-18 #7: only the suite-name UNIQUE is a name conflict ----------------------------------
+
+def test_eval_suite_name_unique_maps_to_conflict_409() -> None:
+    from api.db_errors import map_integrity_error
+    from api.errors import ConflictError
+    err = map_integrity_error(_exc("23505", "uq_eval_suites_agent_name", "duplicate key value"))
+    assert isinstance(err, ConflictError) and err.http_status == 409 and err.detail == {"field": "name"}
+
+
+def test_eval_suite_agent_fk_is_not_a_name_conflict() -> None:
+    from api.db_errors import map_integrity_error
+    assert map_integrity_error(_exc("23503", "fk_eval_suites_agent", "violates foreign key constraint")) is None

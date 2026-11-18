@@ -17,7 +17,7 @@ from sqlalchemy import func, select
 from api.db import tenant_session
 from api.models import Run
 from tests._api_helpers import (
-    client, dev_headers, seed_agent, seed_kb, seed_member, seed_version,
+    client, dev_headers, eval_run_body, seed_agent, seed_kb, seed_member, seed_version,
 )
 
 pytestmark = pytest.mark.integration
@@ -93,13 +93,7 @@ async def test_eval_run_denied_fail_closed_no_run_written():
     ws = await seed_workspace_with_members()
     aid = await seed_agent(ws, name="Restricted Eval", access_policy=RESTRICTED)
     vid = await seed_version(ws, aid)
-    body = {
-        "version_id": vid,
-        "cases": [{"id": "c1", "input": "hi", "rubric": [{"name": "quality", "weight": 1.0}]}],
-        "baseline": {"quality": 0.9, "cost_usd": 0.001, "latency_ms": 100, "per_case": {}},
-        "policy": {"min_cases": 1, "quality_threshold": 0.5, "efficiency_budget_pct": 50,
-                   "allow_low_confidence_override": False},
-    }
+    body = await eval_run_body(ws, aid, vid, 1)       # 026 T050: server-side suite
     async with client() as c:
         out = dev_headers(workspace=ws, subject="outsider", claims={ws: "builder"})
         r = await c.post(f"/api/v1/agents/{aid}/eval-runs", headers=out, json=body)

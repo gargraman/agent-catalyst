@@ -15,7 +15,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from api.errors import AppError, InputInvalid, NotFound, VersionFrozen
+from api.errors import AppError, ConflictError, InputInvalid, NotFound, VersionFrozen
 
 # 23503 on these ⇒ the referenced catalog row does not exist in this workspace (deleted, foreign, or never existed).
 _REFERENCE_FKS = frozenset({
@@ -40,6 +40,8 @@ def _parts(exc: BaseException) -> tuple[str | None, str | None, str]:
 
 def map_integrity_error(exc: BaseException) -> AppError | None:
     sqlstate, constraint, message = _parts(exc)
+    if sqlstate == "23505" and constraint == "uq_eval_suites_agent_name":     # 026 US4 (review #7)
+        return ConflictError("an eval suite with this name already exists for this agent", detail={"field": "name"})
     if sqlstate == "23503":
         if constraint in _REFERENCE_FKS:
             return NotFound("a referenced skill, tool, or knowledge base does not exist in this workspace")
@@ -53,6 +55,8 @@ def map_integrity_error(exc: BaseException) -> AppError | None:
             return InputInvalid("a tool binding must name exactly one target for its kind")
         if "chunk_dim_mismatch:" in message:
             return InputInvalid("embedding dimension does not match the knowledge base's declared dimension")
+        if "eval_baselines_run_check:" in message:          # 026 US4: race past the freeze route's pre-check
+            return InputInvalid("the baseline must be a completed eval run of this suite")
     return None
 
 

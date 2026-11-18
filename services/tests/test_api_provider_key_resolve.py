@@ -21,7 +21,7 @@ from api.secrets import build_secrets_provider
 from api.settings import get_settings
 from runtime.providers import gateway
 from tests._api_helpers import (
-    client, dev_headers, seed_agent, seed_provider_key, seed_version, seed_workspace,
+    client, dev_headers, eval_run_body, seed_agent, seed_provider_key, seed_version, seed_workspace,
 )
 from tests._evals_helpers import VALID_OUTPUT, make_routed_gateway
 from tests._invoke_helpers import stop_ev, text_ev, usage_ev
@@ -76,17 +76,12 @@ async def test_eval_run_uses_stored_provider_key(monkeypatch):
     ws = await seed_workspace()
     aid = await seed_agent(ws)
     vid = await seed_version(ws, aid)
-    cases = [{"id": f"c{i}", "input": "an XDR alert fired",
-              "rubric": [{"name": "accuracy", "weight": 1.0}]} for i in range(3)]
-    baseline = {"quality": 90.0, "cost_usd": 0.003, "latency_ms": 100,
-                "per_case": {f"c{i}": json.dumps(VALID_OUTPUT) for i in range(3)}}
-    body = {"version_id": vid, "cases": cases, "baseline": baseline,
-            "policy": {"min_cases": 3, "quality_threshold": 10.0, "efficiency_budget_pct": 10.0}}
+    body = await eval_run_body(ws, aid, vid, 3)       # 026 T050: server-side suite
     async with client() as c:
         await _capture_key(c, ws, "openai", "k", "sk-EVAL-STORED-5678")
         r = await c.post(f"/api/v1/agents/{aid}/eval-runs",
                          headers=dev_headers(workspace=ws, claims={ws: "publisher"}), json=body)
-        assert r.status_code == 200, r.text
+        assert r.status_code == 201, r.text
     assert captured and all(k == "sk-EVAL-STORED-5678" for k in captured)
 
 

@@ -7,7 +7,7 @@ import json
 import pytest
 
 from runtime.providers import gateway
-from tests._api_helpers import client, dev_headers, seed_agent, seed_version, seed_workspace
+from tests._api_helpers import client, dev_headers, eval_run_body, seed_agent, seed_version, seed_workspace
 from tests._evals_helpers import VALID_OUTPUT, make_routed_gateway
 
 pytestmark = pytest.mark.integration
@@ -20,13 +20,9 @@ async def _seed():
     return ws, aid, vid
 
 
-def _eval_body(vid: str, n: int = 3) -> dict:
-    cases = [{"id": f"c{i}", "input": "an XDR alert fired",
-              "rubric": [{"name": "accuracy", "weight": 1.0}]} for i in range(n)]
-    baseline = {"quality": 90.0, "cost_usd": 0.003, "latency_ms": 100,
-                "per_case": {f"c{i}": json.dumps(VALID_OUTPUT) for i in range(n)}}
-    return {"version_id": vid, "cases": cases, "baseline": baseline,
-            "policy": {"min_cases": 3, "quality_threshold": 10.0, "efficiency_budget_pct": 10.0}}
+async def _eval_body(ws: str, aid: str, vid: str, n: int = 3) -> dict:
+    """026 T050: the suite lives on the server now; the body is only {version_id, suite_id}."""
+    return await eval_run_body(ws, aid, vid, n)
 
 
 async def test_eval_run_executes_engine_and_returns_verdict(monkeypatch):
@@ -36,8 +32,8 @@ async def test_eval_run_executes_engine_and_returns_verdict(monkeypatch):
     ws, aid, vid = await _seed()
     async with client() as c:
         r = await c.post(f"/api/v1/agents/{aid}/eval-runs",
-                         headers=dev_headers(workspace=ws, claims={ws: "publisher"}), json=_eval_body(vid))
-    assert r.status_code == 200
+                         headers=dev_headers(workspace=ws, claims={ws: "publisher"}), json=await _eval_body(ws, aid, vid))
+    assert r.status_code == 201
     body = r.json()
     assert body["verdict"] in ("pass", "fail", "low_confidence")
     assert "quality" in body and "dimensions" in body and "pairwise_rate" in body
@@ -54,8 +50,8 @@ async def test_eval_persists_only_candidate_runs_not_judge(monkeypatch):
     ws, aid, vid = await _seed()
     async with client() as c:
         r = await c.post(f"/api/v1/agents/{aid}/eval-runs",
-                         headers=dev_headers(workspace=ws, claims={ws: "publisher"}), json=_eval_body(vid, n=3))
-    assert r.status_code == 200
+                         headers=dev_headers(workspace=ws, claims={ws: "publisher"}), json=await _eval_body(ws, aid, vid, n=3))
+    assert r.status_code == 201
     async with tenant_session(ws) as s:
         rows = list((await s.execute(select(Run))).scalars().all())
     assert len(rows) == 3                                   # 3 candidate runs, judge runs NOT recorded

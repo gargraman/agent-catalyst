@@ -130,6 +130,11 @@ class VersionFrozen(ConflictError):
     code = "version.frozen"
 
 
+class EvalSuiteHasRuns(ConflictError):
+    """026 US4: a suite with eval runs is evidence (runs FK it RESTRICT) — it cannot be deleted."""
+    code = "eval.suite_has_runs"
+
+
 class DocumentProcessing(ConflictError):
     """At most one active ingestion job per document (analyze H3; enforced by a partial unique index)."""
     code = "document.processing"

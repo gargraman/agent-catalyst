@@ -74,7 +74,9 @@ def _build_judge_prompt(case: EvalCase, baseline_out: str, candidate_out: str, o
     outs = {"baseline": baseline_out, "candidate": candidate_out}
     dims = ", ".join(d.name for d in case.rubric) or "overall quality"
     blocks = "\n\n".join(f"--- {label} response ---\n{outs[label]}" for label in order)
-    return (f"Task:\n{case.input}\n\nRubric dimensions to score (1-5): {dims}\n\n{blocks}\n\n"
+    # 026 US4: server-authored cases carry structured inputs ({"message": …, vars…}) — render canonically.
+    task = json.dumps(case.input, sort_keys=True, ensure_ascii=False) if isinstance(case.input, dict) else case.input
+    return (f"Task:\n{task}\n\nRubric dimensions to score (1-5): {dims}\n\n{blocks}\n\n"
             "Return ONLY the strict JSON described in your instructions.")
 
 

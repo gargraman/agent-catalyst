@@ -13,9 +13,9 @@ import pytest
 from sqlalchemy import select
 
 from api.db import tenant_session
-from api.models import Run
+from api.models import EvalRun, Run
 from runtime.providers import gateway
-from tests._api_helpers import client, dev_headers, parse_sse, seed_api_token, seed_workspace
+from tests._api_helpers import client, dev_headers, parse_sse, seed_api_token, seed_eval_suite, seed_workspace
 from tests._invoke_helpers import stop_ev, text_ev, usage_ev
 
 pytestmark = pytest.mark.integration
@@ -75,6 +75,24 @@ async def test_archived_agent_console_invoke_refuses_every_target(monkeypatch, t
                          json={"inputs": INPUTS, "target": target})
     assert r.status_code == 409 and r.json()["error"]["code"] == "agent.archived"
     assert calls["n"] == 0
+
+
+async def test_archived_agent_eval_run_is_409_with_no_eval_run_row(monkeypatch):
+    """026 T051: the new {version_id, suite_id} eval body on an archived agent → 409 agent.archived, before any case
+    runs (no provider call, no runs row, no eval_runs row)."""
+    stream, calls = _counting_gateway()
+    monkeypatch.setattr(gateway, "stream", stream)
+    ws = await seed_workspace()
+    async with client() as c:
+        a, _, _ = await _archived_agent_with_token(c, ws)
+        sid = await seed_eval_suite(ws, a["id"], 2)
+        r = await c.post(f"/api/v1/agents/{a['id']}/eval-runs", headers=dev_headers(workspace=ws, claims={ws: "publisher"}),
+                         json={"version_id": a["active_version_id"], "suite_id": sid})
+    assert r.status_code == 409, r.text
+    assert r.json()["error"]["code"] == "agent.archived"
+    assert calls["n"] == 0 and await _run_count(ws, a["id"]) == 0
+    async with tenant_session(ws) as s:
+        assert (await s.execute(select(EvalRun.id))).first() is None
 
 
 async def test_archived_agent_published_invoke_is_404_not_found(monkeypatch):

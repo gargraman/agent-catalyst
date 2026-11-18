@@ -51,6 +51,7 @@ async def run_eval(
     workspace_id: str,
     breaker: CircuitBreaker | None = None,
     rng=None,
+    stop_on_timeout: bool = False,
 ) -> EvalRunResult:
     # Tenancy (P5/FR-023) — fail closed BEFORE any provider call.
     _assert_one_workspace(cases, baseline, candidate_snapshot, workspace_id)
@@ -68,6 +69,9 @@ async def run_eval(
     for case in cases:
         async with guard.case_slot(mc["provider"], mc["model"]):
             case_scores.append(await _score_case(case, candidate_snapshot, baseline, eval_ctx, breaker, rng))
+        # 026 US4 (E6): a provider deadline makes the whole run unusable evidence — stop spending on the rest.
+        if stop_on_timeout and case_scores[-1].outcome == "timeout":
+            break
 
     # ---- aggregate -------------------------------------------------------------------------------
     n = len(case_scores)
@@ -131,20 +135,29 @@ async def run_eval(
         pairwise_rate=pairwise_rate,
         workspace_id=workspace_id,
         judge_version=JUDGE_VERSION,
+        case_scores=tuple(case_scores),
     )
 
 
 async def _score_case(case: EvalCase, candidate_snapshot, baseline: BaselineAggregate, eval_ctx,
                       breaker: CircuitBreaker, rng) -> CaseScore:
     # 1) Candidate output via the SAME runtime (P6). allow_cache=off ≡ eval source (see above).
-    cand = await invoke_result(candidate_snapshot, {"message": case.input}, eval_ctx)
+    # 026 US4: a server-authored case input is already the inputs mapping; a legacy string is the message.
+    inputs = case.input if isinstance(case.input, dict) else {"message": case.input}
+    cand = await invoke_result(candidate_snapshot, inputs, eval_ctx)
     cand_cost = cand.run.cost_usd if cand.run is not None else None
     cand_latency = cand.run.latency_ms if cand.run is not None else None
+    evidence = dict(
+        candidate_output=cand.text or "",
+        run_id=cand.run.run_id if cand.run is not None else None,
+        outcome=(getattr(cand.run.outcome, "value", cand.run.outcome) if cand.run is not None else None),
+        cost_is_estimate=bool(getattr(cand.run, "cost_is_estimate", False)),
+    )
 
     # 2) Deterministic pre-filter — a hard fail forces FAIL and NEVER reaches the judge (FR-007/SC-002).
     det = run_deterministic(cand.text, case.det_spec())
     if det.hard_fail:
-        return CaseScore(case.id, det, None, 0.0, cand_cost, cand_latency, failed=True)
+        return CaseScore(case.id, det, None, 0.0, cand_cost, cand_latency, failed=True, **evidence)
 
     # 3) Advisory judge via the instance breaker (F8). Baseline per-case output drives the pairwise call.
     # The judge is ADVISORY and must never crash the run: a breaker-open or any judge/transport error
@@ -155,4 +168,4 @@ async def _score_case(case: EvalCase, candidate_snapshot, baseline: BaselineAggr
     except Exception as exc:  # CircuitOpenError or a judge/transport failure — never abort the suite
         jv = _fail_closed(f"judge unavailable ({type(exc).__name__}) — advisory score skipped")
     quality = score_quality(jv.rubric_scores, case.rubric_weights())
-    return CaseScore(case.id, det, jv, quality, cand_cost, cand_latency, failed=not det.passed)
+    return CaseScore(case.id, det, jv, quality, cand_cost, cand_latency, failed=not det.passed, **evidence)

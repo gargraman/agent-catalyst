@@ -121,7 +121,7 @@ async def test_eval_run_refuses_an_archived_agent(monkeypatch):
     monkeypatch.setattr(gateway, "stream", _never)
     ws, aid, vid = await _seed("archived")
     async with client() as c:
-        r = await c.post(f"/api/v1/agents/{aid}/eval-runs", headers=_h(ws, "publisher"), json=_eval_body(vid))
+        r = await c.post(f"/api/v1/agents/{aid}/eval-runs", headers=_h(ws, "publisher"), json=await _eval_body(ws, aid, vid))
     assert r.status_code == 409, r.text
     assert r.json()["error"]["code"] == "agent.archived"
     assert calls == []

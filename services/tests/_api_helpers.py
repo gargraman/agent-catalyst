@@ -293,11 +293,9 @@ async def seed_ingestion_cost(workspace_id: str, cost_usd, created_at=None) -> s
 
 # ---- feature 026 seeders (T011; ORM inserts, one transaction each, via tenant_session so RLS applies) -----------
 def case_content_hash(input: dict, rubric: list, required_fields: list | tuple = (), expected=None) -> str:
-    """sha256 of the canonical JSON of (input, rubric, required_fields, expected) — data-model §eval_cases.
-    TODO(026 US2): once the server-side hash lands in production code, import it here instead of duplicating."""
-    import hashlib
-    doc = {"input": input, "rubric": rubric, "required_fields": list(required_fields), "expected": expected}
-    return hashlib.sha256(json.dumps(doc, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    """The production D8 hash (data-model §eval_cases) — re-exported so seeded cases match server-authored ones."""
+    from api.baseline import case_content_hash as _hash
+    return _hash(input, rubric, required_fields, expected)
 
 
 async def set_draft(workspace_id: str, agent_id: str, **fields) -> None:
@@ -355,6 +353,20 @@ async def seed_eval_run(workspace_id: str, agent_id: str, suite_id: str, version
             }))
         await s.flush()
         return str(run.id)
+
+
+async def seed_eval_suite(workspace_id: str, agent_id: str, n: int = 3, *, name: str | None = None,
+                          message: str = "an XDR alert fired", rubric: list[dict] | None = None) -> str:
+    """026 T050: a server-side suite of `n` cases for callers that used to post cases inline. Returns the suite id."""
+    rubric = rubric or [{"name": "accuracy", "weight": 1.0}]
+    sid, _ = await seed_suite(workspace_id, agent_id, name=name or f"suite-{uuid.uuid4().hex[:8]}",
+                              cases=[{"input": {"message": message}, "rubric": rubric} for _ in range(n)])
+    return sid
+
+
+async def eval_run_body(workspace_id: str, agent_id: str, version_id: str, n: int = 3) -> dict:
+    """026 T050: the new eval-run body `{version_id, suite_id}` over a freshly seeded n-case suite."""
+    return {"version_id": version_id, "suite_id": await seed_eval_suite(workspace_id, agent_id, n)}
 
 
 async def freeze(workspace_id: str, suite_id: str, run_id: str, by: str = "u1") -> None:

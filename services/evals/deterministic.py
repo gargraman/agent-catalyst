@@ -55,8 +55,8 @@ def _is_empty(output) -> bool:
 def run_deterministic(output: str | dict, case: Mapping[str, Any]) -> DetResult:
     """Run the Layer-1 checks for one (output, case).
 
-    Hard-fail conditions (force FAIL, skip the judge): empty output, a refusal phrase, or unparseable/
-    schema-invalid JSON. Soft failures (passed=False, hard_fail=False): missing/empty required fields,
+    Hard-fail conditions (force FAIL, skip the judge): empty output, a refusal phrase (not for text-format agents,
+    where it is soft), or unparseable/schema-invalid JSON (not checked for text-format agents). Soft failures (passed=False, hard_fail=False): missing/empty required fields,
     an out-of-enum severity, or an expected-value mismatch.
     """
     checks: dict[str, bool] = {}
@@ -72,10 +72,19 @@ def run_deterministic(output: str | dict, case: Mapping[str, Any]) -> DetResult:
         lowered = output.lower()
         refused = any(phrase in lowered for phrase in REFUSAL_PHRASES)
         checks["no_refusal"] = not refused
-        if refused:
+        # Owner decision f-B (026 US4, 2026-11-18): for TEXT agents a refusal phrase is a SOFT fail — first-person
+        # phrasing is legit in support-style prose ("I cannot see your logs, please paste them"), so the judge still
+        # scores the answer. JSON/legacy outputs keep the hard fail.
+        if refused and case.get("output_format") != "text":
             return DetResult(passed=False, checks=checks, hard_fail=True)
     else:
         checks["no_refusal"] = True
+
+    # --- text-format agents (026 US4, live-found): prose is a valid answer. Keep the hard floor (empty/refusal)
+    # above, skip the JSON hard check; requested fields / a dict `expected` soft-fail unless the output happens to be
+    # a JSON object carrying them; a scalar `expected` is a case-insensitive containment check on the text. ---
+    if case.get("output_format") == "text":
+        return _text_checks(output, case, checks)
 
     # --- JSON parse / schema validity (hard) ---
     if isinstance(output, str):
@@ -113,3 +122,30 @@ def run_deterministic(output: str | dict, case: Mapping[str, Any]) -> DetResult:
 
     passed = all(checks.values())
     return DetResult(passed=passed, checks=checks, hard_fail=False)
+
+
+def _as_object(output) -> dict | None:
+    if isinstance(output, dict):
+        return output
+    try:
+        data = json.loads(output)
+    except (ValueError, TypeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _text_checks(output, case: Mapping[str, Any], checks: dict[str, bool]) -> DetResult:
+    """Soft checks for a text-format agent (the hard floor already ran). Never applies the triage defaults."""
+    required = case.get("required_fields") or ()
+    expected = case.get("expected")
+    data = _as_object(output) if (required or isinstance(expected, dict)) else None
+    if required:
+        checks["required_fields"] = data is not None and all(
+            f in data and data[f] not in _EMPTY_VALUES for f in required)
+    if expected is not None:
+        if isinstance(expected, dict):
+            checks["expected_match"] = data is not None and all(data.get(k) == v for k, v in expected.items())
+        else:
+            text = output if isinstance(output, str) else json.dumps(output)
+            checks["expected_match"] = str(expected).lower() in text.lower()
+    return DetResult(passed=all(checks.values()), checks=checks, hard_fail=False)

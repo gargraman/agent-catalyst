@@ -17,7 +17,7 @@ from api.db import tenant_session
 from api.models import Run
 from runtime.providers import gateway
 from tests._api_helpers import (
-    client, dev_headers, seed_agent, seed_limits, seed_run, seed_version, seed_workspace,
+    client, dev_headers, eval_run_body, seed_agent, seed_limits, seed_run, seed_version, seed_workspace,
 )
 from tests._invoke_helpers import stop_ev, text_ev, usage_ev
 from tests._evals_helpers import VALID_OUTPUT, make_routed_gateway
@@ -42,13 +42,9 @@ def _tracking_stream():
     return _stream, calls
 
 
-def _eval_body(vid: str, n: int = 3) -> dict:
-    cases = [{"id": f"c{i}", "input": "an XDR alert fired",
-              "rubric": [{"name": "accuracy", "weight": 1.0}]} for i in range(n)]
-    baseline = {"quality": 90.0, "cost_usd": 0.003, "latency_ms": 100,
-                "per_case": {f"c{i}": json.dumps(VALID_OUTPUT) for i in range(n)}}
-    return {"version_id": vid, "cases": cases, "baseline": baseline,
-            "policy": {"min_cases": 3, "quality_threshold": 10.0, "efficiency_budget_pct": 10.0}}
+async def _eval_body(ws: str, aid: str, vid: str, n: int = 3) -> dict:
+    """026 T050: the suite lives on the server now; the body is only {version_id, suite_id}."""
+    return await eval_run_body(ws, aid, vid, n)
 
 
 async def _run_count(ws: str) -> int:
@@ -92,7 +88,7 @@ async def test_over_cap_eval_run_refused_402_before_provider(monkeypatch):
     ws, aid, vid = await _seed_over_cap()
     async with client() as c:
         r = await c.post(f"/api/v1/agents/{aid}/eval-runs",
-                         headers=dev_headers(workspace=ws, claims={ws: "publisher"}), json=_eval_body(vid))
+                         headers=dev_headers(workspace=ws, claims={ws: "publisher"}), json=await _eval_body(ws, aid, vid))
     assert r.status_code == 402
     assert r.json()["error"]["code"] == "budget.exceeded"
     assert calls["n"] == 0                          # eval never ran the engine/provider

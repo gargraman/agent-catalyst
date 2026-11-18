@@ -37,13 +37,14 @@ class EvalCase:
     """An authored eval case. `required_fields`/`expected` feed the deterministic layer; `rubric` feeds the
     judge. The incident-triage contract is only the *default* required-fields set (FR-006)."""
     id: str
-    input: str
+    input: str | dict                         # 026 US4: dict = the inputs mapping (server-authored cases)
     workspace_id: str
     vars: dict[str, str] | None = None
     assertions: tuple[Assertion, ...] = ()
     rubric: tuple[RubricDimension, ...] = ()
     expected: str | dict | None = None
     required_fields: tuple[str, ...] | None = None
+    output_format: str | None = None          # 026 US4: the candidate's io_contract output_format ("text" | "json")
 
     def det_spec(self) -> dict[str, Any]:
         """The lightweight mapping the deterministic layer reads (mirrors the MVP `case` dict). Only include
@@ -53,6 +54,8 @@ class EvalCase:
             spec["required_fields"] = list(self.required_fields)
         if self.expected is not None:
             spec["expected"] = self.expected
+        if self.output_format is not None:
+            spec["output_format"] = self.output_format
         return spec
 
     def rubric_weights(self) -> dict[str, float]:
@@ -97,6 +100,11 @@ class CaseScore:
     candidate_cost_usd: Decimal | None
     candidate_latency_ms: int | None
     failed: bool
+    # 026 US4: per-case evidence the API persists as `eval_results` (defaults keep pre-026 constructors valid).
+    candidate_output: str = ""
+    run_id: str | None = None
+    outcome: str | None = None                 # the candidate invocation's Outcome value ("success", "timeout", …)
+    cost_is_estimate: bool = False
 
 
 @dataclass(frozen=True)
@@ -132,6 +140,9 @@ class EvalRunResult:
     pairwise_rate: float = 0.0                 # advisory: fraction of decided cases candidate won
     workspace_id: str = ""
     judge_version: str = ""
+    # 026 US4: the per-case scores the aggregate was built from, so a caller holding a per-case baseline (the API's
+    # common-case comparison, research D7/D8) can re-decide without re-running. Not part of value equality.
+    case_scores: tuple[CaseScore, ...] = field(default=(), compare=False)
 
 
 class TenancyError(Exception):

@@ -18,7 +18,7 @@ from api.csrf import CSRFMiddleware
 from api.settings import get_settings
 from api.errors import AppError, app_error_handler
 from api.routers import (
-    agents, auth, documents, evals, invoke, knowledge, members, provider_keys, runs, skills, tokens, tools, workspaces,
+    agents, auth, documents, eval_suites, evals, invoke, knowledge, members, provider_keys, runs, skills, tokens, tools, workspaces,
 )
 
 
@@ -69,6 +69,9 @@ def create_app() -> FastAPI:
     app.include_router(invoke.published_router)   # feature 018: published caller-token invoke plane (/v1)
     app.include_router(tokens.router)             # feature 018: caller-token mint/list/revoke + admin revoke-user
     app.include_router(evals.router)
+    app.include_router(evals.runs_router)          # feature 026 US4: /eval-runs[/{rid}]
+    app.include_router(eval_suites.agent_router)   # feature 026 US4: /agents/{id}/eval-suites
+    app.include_router(eval_suites.router)         # feature 026 US4: /eval-suites/{sid}[/cases|/baseline]
     app.include_router(tools.router)
     app.include_router(skills.router)
     app.include_router(knowledge.router)

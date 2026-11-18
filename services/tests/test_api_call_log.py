@@ -17,7 +17,7 @@ from api.db import tenant_session
 from api.models import Run
 from api.settings import get_settings
 from runtime.providers import gateway
-from tests._api_helpers import client, dev_headers, seed_agent, seed_api_token, seed_version, seed_workspace
+from tests._api_helpers import client, dev_headers, eval_run_body, seed_agent, seed_api_token, seed_version, seed_workspace
 from tests._evals_helpers import VALID_OUTPUT, make_routed_gateway
 from tests._invoke_helpers import make_gateway, priced_usage, stop_ev, text_ev, usage_ev
 
@@ -52,13 +52,9 @@ async def _seed():
     return ws, aid, vid
 
 
-def _eval_body(vid: str, n: int = 3) -> dict:
-    cases = [{"id": f"c{i}", "input": "an XDR alert fired",
-              "rubric": [{"name": "accuracy", "weight": 1.0}]} for i in range(n)]
-    baseline = {"quality": 90.0, "cost_usd": 0.003, "latency_ms": 100,
-                "per_case": {f"c{i}": json.dumps(VALID_OUTPUT) for i in range(n)}}
-    return {"version_id": vid, "cases": cases, "baseline": baseline,
-            "policy": {"min_cases": 3, "quality_threshold": 10.0, "efficiency_budget_pct": 10.0}}
+async def _eval_body(ws: str, aid: str, vid: str, n: int = 3) -> dict:
+    """026 T050: the suite lives on the server now; the body is only {version_id, suite_id}."""
+    return await eval_run_body(ws, aid, vid, n)
 
 
 def _bearer() -> str:
@@ -107,8 +103,8 @@ async def test_four_callers_one_line_per_call_identical_shape(cap, monkeypatch):
         candidate_cost=0.001, judge_body={"rubric": {"accuracy": 5.0}, "pairwise": "candidate", "rationale": "ok"}))
     async with client() as c:
         r = await c.post(f"/api/v1/agents/{aid}/eval-runs",
-                         headers=dev_headers(workspace=ws, claims={ws: "publisher"}), json=_eval_body(vid))
-    assert r.status_code == 200
+                         headers=dev_headers(workspace=ws, claims={ws: "publisher"}), json=await _eval_body(ws, aid, vid))
+    assert r.status_code == 201
     ev = [x for x in cap.lines if x["workspace_id"] == ws]
     cand = [x for x in ev if x["role"] == "candidate"]
     judge = [x for x in ev if x["role"] == "judge"]
@@ -208,8 +204,8 @@ async def test_eval_run_shares_one_id_pair_across_candidate_and_judge(cap, monke
     async with client() as c:
         r = await c.post(f"/api/v1/agents/{aid}/eval-runs",
                          headers={**dev_headers(workspace=ws, claims={ws: "publisher"}), "X-Correlation-Id": "eval-7"},
-                         json=_eval_body(vid, n=3))
-    assert r.status_code == 200
+                         json=await _eval_body(ws, aid, vid, n=3))
+    assert r.status_code == 201
     lines = [x for x in cap.lines if x["workspace_id"] == ws]
     assert {x["role"] for x in lines} == {"candidate", "judge"}
     assert {x["correlation_id"] for x in lines} == {"eval-7"}

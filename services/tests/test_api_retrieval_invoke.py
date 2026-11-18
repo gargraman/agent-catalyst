@@ -205,7 +205,7 @@ async def test_eval_start_gate_refuses_a_kb_the_caller_cannot_use():
     adm = dev_headers(workspace=ws, subject="adm", claims={ws: "admin"})
     async with client() as c:
         vid = await _bound_version(c, ws, aid, [secret], hdr=adm)
-        r = await c.post(f"/api/v1/agents/{aid}/eval-runs", json=_eval_body(vid),
+        r = await c.post(f"/api/v1/agents/{aid}/eval-runs", json=await _eval_body(ws, aid, vid),
                          headers=dev_headers(workspace=ws, subject="p", claims={ws: "publisher"}))
     assert r.status_code == 403 and r.json()["error"]["code"] == "eval.knowledge_forbidden", r.text
     assert secret not in r.text
