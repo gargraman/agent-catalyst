@@ -4,6 +4,25 @@
 > (00 §1). This is the graph that the playground, eval workers, and published endpoint all execute. It
 > sits above the gateway (02) and below the thin HTTP callers (08).
 
+> **⚠ Built-state note (M2a, 2026-11-04 — feature `specs/003-runtime-invoke-spine`).** The design below
+> specifies the *full* LangGraph runtime (guardrails → retrieval → tool loop → checkpointer). **M2a built
+> only the spine**, and deliberately as a **plain async pipeline, not LangGraph** (research D1): a single
+> generate-and-stream turn needs no graph, nodes, or checkpointer, and LangGraph is deferred to the first
+> feature that genuinely branches/loops (the tool cycle). What exists on disk today
+> (`services/runtime/{invoke,io,tokens,run,context}.py`): one pure `invoke`/`invoke_result` that reads a
+> frozen `VersionSnapshot`, validates input + checks the context budget **fail-closed before any provider
+> call**, streams through the gateway (02), re-surfaces every event class (text/reasoning/tool-call/stop),
+> bounds the work by `ctx.deadline_s`, and emits **exactly one honest `RunRecord`** to a context sink
+> (the runtime does **not** persist — the API/worker caller owns persistence). **Still unbuilt vs this
+> doc:** input/output guardrails (06), retrieval (04), the tool-execution loop + approval gate, the
+> checkpointer/session memory, and output validate/repair (→ **M2b**). The §2 graph is the target, not the
+> current implementation.
+
+> **Resilience (feature 025, 2026-11-16):** provider retry-before-first-event, the shared `(provider, model, class)`
+> circuit breaker and the live/batch bulkhead live **below** `invoke`, in the gateway's `Guard` carried on
+> `RunContext.guard` — every caller (playground, published, channel, eval) gets identical behaviour
+> (`test_resilience_parity.py`). As-built details: [02 §6](02-provider-gateway.md#6-retry-fallback-circuit-breaker-resilience).
+
 ## 1. Responsibilities
 
 The runtime turns a frozen `VersionSnapshot` + inputs into a stream of `NormalizedStreamEvent`s by
@@ -90,7 +109,7 @@ async def retrieve_always_on(state):        # only when injection == "always_on"
 
 async def model_call(state):                # the streaming provider call (02)
     req = build_normalized_request(state["snapshot"], state["messages"])     # tools incl. retriever-tool
-    key = await resolve_provider_key(state["ctx"], state["snapshot"])        # Vault, in-memory (09)
+    key = await resolve_provider_key(state["ctx"], state["snapshot"])        # resolved by the API layer via the secrets backend (09 §9 / 014); runtime only gets the plaintext string (P6)
     async for ev in gateway.stream(req, api_key=key, profile=state["snapshot"].profile):
         emit(ev)                            # forwarded to the SSE bridge (§5) as it arrives
         accumulate(state, ev)               # text, tool-call assembly, usage, substitutions
@@ -212,6 +231,11 @@ it compacts (summarize) or trims oldest turns per strategy, and records a `conte
 attr. This interacts with COGS: tighter windows = fewer input tokens = lower cost (07 §context).
 
 ## 8. Tool execution (P1 http/builtin; P2 mcp/subagent)
+
+> **As built (2026-11-15):** no tool executes yet. The runtime is a plain async pipeline (not LangGraph);
+> retrieval ships as **always-on stuffing** inside `runtime.invoke` (feature 024). The retriever-as-tool loop
+> below (`search_knowledge`, 024 US4 / research D10) is **parked (Nice tier)**; `max_tool_calls` is still carried,
+> not enforced.
 
 - **retriever-as-tool** (P1, default for agentic RAG): a `retrieve(query)` tool the model calls when it
   decides it needs context (04 §injection). Executes in-process.

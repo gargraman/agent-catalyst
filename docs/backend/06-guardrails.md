@@ -54,6 +54,14 @@ class GuardrailStage(Protocol):
 
 ## 3. Concrete stages (P1 baseline, all ours)
 
+> **As built (feature 024, 2026-11-15):** only the `prompt_injection` stage exists, and only for **retrieved
+> content** — `runtime/guardrails/injection.py` (`inj-v1`): deterministic NFKC/hidden-character normalization +
+> five pattern families (instruction_override, role_impersonation, tool_hijack, exfiltration,
+> hidden_instruction), HTML-comment and bounded base64 re-scan. Retrieval checkpoint withholds + records
+> (fail closed on scanner error); ingest checkpoint flags only. Tuned on dev corpora only — the held-out SC-004
+> gate awaits owner-authored corpora. First-turn user input, tool results and output-side stages are still
+> unbuilt; `runtime/guardrails/redact.py` (023) is the only other shared primitive.
+
 | Stage | Phase | Tier | What it does | Backed by |
 |---|---|:--:|---|---|
 | `pii` | in+out | 0 | detect/redact emails, keys, SSNs, phone, CC, internal IDs | regex + **Presidio** (optional, local) |

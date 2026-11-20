@@ -1,5 +1,35 @@
 # 08 — API Surface (REST + SSE, Pydantic, OpenAPI → export)
 
+> **⚙️ BUILT STATE (M4a thin-API slice — feature `specs/005-thin-api-tenancy`, 2026-11-05).** A **thin slice**
+> of this surface is built and verified in `services/api/` (FastAPI `main`/`deps`/`sse`/`schemas`/`routers`),
+> wrapping the pure `runtime` + `evals` (purity preserved — only `api` imports FastAPI, P6). **Built:**
+> **console-session plane** `POST /api/v1/agents/:id/invoke` as **SSE** over the same `runtime.invoke` (§4
+> frames `run_start`/`text_delta`/`reasoning_delta`/`tool_call_*`/`usage`/`error`/`done`); agents
+> **create/get/list/PATCH + POST-version** with the typed Pydantic contracts + the §1 **error envelope** +
+> cursor pagination; **idempotent create** (`409 idempotency.in_progress`) and **`If-Match`/ETag** optimistic
+> concurrency via Postgres **`xmin`** (`409 conflict.stale`); `POST eval-runs` running the M3 engine **inline**;
+> and **advisory `POST publish`** (returns the verdict, **does NOT raise `409 publish.eval_gate`** — owner
+> decision #3). **Fail-closed tenancy (P5):** every request is workspace-authorized (403/401) then served on an
+> `ac_app` RLS session (`tenant_session`); **negative cross-tenant → 404 verified on live Postgres**. Fully
+> mocked at the provider boundary (no live/paid calls). **NOT yet built (deferred):** the caller bearer-token
+> plane + token mint, the `/api/v1/org/*` admin plane, the full 253-seam CRUD, real OIDC (18)/RBAC, the
+> async worker + `GET /jobs/:id`, the Redis idempotency replay store, real rate-limit thresholds, the real
+> (κ-calibrated) publish gate, and the OpenAPI→FE-client drift CI (M12). The sections below describe the full
+> target surface.
+>
+> **⚙️ BUILT STATE ADDENDUM (M4-remainder — feature `specs/006-resource-crud-sync`, 2026-11-05).** The plain,
+> non-secret resource CRUD is now built + verified in `services/api/` (migration `0005` adds workspace-scoped RLS
+> tables). **Built:** `tools` + `mcp-servers`/`mcp-tools` + `skills` catalog CRUD (archive/restore, `xmin` ETag,
+> idempotent create, duplicate→`409`; `http_config` secret-rejection FR-021; skill publish = **unsigned provenance
+> stub**, published-content-edit→draft); `knowledge-bases` metadata CRUD (`ingestion-jobs` honest-deferred, M7);
+> `workspace/settings` + `members` roster (console role **stored, not enforced** — RBAC → M5); durable `runs`
+> history + `metrics/{dashboard,runs,evals}` (invoke + eval persist identity+metrics only — **no raw content**,
+> SC-009 — closing the M4a in-memory-sink gap). A deterministic `drift.py` flags bound agents for re-eval on a
+> trigger-surface edit. **365 tests green** (live Postgres, purity intact, no live/paid calls). **Still deferred:**
+> tokens/tool-approval, OIDC/access-policy (M5), real ingestion (M7), channels
+> (P2), workspace-root create/delete, async worker. **Frontend wiring (US2) pending a Node toolchain** — OpenAPI
+> emitted to `frontend/openapi.json`; status tracked in `docs/backend-integration-status.md` (0/253 seams wired).
+
 > Implements `spec.md §B11` (REST + OpenAPI 3.1, not GraphQL) and `§B2.5` (IO contract). The contract
 > is the one the built frontend already expects — see `docs/backend-integration-map.md` (code→endpoint)
 > and `docs/backend-integration-plan.md` Part 2 (`data.ts`→API mapping). This doc is the
@@ -159,7 +189,7 @@ there is deliberately **no test-invoke, no risk-tier, and no approval route** he
 | **`DELETE /api/v1/workspaces/:id`** *(net-new, not in base design)* | S(admin) | — | `deleteWorkspace` — **FE mock-only** hard-delete cascade over every scoped resource. Base design **archives (soft)** instead; a real deploy would add a guarded admin cascade or disallow it |
 | `GET /api/v1/workspaces/:id/limits` · `PUT …` | S(admin) | — | `useLimits` / `updateLimits` — per-workspace spend + concurrency + timeout. **Monthly spend cap enforced P1; concurrency P2** (07 §3) |
 | `GET /api/v1/provider-keys?workspace=:id` | S | — | `useProviderKeys` (masked) |
-| `POST /api/v1/provider-keys` | S(admin) | — | `addProviderKey` (vaulted; 09) |
+| `POST /api/v1/provider-keys` | S(admin) | — | **BUILT (014)** `addProviderKey` — custodied in the secrets backend (not Vault; 09 §9), masked-only reads, `key.manage`+RLS; + `GET` list, `:id/rotate`, `:id/revoke` |
 | `POST /api/v1/provider-keys/:id/rotate` · `…/revoke` | S(admin) | — | `rotateProviderKey` / `revokeProviderKey` (audited; 09 §12) |
 | `GET /api/v1/members?workspace=:id` | S | — | `useMembers` — **READ-ONLY** projection of the workspace's `viewer`/`builder`/`publisher` claim holders, resolved through the active identity adapter (18 §3; each member's role = the claim they hold). Identity + membership from the IdP; no Postgres roster (09 §2.1) |
 | ~~`POST/DELETE …/invites`, `DELETE /members/:id`, `POST …/join`~~ | — | — | **REMOVED (claim-based model, 2026-10-22).** No invites, no self-join, no in-app remove — membership **is** the per-workspace IdP role claim (mapped by `idp_binding`, 18). Add/remove happens in the IdP; app-wide admin is the adapter's admin claim (15). |
@@ -180,9 +210,18 @@ there is deliberately **no test-invoke, no risk-tier, and no approval route** he
 |---|---|---|---|
 | `GET /api/v1/org/agents` | P | — | *(net FE)* whole-estate rows {agent, workspace, owner, status, eval verdict, drift, spend_30d, policy tier, compliance_flags}; metadata-only for `private` |
 | `GET /api/v1/org/spend` | P | — | *(net FE)* spend rollup by workspace / agent / model |
-| `GET /api/v1/org/compliance` | P | — | *(net FE)* non-compliant list (unregistered / un-evaluated / over-budget / no-owner) — consumes `agents.registered_at`/`owner_subject` (14) |
+| `GET /api/v1/org/compliance` | P | — | *(net FE)* non-compliant list (unregistered / un-evaluated / over-budget / no-owner / **pinned to a stale or `sunset_at` model profile** — the `outdated` view (FE `Agent.profileOutdated`) over the *existing* `model_deprecation_scan` / `sunset_at` signal, 02 §4 · 10 §6 · 16 §3; **no new detector**, a distinct informational flag, **not** `needsReEval`) — consumes `agents.registered_at`/`owner_subject` (14) |
 
 All three route through the elevated `SECURITY DEFINER` path and write `org.report.read` (09 §7,§12).
+
+### Admin security actions (elevated — platform-admin, 15 · 09 §2.1)
+| Method · Path | Auth | Async | Backs |
+|---|---|---|---|
+| `POST /api/v1/org/revoke-user` | P | — | *(net FE)* admin **force-logout**: writes `{subject}` and/or `{token_id}` to the transient Redis deny-set → active console sessions **+** caller tokens fail closed on their next request (09 §2.1, §6); audited as `security.revoke_user` (append-only `audit_logs`) |
+
+Unlike the read reports above, `revoke-user` is a **mutation** — it does **not** use the `SECURITY DEFINER`
+org-read path; it writes the deny-set (Redis) + an audit row only. It is the admin-triggered half of the
+"immediate revocation" model (`09 §2.1`); there is no SCIM/`/scim/v2` provisioning surface and no roster.
 
 ### Tools & MCP (P2 — routes reserved)
 | Method · Path | Auth | Async | Backs |

@@ -8,12 +8,15 @@ import * as React from "react";
 import { AppShell } from "./app-shell";
 import { NoProductAccess, WorkspacePicker } from "./no-access";
 import { useWorkspace } from "@/lib/auth";
+import { useEnsureWorkspaces } from "@/lib/store";
 
 /* @backend integration points (this page):
  *  - @backend no-access + workspace-picker gate, driven by the OIDC session + IAM memberships [via useWorkspace] (src/lib/auth.tsx, src/lib/iam.ts)
  * See src/lib/store.ts markers + docs/backend-integration-map.md for the authoritative contracts.
  */
 export function AppBoundary({ children }: { children: React.ReactNode }) {
+  // Live mode: discover the caller's backend workspaces once (GET /api/v1/workspaces); no-op when mock.
+  useEnsureWorkspaces();
   const { hasAccess, workspace } = useWorkspace();
   if (!hasAccess) return <NoProductAccess />;
   if (!workspace) return <WorkspacePicker />;

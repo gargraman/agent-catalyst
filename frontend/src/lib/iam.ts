@@ -26,6 +26,14 @@ export type Workspace = {
   // Per-workspace prefix the role claims are built from (idpBinding). The `ap-<prefix>-<role>` expansion is
   // the Okta adapter's sugar; other adapters store explicit native refs instead (backend/18 §3).
   groupPrefix: string;
+  // Live mode (NEXT_PUBLIC_API_MODE=live) — set by workspace discovery (GET /api/v1/workspaces):
+  //   backendId   — the backend workspace UUID, sent as X-Workspace-Id on every wired call. The console still keys
+  //                 its store on the slug `id` so un-wired (mock) families keep working; once every family is wired,
+  //                 `id` becomes the UUID and this field folds away (feature 011 F-D). Absent → mock-only workspace.
+  //   backendRole — the role the SERVER resolves for the caller here (members store). Authoritative over the
+  //                 mock claim-derived role, so UI gating matches what the API will enforce.
+  backendId?: string;
+  backendRole?: Role;
 };
 
 /** Okta ADAPTER convention: a workspace's role claims are `ap-<prefix>-<role>`. This is the one place the
@@ -69,6 +77,10 @@ export type IamProfile = {
   groups: string[]; // per-workspace role claims (idpBinding) + maybe PLATFORM_ADMIN_GROUP
 };
 
+// @backend teams are SERVER-OWNED for authorization: the backend sources them from the member row / OIDC `groups`
+// claim and evaluates them in the per-resource access policy (feature 013; services access_policy.PolicyPrincipal.teams
+// via membership.teams_for). This client `teams` list is a PRE-WIRING PREVIEW only — never trusted for a real
+// access decision once the token/session carries the claim; the roster shows teams read-only (settings, FR-017).
 export const MOCK_PROFILE: IamProfile = {
   name: "Raman Garg",
   email: `raman.garg@${ORG.emailDomain}`,

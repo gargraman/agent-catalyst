@@ -254,7 +254,7 @@ function Members() {
         <CardContent className="pt-0">
           <Table>
             <THead>
-              <TR><TH>Member</TH><TH>Email</TH><TH>Role</TH><TH>Last active</TH></TR>
+              <TR><TH>Member</TH><TH>Email</TH><TH>Role</TH><TH>Teams</TH><TH>Last active</TH></TR>
             </THead>
             <tbody>
               {roster.map(({ m, role }) => {
@@ -269,6 +269,16 @@ function Members() {
                     </TD>
                     <TD className="text-muted">{m.email}</TD>
                     <TD><Badge tone={roleTone[label]}>{label}</Badge></TD>
+                    <TD>
+                      {/* Display-only functional teams (server/IdP-owned, feature 013 FR-017) — no edit control. */}
+                      {m.teams.length === 0 ? (
+                        <span className="text-muted">—</span>
+                      ) : (
+                        <div className="flex flex-wrap gap-1">
+                          {m.teams.map((t) => <Badge key={t} tone="neutral">{t}</Badge>)}
+                        </div>
+                      )}
+                    </TD>
                     <TD className="text-muted tnum">{relative(m.lastActive)}</TD>
                   </TR>
                 );

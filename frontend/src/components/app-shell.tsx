@@ -206,6 +206,11 @@ function UserMenu() {
   const teams = user.teams;
   const toggleTeam = (t: string) => setTeams(teams.includes(t) ? teams.filter((x) => x !== t) : [...teams, t]);
 
+  // @backend Real sign-out ends the OIDC session (Auth.js signOut) → redirect to the login/no-access screen —
+  //   resolved as a real logout flow, not a role reset (frontend-auth-access-plan #3, 2026-10-25 / D2). The same
+  //   redirect path handles a 401 from the server's fail-closed deny-set when an admin force-logout/revoke-user
+  //   cuts an active session mid-flight (backend/09 §2.1, POST /api/v1/org/revoke-user). Net-new FE: a fetch 401
+  //   interceptor + this redirect — neither exists in the mock. Until then this stays a role-reset shim.
   const signOut = () => {
     setRole(null);
     setTeams(null);

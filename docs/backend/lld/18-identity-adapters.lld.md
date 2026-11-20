@@ -1,5 +1,7 @@
 # 18 (LLD) — Identity Adapters (IdP-agnostic authN → `Principal`)
 
+> **⚠️ Secret custody — as built (feature 014, 2026-11-11):** secret custody now runs through a pluggable secrets backend (**AWS Secrets Manager** / LocalStack / `local`), **not** HashiCorp Vault Transit. The `transit/keys/platform-idp` / Vault adapter-credential detail in this LLD is the **superseded design baseline** for the still-unbuilt IdP-adapter credential family — to be re-reconciled when built. See `docs/scope.md` (2026-11-11) and [`../09-security-tenancy.md §9`](../09-security-tenancy.md).
+
 > **Parent:** [`../18-identity-adapters.md`](../18-identity-adapters.md) (the `IdentityProvider` adapter
 > boundary, `workspaces.idp_binding`, the `group_members` projection cache, the adapter table, the deploy-time
 > config shape, the propagation index).
@@ -315,10 +317,15 @@ class EntraAdapter(GenericOidcAdapter):
   bearer token of `09 §6`, which is our own minted token, not an IdP token.)
 - **Refresh.** Auth.js refreshes the access token with the IdP refresh token before expiry; the backend just
   verifies the new token. **No SCIM / directory sync** (`09 §2.1`): claims are read live from the token.
-- **Revocation lag (the honest bound).** Because authZ reads claims from the token, an IdP-side grant/revoke
-  (role change, **disabled user**) takes effect **at the next token refresh/login**, not instantly. The
-  mitigation is a **short access-token TTL** (deployment-configured, ≤1h) so the lag is bounded; a disabled user
-  is locked out within one TTL. This is the accepted tradeoff of "no roster, claims are the SoR" (`09 §2.1`).
+- **Revocation lag + the deny-set escape hatch.** Because authZ reads claims from the token, an IdP-side
+  grant/revoke (role change, **disabled user**) takes effect **at the next token refresh/login**, not instantly —
+  the *passive* bound. The standing mitigation is a **short access-token TTL** (deployment-configured, ≤1h) so a
+  passively-disabled user is locked out within one TTL. For *active* cut-off (incident, stolen token, an
+  offboarding we're told about), an **admin `force-logout` / `revoke-user`** writes the subject/token to a
+  **transient Redis deny-set** checked on this same `verify_token` path, **failing closed** → the session dies on
+  its next request (`09 §2.1`, `09 §6`). This is a *transient revocation list*, **not** an app-side
+  roster/deactivation store and **not SCIM** — automated IdP-pushed offboarding stays out of scope. (Amends the
+  2026-10-22 rev 1/2 "no app-side deactivation list" bound; 2026-10-25.)
 
 ---
 
@@ -473,8 +480,10 @@ per-workspace-DEK suite entirely.
   `is_admin == False`. `get_principal` succeeds (they are authenticated); every `get_workspace_ctx` returns
   `403` → the FE shows the no-access gate (mirrors `auth.tsx hasAccess == false`). Authentication without
   authorization is the correct, non-leaky state.
-- **Disabled user** — handled IdP-side; our side sees an invalid/expired token → `401` within one access-token
-  TTL (§5). No app-side deactivation list.
+- **Disabled user** — *passively* handled IdP-side: our side sees an invalid/expired token → `401` within one
+  access-token TTL (§5). For *active* cut-off, an admin `force-logout`/`revoke-user` adds the subject to the
+  **transient Redis deny-set** (§5, `09 §2.1`) → `401` on the next request. The deny-set is a transient revocation
+  list, not a persistent app-side roster/deactivation store (no SCIM).
 - **Claim overage (Entra)** — detected in `_to_claims`; `get_principal` enriches via `groups_for` before
   `build_principal` (§4/§6). A Graph failure here is the JWKS-outage analog: fail closed to `401` + alert.
 - **Concurrent first-login** — `BindingMap` is read-only and cacheable; `group_members.upsert_seen` is an

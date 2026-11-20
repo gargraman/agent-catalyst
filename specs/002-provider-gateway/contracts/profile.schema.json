@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-catalyst/contracts/profile.schema.json",
+  "title": "Capability+Pricing Profile",
+  "description": "Versioned on-disk capability + pricing data for one (provider, model). Matched by content, not filename.",
+  "type": "object",
+  "required": ["provider", "model", "pricing_usd_per_mtok", "features"],
+  "additionalProperties": true,
+  "properties": {
+    "provider": { "type": "string", "minLength": 1 },
+    "model": { "type": "string", "minLength": 1 },
+    "api_version": { "type": ["string", "null"] },
+    "availability": { "type": "string", "enum": ["active", "deprecated", "retired"], "default": "active" },
+    "sunset_at": { "type": ["string", "null"] },
+    "provisional": { "type": "boolean", "description": "true = pricing unreconciled → cost labeled estimate (FR-010)" },
+    "_note": { "type": "string" },
+    "pricing_usd_per_mtok": {
+      "type": "object",
+      "required": ["input", "output"],
+      "additionalProperties": false,
+      "properties": {
+        "input": { "type": "number", "minimum": 0 },
+        "output": { "type": "number", "minimum": 0 },
+        "cached_input": { "type": "number", "minimum": 0 },
+        "cache_write": { "type": "number", "minimum": 0 },
+        "reasoning": { "type": "number", "minimum": 0 },
+        "batch_multiplier": { "type": "number", "minimum": 0 }
+      }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "context_tokens": { "type": "integer", "minimum": 0 },
+        "max_output_tokens": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "features": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "structured_output": { "type": "boolean" },
+        "forced_tool_choice": { "type": "boolean" },
+        "reasoning_control": { "type": "boolean" },
+        "prompt_caching": { "type": "boolean" },
+        "tool_call_format": { "type": "string" }
+      }
+    }
+  }
+}

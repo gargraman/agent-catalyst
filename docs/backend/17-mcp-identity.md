@@ -1,5 +1,7 @@
 # 17 — Per-User MCP Identity (delegated connected accounts)
 
+> **⚠️ Secret custody — as built (feature 014, 2026-11-11):** provider-key custody now runs through a pluggable secrets backend (**AWS Secrets Manager** / LocalStack / `local`), **not** HashiCorp Vault Transit. The per-workspace-&-per-user-DEK Vault material in this doc is the **superseded design baseline** for the still-unbuilt per-user-MCP credential family (P2+) — it will be re-reconciled to the new backend when built. See `docs/scope.md` (2026-11-11) and `backend/09 §9`.
+
 > **Status: PROPOSED extension (P2+).** A delta on `09-security-tenancy.md`, `12-channels.md`, and
 > `14-adoption-enforcement.md §5`. Not yet locked into the schema (`01`) or the frozen API surface (`08`).
 > Companion diagram: `docs/diagrams/backend-design/mcp-per-user-connect.html`.
@@ -131,8 +133,11 @@ vaulted per `(user, server)` under the per-user DEK (§3); access tokens are nev
   run returns `mcp.connect_required` (re-consent, surfaced in-chat / inline) — it does not silently fall back
   to `shared_service` (see §6 ⚠️).
 - **Revocation:** `status='revoked'` on offboarding or `mcp_server` delete (cascade) stops *our* use
-  immediately. **Propagating revocation upstream** (calling the provider's OAuth revoke endpoint on explicit
-  disconnect) is best-effort — a dangling grant can survive if the provider exposes no revoke endpoint.
+  immediately. An admin **`revoke-user`** (the `09 §2.1` deny-set / force-logout path) cascades here too: cutting
+  a user's session also marks that user's per-user MCP connections `revoked`, so a cut-off user's delegated
+  tokens stop alongside their session rather than lingering until their next refresh. **Propagating revocation
+  upstream** (calling the provider's OAuth revoke endpoint on explicit disconnect) is best-effort — a dangling
+  grant can survive if the provider exposes no revoke endpoint.
   **[OPEN — P2.a: the upstream revoke call + reconciliation are not yet specified.]**
 
 - The MCP server's declared **scopes bound** what the delegated token can do; the per-call **egress

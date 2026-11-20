@@ -1,0 +1,24 @@
+{
+  "provider": "anthropic",
+  "model": "claude-haiku-4-5",
+  "api_version": null,
+  "availability": "deprecated",
+  "sunset_at": null,
+  "provisional": true,
+  "_note": "Runtime model, DEPRECATED: frontend/src/lib/data.ts flags agents pinned to claude-haiku-4-5 as being retired (profileOutdated), so availability=deprecated (sunset date unknown → null; the gateway's retired-model guard is Polish/T025). input/output pricing sourced from data.ts (inUsd 1 / outUsd 5, 200K context). cache/reasoning rates not in data.ts — omitted; compute_cost falls back to input/output rates until reconciliation. provisional=true → estimate (FR-010/P7). features from the claude-api skill: pre-4.6 era, so forced_tool_choice=true (native forced tool use still supported on 4.5).",
+  "pricing_usd_per_mtok": {
+    "input": 1.0,
+    "output": 5.0
+  },
+  "limits": {
+    "context_tokens": 200000,
+    "max_output_tokens": 8192
+  },
+  "features": {
+    "structured_output": true,
+    "forced_tool_choice": true,
+    "reasoning_control": true,
+    "prompt_caching": true,
+    "tool_call_format": "anthropic"
+  }
+}

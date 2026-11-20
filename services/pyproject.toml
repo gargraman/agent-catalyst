@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-catalyst-services"
+version = "0.0.0"
+description = "Agent Catalyst backend services (api · runtime · evals · ingestion)"
+requires-python = ">=3.12"
+# Base = the infra-free core the unit run needs: settings (pydantic-settings) + runtime schema
+# validation (jsonschema). DB/Redis/FastAPI deps live in [api] and are exercised in the integration batch.
+dependencies = [
+    "pydantic>=2.0",
+    "pydantic-settings>=2.0",
+    "jsonschema>=4",
+]
+
+[project.optional-dependencies]
+# psycopg (sync) is required by Alembic's SYNC_URL; asyncpg drives the async request/job path.
+# litellm is TRANSPORT ONLY (M1 provider gateway, research R1): it carries bytes to/from providers;
+# cost/usage/substitutions stay ours (never litellm's response_cost), drop_params=False.
+# litellm pinned to a compatible-minor range: its streamed-chunk + usage shapes are what our adapters map,
+# and those are re-proven against the live wire only at M2 — an unbounded floor could silently reshape them
+# (wrong usage → wrong cost). Tested against 1.106.6; widen deliberately after re-verifying the mapping.
+# authlib: OIDC authorization-code client (discovery + PKCE S256 + state/nonce + code→token exchange) for
+# console login (feature 019). httpx is authlib's transport (token-endpoint exchange). The session cookie is
+# an HS256 JWT signed with the already-present pyjwt — NOT itsdangerous (fewer new deps; pyjwt also does the
+# callback id_token verify, reusing the 012 JWKS trust config). Only authlib (+httpx) is genuinely new (019 D3).
+api = ["fastapi", "uvicorn", "sqlalchemy[asyncio]>=2.0", "asyncpg", "psycopg[binary]>=3", "alembic", "redis", "litellm~=1.106", "prometheus-client>=0.20,<1", "pyjwt[crypto]>=2.8,<3", "boto3>=1.34", "authlib>=1.3,<2", "httpx>=0.27"]
+test = ["pytest>=8", "pytest-asyncio", "fakeredis>=2.21"]
+# Document ingestion (feature 024 / M7, research D6/D7): pypdf (PDF text layer), python-docx (DOCX),
+# python-multipart (FastAPI UploadFile). LangChain loaders / `unstructured` deliberately rejected for P1:
+# heavy transitive trees + native deps for five formats we can parse with these three + the stdlib.
+ingest = ["pypdf>=4,<6", "python-docx>=1.1,<2", "python-multipart>=0.0.9"]
+
+# Editable/wheel package discovery. setuptools flat-layout auto-discovery fails on this tree
+# (multiple top-level packages: api, runtime, migrations), so declare the real source packages
+# explicitly. `migrations` is Alembic scripts (run via alembic.ini script_location, not imported as a
+# package) and `tests` are not distributable — both are intentionally excluded. pytest still makes the
+# repo root importable via pythonpath below, so `import migrations` in tests keeps working.
+[tool.setuptools.packages.find]
+include = ["api*", "runtime*", "evals*", "ingestion*", "mcp*"]
+
+[tool.pytest.ini_options]
+# Make the services/ root importable (api.*, runtime.*, evals.*) without an install step.
+pythonpath = ["."]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = [
+    "integration: requires the local compose stack (Postgres/Redis/Vault/MinIO) — skipped in the unit run",
+]

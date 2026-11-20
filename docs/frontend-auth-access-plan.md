@@ -25,8 +25,11 @@ There are **two distinct access contexts** the console surfaces:
 **Key principle:** build-time visibility is not run-time access.
 `effective access = agent config ∩ caller grants ∩ caller tenant ∩ resource access policy`.
 
-**Caller token vs provider key (do not conflate):** the caller token governs **tools/knowledge/MCP**
-access; the **LLM provider key stays the workspace's vaulted key** (server-side), never the caller's.
+**Caller token vs provider key:** the caller token governs **tools/knowledge/MCP** access. The LLM
+provider credential is custodied in the platform's secrets backend (AWS Secrets Manager / LocalStack —
+feature 014, not Vault; `backend/09 §9`) and resolved/injected server-side at invoke; it is
+not supplied by the caller or held as a usable workspace BYO key. Workspace IDs still scope usage and
+cost attribution.
 
 ### Access contexts
 ```mermaid
@@ -175,7 +178,13 @@ team, or owner)** · **policy granularity = roles + IdP teams + `private` owner*
   (granted/denied/cross-tenant/expired/policy_denied); admin sets a restricted policy and a non-member
   loses access; no-access/no-workspace screens.
 
-## Open decisions (recommended first)
-1. Viewer may use the playground read-only *(recommended)* vs builders+ only.
+## Decisions and remaining implementation notes
+1. **Viewer may use the playground read-only** — resolved in `backend/09 §4`; authorization is enforced
+   server-side, with client gating only as a usability aid.
 2. **Members: read-only, managed in the IdP** — resolved; see the `scope.md` decision log and `backend/18 §3`.
-3. Sign out = reset role + toast *(recommended)* vs full stub login screen.
+3. **Sign out → a real logout flow** — resolved 2026-10-25 (D2). With the fail-closed deny-set + admin
+   `force-logout` (`09 §2.1`), sign-out must actually **end the session** (clear the Auth.js session → redirect to
+   the login/no-access screen), not merely reset the mock role. A `401` from the deny-set (an admin revoked the
+   subject mid-session) uses the **same** redirect path. Until the real OIDC session lands, the mock keeps a
+   role-reset shim behind a `@backend` marker; the net-new FE pieces are a fetch **401 interceptor** + the
+   redirect (none exists today).

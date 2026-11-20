@@ -254,22 +254,33 @@ KBs:** skill content **is** pinned into `snapshot_hash` (instructions = pinned, 
 is NOT** — KB content is live & independent of the agent version (04 §9), so `kb_index_version` does **not**
 fold into `snapshot_hash` (whether a content refresh gets an eval signal is a parked decision, 05 / review-fixes C3).
 
-### 4.3 Provider keys (vaulted — never plaintext here)
+### 4.3 Provider keys (custodied in the secrets backend — never plaintext here)
+
+> **BUILT (feature 014, migration `0007_provider_keys`).** The raw secret lives only in the pluggable
+> secrets backend (`services/api/secrets/` — AWS Secrets Manager in the cloud, LocalStack locally, an
+> in-process `local` provider for tests); `vault_path` is the OPAQUE handle to it (a Secrets Manager ARN,
+> or a `local://…` ref). This **reverses the Vault-Transit assumption** that the rest of this doc / `09`
+> still describe — see the 2026-11-11 decision-log entry in `docs/scope.md`. DDL below is as-built.
 
 ```sql
+create type provider_key_status as enum ('active','expiring','revoked');
+
 create table provider_keys (
   id            uuid primary key default gen_random_uuid(),
   workspace_id  uuid not null references workspaces(id),
-  provider      provider_name not null,
+  provider      text not null,                  -- matches the agent's provider for resolve-at-invoke (FE: provider)
   label         text not null,
+  masked        text not null,                  -- server-computed head/tail; display only (FE: masked)
+  vault_path    text not null,                  -- OPAQUE backend reference (Secrets Manager ARN / local:// handle)
   region        text,                           -- optional, provider-dependent (e.g. Vertex/Bedrock) (FE: region)
-  masked        text not null,                  -- "sk-ant-…x7f2" for display only (FE: masked)
-  vault_path    text not null,                  -- where the ciphertext DEK-wrapped key lives (09)
-  status        text not null default 'active', -- active | expiring | revoked
+  status        provider_key_status not null default 'active',
   created_at    timestamptz not null default now(),
-  rotated_at    timestamptz
+  rotated_at    timestamptz,
+  unique (workspace_id, label)                  -- write-once capture; a label is unique per workspace
 );
--- The secret itself is NEVER in this table. vault_path points at Vault Transit ciphertext (09).
+-- RLS: enabled + forced + ws-isolation policy + grant SELECT/INSERT/UPDATE to ac_app (NO DELETE —
+-- revoke is a tombstone UPDATE, rows retained for audit). Index (workspace_id, provider, status) for resolve.
+-- The secret itself is NEVER in this table. vault_path points at the secrets backend (09 §9).
 ```
 
 ### 4.4 Knowledge / RAG

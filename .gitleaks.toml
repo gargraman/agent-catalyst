@@ -1,0 +1,26 @@
+# gitleaks config for the CI secret-scan gate (0d).
+# Uses the full default ruleset (API keys, tokens, private keys, high-entropy strings) and allowlists
+# ONLY the documented dev-only Postgres passwords that appear in deploy/compose.yaml, the migrations,
+# and api/settings.py defaults. Real credentials are injected via the environment / Vault (09) and must
+# never be committed — the default rules still catch those.
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Dev-only Postgres passwords + generated/untracked build artifacts (not committed source)"
+regexes = [
+  '''ac_dev_pw''',
+  '''ac_app_pw''',
+]
+# Generated/ignored trees that --no-git would otherwise walk. These are build artifacts (Next.js preview
+# keys, graphify entropy-hashed filenames), not committed source — a fresh CI checkout won't contain them.
+paths = [
+  '''(^|/)\.next/''',
+  '''(^|/)graphify-out/''',
+  '''(^|/)node_modules/''',
+  '''(^|/)\.venv/''',
+  '''(^|/)dist/''',
+  '''(^|/)build/''',
+  '''(^|/)coverage/''',
+]

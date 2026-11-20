@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Agent Catalyst · Security &amp; tenancy</title>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root { --paper:#f4f5f7; --ink:#111827; --muted:#5b6474; --soft:#6b7280;
+      --font-sans:'Geist',system-ui,sans-serif; --font-serif:'Instrument Serif',serif; --font-mono:'Geist Mono',ui-monospace,monospace; }
+    body { font-family:var(--font-sans); background:var(--paper); color:var(--ink);
+      min-height:100vh; display:flex; align-items:center; justify-content:center; padding:3rem 2rem; }
+    .frame { max-width:1180px; width:100%; }
+    .eyebrow { font-family:var(--font-mono); font-size:0.66rem; font-weight:500; letter-spacing:0.18em; text-transform:uppercase; color:var(--muted); margin-bottom:0.5rem; }
+    h1 { font-family:var(--font-serif); font-size:clamp(1.6rem,2.4vw+0.75rem,2.1rem); font-weight:400; letter-spacing:-0.02em; line-height:1.15; margin-bottom:0.4rem; }
+    .lede { font-family:var(--font-serif); font-style:italic; font-size:1.05rem; color:var(--muted); margin-bottom:1.5rem; max-width:66ch; }
+    svg { width:100%; min-width:960px; display:block; }
+    .cards { display:grid; grid-template-columns:1fr 1fr 1fr; gap:1rem; margin-top:1.75rem; }
+    .card { background:#fff; border:1px solid rgba(17,24,39,0.12); border-radius:6px; padding:1.1rem 1.2rem; }
+    .card .eyebrow { margin-bottom:0.5rem; }
+    .card h3 { font-size:0.92rem; font-weight:600; margin-bottom:0.5rem; display:flex; align-items:center; gap:0.5rem; }
+    .dot { width:7px; height:7px; border-radius:50%; display:inline-block; }
+    .card p { font-size:0.82rem; line-height:1.5; color:var(--muted); }
+    .card code { font-family:var(--font-mono); font-size:0.76rem; color:var(--ink); }
+    footer { margin-top:1.75rem; padding-top:0.75rem; border-top:1px solid rgba(17,24,39,0.12); font-family:var(--font-mono); font-size:0.66rem; letter-spacing:0.08em; color:var(--soft); }
+  </style>
+</head>
+<body>
+  <div class="frame">
+    <p class="eyebrow">Backend Services · 09 · Security &amp; multi-tenancy</p>
+    <h1>One paved road in, no way around it</h1>
+    <p class="lede">Every request crosses from untrusted to tenant-scoped through the auth guard; secrets decrypt in memory only; tool execution is exiled to an egress-restricted sandbox a caller can never reach directly.</p>
+
+    <svg viewBox="0 0 1080 600" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="sec-title sec-desc">
+      <title id="sec-title">Agent Catalyst security and tenancy</title>
+      <desc id="sec-desc">A secure paved road across three trust zones: an untrusted caller enters the tenant-scoped platform only through the api auth guard, which pins the tenant for RLS, resolves provider keys from the secrets backend (AWS Secrets Manager) in memory, audits every action, and dispatches tool execution through an approval gate into a gVisor sandbox whose only egress is a deny-by-default allow-list proxy. Direct caller-to-sandbox access and open sandbox egress are blocked.</desc>
+      <defs>
+        <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#64748b"/></marker>
+        <marker id="arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#059669"/></marker>
+        <marker id="arrow-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#0891b2"/></marker>
+      </defs>
+
+      <rect width="100%" height="100%" fill="#f4f5f7"/>
+
+      <!-- ===== Trust zones ===== -->
+      <rect x="24" y="112" width="200" height="320" rx="8" fill="rgba(225,29,72,0.03)" stroke="rgba(225,29,72,0.35)" stroke-width="0.9" stroke-dasharray="5,4"/>
+      <rect x="60" y="116" width="128" height="12" rx="2" fill="#f4f5f7"/>
+      <text x="124" y="125" fill="#e11d48" font-size="7" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.14em">UNTRUSTED · CALLER</text>
+
+      <rect x="260" y="112" width="456" height="320" rx="8" fill="rgba(52,211,153,0.04)" stroke="rgba(5,150,105,0.30)" stroke-width="0.9"/>
+      <rect x="400" y="116" width="176" height="12" rx="2" fill="#f4f5f7"/>
+      <text x="488" y="125" fill="#059669" font-size="7" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.14em">PLATFORM · TENANT-SCOPED</text>
+
+      <rect x="744" y="112" width="312" height="320" rx="8" fill="rgba(217,119,6,0.04)" stroke="rgba(217,119,6,0.35)" stroke-width="0.9" stroke-dasharray="5,4"/>
+      <rect x="800" y="116" width="200" height="12" rx="2" fill="#f4f5f7"/>
+      <text x="900" y="125" fill="#b45309" font-size="7" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.14em">ISOLATED RUNTIME (P2)</text>
+
+      <!-- ===== Permitted paths (behind nodes) ===== -->
+      <!-- P1 Caller -> api (ingress) -->
+      <path d="M 208,276 H 242 Q 250,276 250,268 V 244 Q 250,236 258,236 H 292" fill="none" stroke="#0891b2" stroke-width="1.3" marker-end="url(#arrow-link)"/>
+      <rect x="216" y="216" width="68" height="12" rx="2" fill="#f4f5f7"/>
+      <text x="250" y="225" fill="#0891b2" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.04em">OIDC · TOKEN</text>
+
+      <!-- P2 api -> Postgres (RLS) — relationship carried by the Postgres·RLS node label -->
+      <path d="M 460,236 H 484 Q 492,236 492,228 V 192 Q 492,184 500,184 H 520" fill="none" stroke="#64748b" stroke-width="1.2" marker-end="url(#arrow)"/>
+
+      <!-- P3 api -> secrets backend (resolve, privileged, dashed) — carried by the secrets-backend node label -->
+      <path d="M 460,256 H 492 Q 500,256 500,264 V 268 Q 500,276 508,276 H 520" fill="none" stroke="#e11d48" stroke-width="1.1" stroke-dasharray="4,3" marker-end="url(#arrow)"/>
+
+      <!-- P4 api -> sandbox (approved exec, through gate, accent) -->
+      <path d="M 376,200 V 144 Q 376,136 384,136 H 856 Q 864,136 864,144 V 184" fill="none" stroke="#059669" stroke-width="1.5" marker-end="url(#arrow-accent)"/>
+      <rect x="568" y="118" width="84" height="12" rx="2" fill="#f4f5f7"/>
+      <text x="610" y="127" fill="#059669" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.04em">DISPATCH / CALL</text>
+
+      <!-- P5 sandbox -> egress proxy -->
+      <path d="M 864,256 V 320" fill="none" stroke="#64748b" stroke-width="1.2" marker-end="url(#arrow)"/>
+      <rect x="872" y="282" width="78" height="12" rx="2" fill="#f4f5f7"/>
+      <text x="911" y="291" fill="#5b6474" font-size="8" font-family="'Geist Mono',monospace" text-anchor="start" letter-spacing="0.04em">ONLY EGRESS</text>
+
+      <!-- P6 egress -> providers -->
+      <path d="M 864,384 V 456" fill="none" stroke="#64748b" stroke-width="1.2" marker-end="url(#arrow)"/>
+      <rect x="872" y="414" width="76" height="12" rx="2" fill="#f4f5f7"/>
+      <text x="911" y="423" fill="#5b6474" font-size="8" font-family="'Geist Mono',monospace" text-anchor="start" letter-spacing="0.04em">ALLOW-LIST</text>
+
+      <!-- P7 api -> audit (dashed) -->
+      <path d="M 340,272 V 364 Q 340,372 348,372 H 520" fill="none" stroke="#64748b" stroke-width="1.1" stroke-dasharray="4,3" marker-end="url(#arrow)"/>
+      <rect x="352" y="352" width="60" height="12" rx="2" fill="#f4f5f7"/>
+      <text x="382" y="361" fill="#5b6474" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.04em">AUDIT</text>
+
+      <!-- ===== Forbidden paths (rose dashed, stop glyph, NO arrowhead) ===== -->
+      <!-- F1 Caller -> sandbox direct = BLOCKED -->
+      <path d="M 128,240 V 112 Q 128,104 136,104 H 734" fill="none" stroke="#e11d48" stroke-width="1.3" stroke-dasharray="4,4"/>
+      <line x1="736" y1="94" x2="736" y2="114" stroke="#e11d48" stroke-width="2.4"/>
+      <circle cx="736" cy="104" r="3.5" fill="#e11d48"/>
+      <rect x="420" y="86" width="150" height="12" rx="2" fill="#f4f5f7"/>
+      <text x="495" y="95" fill="#e11d48" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.04em">NO DIRECT PATH TO SANDBOX</text>
+
+      <!-- F2 sandbox -> open internet = BLOCKED -->
+      <path d="M 948,352 H 1004" fill="none" stroke="#e11d48" stroke-width="1.3" stroke-dasharray="4,4"/>
+      <line x1="1006" y1="342" x2="1006" y2="362" stroke="#e11d48" stroke-width="2.4"/>
+      <circle cx="1006" cy="352" r="3.5" fill="#e11d48"/>
+      <rect x="950" y="328" width="92" height="12" rx="2" fill="#f4f5f7"/>
+      <text x="996" y="337" fill="#e11d48" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.04em">DENY-BY-DEFAULT</text>
+
+      <!-- ===== Privileged gate on P4 (sits over the clear zone-C approach, clear of the store column) ===== -->
+      <polygon points="760,122 774,136 760,150 746,136" fill="#f4f5f7" stroke="#059669" stroke-width="1.3"/>
+      <circle cx="760" cy="135" r="2.4" fill="none" stroke="#059669" stroke-width="1.1"/>
+      <line x1="760" y1="137" x2="760" y2="141" stroke="#059669" stroke-width="1.1"/>
+      <rect x="719" y="152" width="82" height="12" rx="2" fill="#f4f5f7"/>
+      <text x="760" y="161" fill="#059669" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.04em">tool.approve</text>
+
+      <!-- ===== Nodes ===== -->
+      <!-- Caller -->
+      <rect x="48" y="240" width="160" height="72" rx="6" fill="#f4f5f7"/>
+      <rect x="48" y="240" width="160" height="72" rx="6" fill="rgba(148,163,184,0.18)" stroke="#64748b" stroke-width="1"/>
+      <rect x="56" y="248" width="30" height="12" rx="2" fill="transparent" stroke="rgba(100,116,139,0.45)" stroke-width="0.8"/>
+      <text x="71" y="257" fill="#64748b" font-size="7" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.06em">EXT</text>
+      <text x="128" y="276" fill="#111827" font-size="12" font-weight="600" font-family="'Geist',sans-serif" text-anchor="middle">Caller</text>
+      <text x="128" y="291" fill="#5b6474" font-size="8.5" font-family="'Geist Mono',monospace" text-anchor="middle">console · cURL · channel</text>
+      <text x="128" y="304" fill="#6b7280" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle">+ Redis deny-set</text>
+
+      <!-- api · auth (focal) -->
+      <rect x="292" y="200" width="168" height="72" rx="6" fill="#f4f5f7"/>
+      <rect x="292" y="200" width="168" height="72" rx="6" fill="rgba(52,211,153,0.18)" stroke="#059669" stroke-width="1.4"/>
+      <rect x="300" y="208" width="24" height="12" rx="2" fill="transparent" stroke="rgba(5,150,105,0.50)" stroke-width="0.8"/>
+      <text x="312" y="217" fill="#059669" font-size="7" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.06em">API</text>
+      <text x="376" y="236" fill="#111827" font-size="12" font-weight="600" font-family="'Geist',sans-serif" text-anchor="middle">Auth guard</text>
+      <text x="376" y="251" fill="#5b6474" font-size="8.5" font-family="'Geist Mono',monospace" text-anchor="middle">3 planes · RBAC · policy</text>
+      <text x="376" y="264" fill="#6b7280" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle">OIDC adapter · fail-closed</text>
+
+      <!-- Postgres + RLS -->
+      <rect x="520" y="152" width="168" height="64" rx="6" fill="#f4f5f7"/>
+      <rect x="520" y="152" width="168" height="64" rx="6" fill="rgba(167,139,250,0.20)" stroke="#7c3aed" stroke-width="1"/>
+      <rect x="528" y="160" width="42" height="12" rx="2" fill="transparent" stroke="rgba(124,58,237,0.45)" stroke-width="0.8"/>
+      <text x="549" y="169" fill="#7c3aed" font-size="7" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.06em">STORE</text>
+      <text x="604" y="186" fill="#111827" font-size="12" font-weight="600" font-family="'Geist',sans-serif" text-anchor="middle">Postgres · RLS</text>
+      <text x="604" y="201" fill="#5b6474" font-size="8.5" font-family="'Geist Mono',monospace" text-anchor="middle">SET LOCAL workspace_id</text>
+
+      <!-- Secrets backend -->
+      <rect x="520" y="248" width="168" height="56" rx="6" fill="#f4f5f7"/>
+      <rect x="520" y="248" width="168" height="56" rx="6" fill="rgba(251,113,133,0.15)" stroke="#e11d48" stroke-width="1"/>
+      <rect x="528" y="254" width="28" height="12" rx="2" fill="transparent" stroke="rgba(225,29,72,0.45)" stroke-width="0.8"/>
+      <text x="542" y="263" fill="#e11d48" font-size="7" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.06em">SEC</text>
+      <text x="604" y="280" fill="#111827" font-size="12" font-weight="600" font-family="'Geist',sans-serif" text-anchor="middle">Secrets backend</text>
+      <text x="604" y="294" fill="#5b6474" font-size="8.5" font-family="'Geist Mono',monospace" text-anchor="middle">AWS Secrets Manager (014)</text>
+
+      <!-- Audit log -->
+      <rect x="520" y="344" width="168" height="56" rx="6" fill="#f4f5f7"/>
+      <rect x="520" y="344" width="168" height="56" rx="6" fill="rgba(17,24,39,0.05)" stroke="#5b6474" stroke-width="1"/>
+      <rect x="528" y="350" width="34" height="12" rx="2" fill="transparent" stroke="rgba(91,100,116,0.50)" stroke-width="0.8"/>
+      <text x="545" y="359" fill="#5b6474" font-size="7" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.06em">LOG</text>
+      <text x="604" y="376" fill="#111827" font-size="12" font-weight="600" font-family="'Geist',sans-serif" text-anchor="middle">Audit log</text>
+      <text x="604" y="390" fill="#5b6474" font-size="8.5" font-family="'Geist Mono',monospace" text-anchor="middle">append-only · per action</text>
+
+      <!-- Sandbox (isolated, dashed border) -->
+      <rect x="780" y="184" width="168" height="72" rx="6" fill="#f4f5f7"/>
+      <rect x="780" y="184" width="168" height="72" rx="6" fill="rgba(217,119,6,0.08)" stroke="#d97706" stroke-width="1.2" stroke-dasharray="5,3"/>
+      <rect x="788" y="192" width="48" height="12" rx="2" fill="transparent" stroke="rgba(217,119,6,0.50)" stroke-width="0.8"/>
+      <text x="812" y="201" fill="#b45309" font-size="7" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.06em">SANDBOX</text>
+      <text x="864" y="220" fill="#111827" font-size="12" font-weight="600" font-family="'Geist',sans-serif" text-anchor="middle">MCP + tool exec</text>
+      <text x="864" y="235" fill="#5b6474" font-size="8.5" font-family="'Geist Mono',monospace" text-anchor="middle">gVisor · ephemeral/call</text>
+      <text x="864" y="248" fill="#6b7280" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle">creds in-mem · depth caps</text>
+
+      <!-- Egress proxy -->
+      <rect x="780" y="320" width="168" height="64" rx="6" fill="#f4f5f7"/>
+      <rect x="780" y="320" width="168" height="64" rx="6" fill="rgba(251,113,133,0.15)" stroke="#e11d48" stroke-width="1"/>
+      <rect x="788" y="328" width="30" height="12" rx="2" fill="transparent" stroke="rgba(225,29,72,0.45)" stroke-width="0.8"/>
+      <text x="803" y="337" fill="#e11d48" font-size="7" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.06em">SEC</text>
+      <text x="864" y="354" fill="#111827" font-size="12" font-weight="600" font-family="'Geist',sans-serif" text-anchor="middle">Egress proxy</text>
+      <text x="864" y="369" fill="#5b6474" font-size="8.5" font-family="'Geist Mono',monospace" text-anchor="middle">Squid · deny-by-default</text>
+
+      <!-- Providers (external, outside zones) -->
+      <rect x="780" y="456" width="168" height="56" rx="6" fill="#f4f5f7"/>
+      <rect x="780" y="456" width="168" height="56" rx="6" fill="rgba(251,191,36,0.18)" stroke="#d97706" stroke-width="1"/>
+      <rect x="788" y="462" width="46" height="12" rx="2" fill="transparent" stroke="rgba(217,119,6,0.45)" stroke-width="0.8"/>
+      <text x="811" y="471" fill="#d97706" font-size="7" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.06em">CLOUD</text>
+      <text x="864" y="488" fill="#111827" font-size="12" font-weight="600" font-family="'Geist',sans-serif" text-anchor="middle">Allow-listed targets</text>
+      <text x="864" y="502" fill="#5b6474" font-size="8.5" font-family="'Geist Mono',monospace" text-anchor="middle">providers · internal APIs</text>
+
+      <!-- ===== Legend ===== -->
+      <line x1="24" y1="536" x2="1056" y2="536" stroke="rgba(17,24,39,0.10)" stroke-width="0.8"/>
+      <text x="24" y="552" fill="#5b6474" font-size="8" font-family="'Geist Mono',monospace" letter-spacing="0.16em">LEGEND</text>
+
+      <line x1="24" y1="569" x2="52" y2="569" stroke="#0891b2" stroke-width="1.3" marker-end="url(#arrow-link)"/>
+      <text x="60" y="572" fill="#5b6474" font-size="8.5" font-family="'Geist',sans-serif">Permitted ingress</text>
+
+      <line x1="196" y1="569" x2="224" y2="569" stroke="#059669" stroke-width="1.5" marker-end="url(#arrow-accent)"/>
+      <text x="232" y="572" fill="#5b6474" font-size="8.5" font-family="'Geist',sans-serif">Approved exec (gated)</text>
+
+      <line x1="384" y1="569" x2="412" y2="569" stroke="#64748b" stroke-width="1.1" stroke-dasharray="4,3"/>
+      <text x="420" y="572" fill="#5b6474" font-size="8.5" font-family="'Geist',sans-serif">Privileged / audit</text>
+
+      <line x1="548" y1="569" x2="572" y2="569" stroke="#e11d48" stroke-width="1.3" stroke-dasharray="4,4"/>
+      <line x1="574" y1="563" x2="574" y2="575" stroke="#e11d48" stroke-width="2.4"/>
+      <text x="584" y="572" fill="#5b6474" font-size="8.5" font-family="'Geist',sans-serif">Blocked path</text>
+
+      <polygon points="712,563 720,569 712,575 704,569" fill="#f4f5f7" stroke="#059669" stroke-width="1.2"/>
+      <text x="728" y="572" fill="#5b6474" font-size="8.5" font-family="'Geist',sans-serif">Privileged gate</text>
+    </svg>
+
+    <div class="cards">
+      <div class="card">
+        <p class="eyebrow">DEFENCE IN DEPTH</p>
+        <h3><span class="dot" style="background:#059669"></span>Guard <em>and</em> RLS</h3>
+        <p>The guard is the primary 403; RLS is the backstop — if a query ever forgets <code>WHERE workspace_id</code>, it returns zero rows, not another tenant's data. A CI isolation suite proves both hold.</p>
+      </div>
+      <div class="card">
+        <p class="eyebrow">WHY THE SANDBOX EXISTS</p>
+        <h3><span class="dot" style="background:#d97706"></span>Injection ≠ exfiltration</h3>
+        <p>Tool/MCP execution driven by model output is the weaponizable surface. gVisor isolation + deny-by-default egress means a prompt-injected agent can't become an SSRF or exfil primitive.</p>
+      </div>
+      <div class="card">
+        <p class="eyebrow">IMMEDIATE REVOCATION</p>
+        <h3><span class="dot" style="background:#e11d48"></span>The Redis deny-set</h3>
+        <p>Claims are the authZ source of record (next-login), but a transient deny-set keyed by subject <em>and</em> token id fails closed now — one admin <code>revoke-user</code> cuts live sessions and caller tokens at once.</p>
+      </div>
+    </div>
+
+    <footer>AGENT CATALYST · docs/backend 09 §1–§12 · 11 §1 — secure paved road · three planes, guard + RLS, secret custody (AWS Secrets Manager), gVisor egress · diagram-design</footer>
+  </div>
+</body>
+</html>

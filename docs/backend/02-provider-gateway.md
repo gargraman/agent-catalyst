@@ -4,6 +4,36 @@
 > everything speaks one normalized dialect; below it, each provider's quirks are contained. This is where
 > model-agnosticism either holds or quietly leaks — and where cost accuracy is won or lost.
 
+> **BUILT STATE (2026-11-03, feature `specs/002-provider-gateway`, M1).** This design is implemented in
+> `services/runtime/providers/` and verified (166 unit / 20 integration tests; runtime purity green).
+>
+> ⚠️ **The prose in §§1, 3, 6 below predates the LiteLLM-transport-only decision and is kept for design
+> rationale only. Where it conflicts with this BUILT-STATE block, this block wins.** Specifically: no
+> adapter calls a native SDK (§1 delta, §3), the registry is keyed by exact provider with no `_default`
+> catch-all (§3), profiles live in `profiles_data/` not `profiles/` (§4), and retry/fallback/circuit-
+> breaking (§1, §6) is unbuilt (deferred to M2/M3/M6). Superseded passages are flagged inline.
+> Deltas from the design as-written, reconciled here:
+> - **Transport decision LOCKED = LiteLLM transport-only** (not the native-SDK option floated in §1's
+>   delta). All three adapters route through one seam, `transport.py` → `litellm.acompletion(stream=True,
+>   drop_params=False)`; litellm's `response_cost` is never read. The per-provider usage-mapping divergence
+>   (Anthropic cache_read/cache_creation, §cost) is handled in our mappers, not by switching SDKs.
+> - **Adapters built:** `openai_adapter`, `ollama_adapter`, net-new `anthropic_adapter`, over shared
+>   `_common` plumbing (`build_wire_request` + `stream_via_transport`). Structured `TOOL_CALL_*` events are
+>   **deferred to M2** (C1) — M1 adapters emit `TEXT_DELTA` + one terminal `USAGE` only.
+> - **Profiles are versioned JSON** in `runtime/providers/profiles_data/` (loaded by `resolve_profile`,
+>   content-matched on provider+model, `@lru_cache`, fail-closed). 8 profiles seeded; pricing sourced from
+>   `mvp/profiles` + `frontend/src/lib/data.ts` (judge `claude-haiku-5-5` price cited from the claude-api
+>   skill), all `provisional` until the owner-gated paid H2 reconciliation. **Judge-model naming
+>   reconciliation (Haiku 4.5 vs approved `claude-haiku-5-5`) is deferred to M3.**
+> - **Gateway hardening done:** fail-closed unknown model (FileNotFoundError) + retired-model guard
+>   (`ModelRetiredError`); transport failures normalized to one `ERROR` event (no raw SDK type; api_key
+>   scrubbed); a stream that ends with no `USAGE` → degraded `ERROR` (never silent success). Retry/
+>   fallback/circuit-breaking (§1) are **not yet built** — deferred (fallback model is a frontend-modelled
+>   field; circuit breaker is M3/M6, F8).
+> - Real key custody is now **BUILT** (feature 014) via a pluggable secrets backend (AWS Secrets Manager /
+>   LocalStack / `local` — **not** Vault; `scope.md` 2026-11-11, `09 §9`): the API resolves `api_key` at invoke
+>   and passes the plaintext string in. The gateway itself still just **receives** `api_key` (no custody logic here).
+
 ## 1. What the gateway owns (and what it refuses to trust)
 
 Owns: the normalized request/response IR, per-provider adapters, **our own cost computation**, retry/
@@ -19,6 +49,10 @@ choice rules) that drift (05) and COGS (07) depend on.
 > Anthropic and OpenAI — where cached/reasoning-token accounting materially changes cost — the adapter
 > may call the **native SDK directly** behind the same `ProviderAdapter` Protocol. The framework is
 > never the source of truth for cost or capability.
+>
+> 🔸 **SUPERSEDED (see BUILT STATE):** the native-SDK option was *not* taken. All adapters route through
+> the single LiteLLM seam `transport.py`; the cached/reasoning accounting is handled in our own usage
+> mappers (`_common.map_anthropic_usage` / `map_openai_usage`), not by switching SDKs. Cost stays ours.
 
 ## 2. The IR (intermediate representation)
 
@@ -76,6 +110,13 @@ class NormalizedUsage:
 
 One interface, N implementations. Adapters translate IR ⇄ provider wire format and normalize usage.
 
+> 🔸 **SUPERSEDED (see BUILT STATE):** as built, the Protocol lives in `runtime/providers/base.py` (not
+> `adapters/base.py`); every adapter's `stream()` goes through `_common.stream_via_transport` → `transport.py`
+> (LiteLLM), never a native SDK. The registry is keyed by **exact** provider — `{"openai", "ollama",
+> "anthropic"}` via `register_adapter()` — with **no** `AnthropicAdapter (native SDK)` / `LiteLLMAdapter`
+> / `_default` catch-all; an unknown provider fails closed. The code block below reflects the original
+> design, not the shipped code.
+
 ```python
 # services/runtime/providers/adapters/base.py
 from typing import Protocol, AsyncIterator
@@ -108,7 +149,7 @@ def adapter_for(provider: str) -> ProviderAdapter:
 ## 4. Capability profiles — versioned data, not code
 
 A profile per `(provider, model, api_version)`: pricing + feature flags. These are **data files**
-(`providers/profiles/*.json`), hot-reloadable, and a resolved copy is **snapshotted into each
+(`providers/profiles_data/*.json` as built), hot-reloadable, and a resolved copy is **snapshotted into each
 AgentVersion** (`agent_versions.profile_snapshot`, 01) so a profile change can't silently alter a
 published agent — it becomes a drift trigger (05). **When the version pins a `model_config.fallback`, the
 fallback model's profile is snapshotted too** (`profile_snapshot.fallback`) so the fallback path (§6) is
@@ -116,7 +157,7 @@ immutable on the same terms — a fallback-model reprice is a drift trigger, not
 review A1, 2026-10-24).
 
 ```jsonc
-// services/runtime/providers/profiles/anthropic__claude-opus-5-5.json
+// services/runtime/providers/profiles_data/anthropic__claude-opus-5-5.json  (as built)
 {
   "provider": "anthropic",
   "model": "claude-opus-5-5",
@@ -145,7 +186,7 @@ review A1, 2026-10-24).
 ```
 
 ```python
-# services/runtime/providers/profiles/__init__.py
+# services/runtime/providers/profiles.py  (as built — a module, not a profiles/ package)
 @dataclass(frozen=True)
 class CapabilityProfile:
     provider: str; model: str; api_version: str | None
@@ -211,7 +252,12 @@ Profiles are hand-authored JSON, so cost accuracy is only as good as how current
   Reconciliation **detects** drift; this process is what **fixes** it.
 - **Deprecation feeds P0-3.** The `availability`/`sunset_at` fields (§4) are part of the same PR workflow;
   marking a model `deprecated`/`retired` here is what the model-deprecation detector reads (16 §3). So
-  profile currency gates both cost accuracy *and* deprecation notifications.
+  profile currency gates both cost accuracy *and* deprecation notifications. The **same signal — no new
+  detector** — also backs the admin **`outdated` view** (`GET /api/v1/org/compliance`, 08 · 15): it lists
+  agents whose pinned `profile_snapshot.model` is stale or past `sunset_at` so owners re-point onto a current
+  model before removal. This surfaces as a **distinct, informational flag** (FE `Agent.profileOutdated`,
+  `lld/01`) — **separate from `needsReEval`** (config-drift, which gates publish): a merely-sunsetting model
+  flags the agent without blocking its publish.
 
 > Honest limit: this is a **manual-first** process. It reduces, not eliminates, the staleness risk —
 > the CI gate makes staleness loud rather than silent, but a provider price change still isn't reflected
@@ -242,8 +288,40 @@ class Substitution:
 
 ## 6. Retry, fallback, circuit breaker (resilience)
 
+> ✅ **AS BUILT (feature 025, 2026-11-16) — retry + circuit breaker + live/batch bulkhead; fallback still NOT built.**
+> Code: [`runtime/providers/resilience.py`](../../services/runtime/providers/resilience.py) (`ResiliencePolicy`,
+> `BreakerKey`, `LocalBreakerStore`, `Guard`), used by `gateway.stream` / `gateway.embed`; the shared store is
+> [`api/breaker_store.py`](../../services/api/breaker_store.py) (`RedisBreakerStore`), composed per process in
+> [`api/resilience_wiring.py`](../../services/api/resilience_wiring.py) and carried on `RunContext.guard`.
+>
+> - **Retry only before the first event.** A transient failure (429 / 5xx / timeout / connect) is retried with
+>   exponential backoff + jitter **only if nothing has been yielded yet**; once a token streamed, a failure is a
+>   terminal `ERROR` (no duplicated partial output). Non-transient (auth, 4xx, content filter) is never retried.
+> - **`Retry-After` is honoured but capped** at `AC_PROVIDER_WAIT_CAP_S` (default 8 s), and a wait that would cross
+>   the run deadline is not taken (`Guard.fits_deadline`). Defaults: `AC_PROVIDER_MAX_ATTEMPTS=3`,
+>   `AC_PROVIDER_BACKOFF_BASE_S=0.5`.
+> - **Breaker keys are `(provider, model, traffic class)`** with class ∈ {`live`, `batch`} (`traffic_class(source)`:
+>   eval + ingestion ⇒ batch). Opens after `AC_BREAKER_FAILURE_THRESHOLD` (5) consecutive failures, one half-open
+>   trial per `AC_BREAKER_COOLDOWN_S` (30 s) **across replicas** (Redis). A batch call is also refused when the
+>   live key is open (`also_check`), so evals never probe a provider live traffic already gave up on.
+>   Refusal = `provider_unavailable`, **zero transport calls**.
+> - **Bulkhead:** batch calls hold a per-(provider, model) semaphore (`AC_BATCH_CONCURRENCY`, default 4); eval cases
+>   additionally hold a `case_slot` before invoke so queueing never eats the case deadline. Effective cap =
+>   cap × replicas (D6, known limit).
+> - **G1 hidden retry removed:** the SDK/LiteLLM retries are disabled (`max_retries=0`, `num_retries=0` in
+>   [`transport.py`](../../services/runtime/providers/transport.py)) — the Guard is the only retry layer, so attempts
+>   and cost are countable.
+> - **Kill switch:** `AC_PROVIDER_MAX_ATTEMPTS=1` disables retries without a deploy of code.
+> - **Cost basis (FR-015):** cost = provider-**reported** usage of the successful attempt only; failed attempts are
+>   disclosed via `runs.retry_count` (0014) / `RunOut.retries`, never estimated into cost.
+> - **Observability:** `ac_provider_retries_total`, `ac_breaker_transitions_total`, `ac_breaker_refusals_total`,
+>   `ac_breaker_degraded_total`, `ac_batch_queue_wait_seconds`, `ac_eval_case_wait_seconds` — labels are registry ids
+>   only (FR-013). Degraded-mode behaviour: [`degraded-mode.md`](degraded-mode.md).
+> - **Fallback model: NOT built** (v1.x). The block below remains the target shape for fallback only; its retry and
+>   breaker parts are superseded by the as-built notes above.
+
 ```python
-# services/runtime/providers/gateway.py
+# services/runtime/providers/gateway.py  (TARGET DESIGN — fallback part still unbuilt; retry/breaker as built above)
 async def stream(req, *, api_key, profile) -> AsyncIterator[NormalizedStreamEvent]:
     adapter = adapter_for(req.provider)
     subs = adapter.supports(profile, req)

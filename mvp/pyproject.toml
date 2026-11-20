@@ -5,9 +5,9 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "agent-catalyst-mvp"
 version = "0.1.0"
-description = "Throwaway viability MVP for agent-catalyst — pure no-model-call core (Phase 1)."
+description = "Standalone viability experiment for Agent Catalyst; H2 adapters implemented, H1 pending."
 requires-python = ">=3.12"
-# Phase 1 is stdlib-only; no third-party runtime deps. Providers/judge (Phase 2+) will add deps.
+# Current OpenAI/Ollama HTTP adapters use the standard library; pytest is a development dependency.
 dependencies = []
 
 [project.optional-dependencies]

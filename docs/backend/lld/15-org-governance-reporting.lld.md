@@ -80,7 +80,7 @@ sets the knob and *reads across workspaces to verify it* (§2–§3):
 | monthly spend cap | the budget guard (`07 §3`) |
 | per-resource access policy (visibility/role/team) | invoke-time access resolution (`09 §5`) |
 | registration mandate (`agents.registered_at`) | the create-time registration gate (`14`) |
-| provider-key custody | the gateway + Vault envelope (`02`, `09 §9`) |
+| provider-key custody | the gateway + the pluggable secrets backend (AWS Secrets Manager, not Vault — feature 014, `02`, `09 §9`) |
 
 ### 1.3 Report "definitions" are code, not rows
 
@@ -464,7 +464,7 @@ defined in `08`. There is no org-plane write surface beyond the audit sink (§5)
 | eval policy | `PUT /api/v1/workspaces/:id/eval-policy` | `workspaces.eval_*` (`01 §4.1`) | publish gate (`05 §3/§5`) |
 | spend cap | `PUT /api/v1/workspaces/:id/limits` | `spend_limits.monthly_budget_usd` (`01`) | budget guard (`07 §3`) |
 | access-policy defaults | `PUT /api/v1/{res}/:id/access-policy` | `access_policy jsonb` (`01`, `12` for channels) | invoke access (`09 §5`) |
-| provider keys | `POST /api/v1/provider-keys` (+ rotate/revoke) | Vault envelope (`09 §9`) | gateway (`02`) |
+| provider keys | `POST /api/v1/provider-keys` (+ rotate/revoke) | secrets backend — AWS Secrets Manager (feature 014, not Vault; `09 §9`) | gateway (`02`) |
 | registration mandate | deploy config (`14`) | `agents.registered_at` gate | registration gate (`14`) |
 
 The §1.2 "cascade" is these routes plus the deploy-time seed — no new mechanism. Org governance's distinct

@@ -14,7 +14,11 @@ import { Segmented } from "@/components/tabs";
 import { ConfirmDialog } from "@/components/dialog";
 import { GateButton } from "@/components/gate";
 import { statusLabel, statusTone, type Agent, type AgentStatus } from "@/lib/data";
-import { useAgents, deleteAgent, duplicateAgent, publishAgent, unpublishAgent, archiveAgent, restoreAgent } from "@/lib/store";
+import {
+  useAgents, deleteAgent, duplicateAgent, publishAgent, unpublishAgent, archiveAgent, restoreAgent,
+  useAgentsStatus, useIsLiveWorkspace, loadAgents,
+} from "@/lib/store";
+import { LiveStatus } from "@/components/live-status";
 import { useAuth, usePrincipal } from "@/lib/auth";
 import { canUse } from "@/lib/access-policy";
 import { num, relative } from "@/lib/format";
@@ -48,12 +52,18 @@ export default function AgentsPage() {
   const [pageSize, setPageSize] = React.useState(10);
   const [deleteTarget, setDeleteTarget] = React.useState<Agent | null>(null);
 
+  // Live mode: useAgents() below triggers the load; these drive the Live/Mock/error strip.
+  const live = useIsLiveWorkspace();
+  const remote = useAgentsStatus();
+
   // Build-time visibility: restricted agents the caller can't use are hidden from the list (Part B2).
+  // (Live: the server already filters by access policy; this stays as defense-in-depth.)
   const agents = useAgents().filter((a) => canUse(a.accessPolicy, principal));
 
   // Filter options derived from what this caller can see (stable across selections).
   const providers = Array.from(new Set(agents.map((a) => a.provider))).sort();
-  const owners = Array.from(new Set(agents.map((a) => a.owner))).sort();
+  // filter(Boolean): live agents have no owner yet (AgentOut doesn't carry it) — don't render a blank option.
+  const owners = Array.from(new Set(agents.map((a) => a.owner).filter(Boolean))).sort();
   const tags = Array.from(new Set(agents.flatMap((a) => a.tags))).sort();
 
   const rows = agents.filter((a) => {
@@ -82,6 +92,8 @@ export default function AgentsPage() {
       <PageHeader title="Agents" description="Build, configure, test and publish LLM agents. Every version is an immutable, evaluated snapshot.">
         <GateButton permission="agent.create" variant="primary" href="/agents/new">New agent</GateButton>
       </PageHeader>
+      <LiveStatus live={live} status={remote} label="agents" onRetry={() => void loadAgents({ force: true })}
+        note="publish / archive / duplicate / delete are not saved to the server yet" />
 
       <div className="space-y-3">
         <Segmented options={FILTERS} value={status} onChange={(v) => { setStatus(v); setPage(1); }} />
@@ -115,7 +127,13 @@ export default function AgentsPage() {
       </div>
 
       {rows.length === 0 ? (
-        <EmptyState icon={<Bot className="size-6" />} title="No agents match your filters" hint="Try a different status, provider or owner, or clear the search." />
+        agents.length === 0 ? (
+          <EmptyState icon={<Bot className="size-6" />}
+            title={remote.status === "loading" ? "Loading agents…" : "No agents yet"}
+            hint={remote.status === "loading" ? "Fetching this workspace's agents." : "Create your first agent to get started."} />
+        ) : (
+          <EmptyState icon={<Bot className="size-6" />} title="No agents match your filters" hint="Try a different status, provider or owner, or clear the search." />
+        )
       ) : (
         <>
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
@@ -195,6 +213,8 @@ function AgentCard(props: RowActions) {
       <div className="flex flex-wrap items-center gap-1.5">
         <Badge tone="neutral">{a.provider}</Badge>
         <Badge tone="neutral">{a.activeVersion}</Badge>
+        {/* @backend profileOutdated: GET /api/v1/org/compliance "outdated" view (model_deprecation_scan). */}
+        {!archived && a.profileOutdated && <Badge tone="warning">Model sunsetting</Badge>}
         {a.tags.slice(0, 2).map((t) => <Badge key={t} tone="neutral">{t}</Badge>)}
         {extraTags > 0 && <span className="text-xs text-muted">+{extraTags}</span>}
       </div>

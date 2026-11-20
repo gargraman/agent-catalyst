@@ -12,6 +12,43 @@
 > **prod rollout stage is always manual-gated** (§6). Treat "merge" and "deploy to prod" as two
 > separate, separately-authorized actions.
 
+> ### ⚠️ AS BUILT (feature 014, 2026-11-11) — secret custody is AWS Secrets Manager, NOT Vault
+>
+> This doc still describes **HashiCorp Vault** throughout (topology, compose, DR, boot/AppRole). That is
+> **superseded**: secret custody now runs through a pluggable backend (`AC_SECRETS_PROVIDER=local|aws`), with
+> **AWS Secrets Manager** in the cloud and **LocalStack** locally — see `docs/scope.md` 2026-11-11 and `09 §9`.
+> Wherever this doc says "Vault", read: **the secrets backend**. Concrete deltas vs. the text below:
+> - The **dev compose** service is `localstack` (Secrets Manager + KMS on `:4566`), not a `vault` container.
+>   The `api` service sets `AC_SECRETS_PROVIDER=aws`, `AC_AWS_ENDPOINT_URL=http://localstack:4566`,
+>   `AC_AWS_REGION`. (See the actual `deploy/compose.yaml`.) Unit tests use the in-process `local` provider.
+> - **Prod** uses real AWS Secrets Manager via an **IAM role** on the task/pod (no static creds, no AppRole
+>   token-at-boot). KMS-at-rest replaces the per-workspace-DEK / Transit envelope scheme.
+> - **DR:** the "Vault = highest-stakes asset / unseal-key custody" material becomes AWS Secrets Manager +
+>   KMS key management (cross-region replication / KMS key policy + rotation), not Raft snapshots + unseal quorum.
+> - Scope: **provider keys only** are wired end-to-end; other cred families are designed for the same seam but
+>   not built.
+
+> ### ⚠️ AS BUILT (feature 022, 2026-11-13) — object storage is AWS S3 (LocalStack locally), NOT MinIO
+>
+> This doc describes **MinIO** as the object store (topology, service table, Langfuse-S3 reuse). That is
+> **superseded**: object storage is now **AWS S3** — emulated locally by **LocalStack S3** and backed by real
+> AWS S3 in prod (via an IAM role) — mirroring the 014 Vault→AWS Secrets Manager reversal. Wherever this doc
+> says "MinIO", read: **the object store (AWS S3 / LocalStack S3)**. Why: MinIO removed its community images
+> from Docker Hub (Sept 2026) and gated quay.io behind auth, so it is no longer freely pullable and its last
+> community build is frozen — see `docs/scope.md` 2026-11-13. Concrete deltas vs. the compose text below:
+> - The dev `localstack` service runs `SERVICES=secretsmanager,kms,s3`; a mounted `ready.d` hook
+>   (`deploy/localstack/init-s3.sh`) creates the `ac-uploads` and `langfuse` buckets. **No `minio` container.**
+> - Object storage is **infrastructure-only** so far — no app-side S3 client, no `Settings` field reads a bucket
+>   yet. S3 reuses the same `AC_AWS_ENDPOINT_URL` + dummy AWS creds as secrets (no new local env). The future
+>   client is plain `boto3.client("s3", endpoint_url=…)` — same seam as the secrets provider.
+> - **Langfuse + ClickHouse are a thin PLACEHOLDER**, guarded by `profiles: ["observability"]` and **OFF by
+>   default**. They are **NOT Langfuse-v3-ready** — real v3 is a multi-container topology (`langfuse-web` +
+>   `langfuse-worker` + a ClickHouse init step + `ENCRYPTION_KEY`/`SALT`/`NEXTAUTH_URL` + a full `LANGFUSE_S3_*`
+>   block pointing at the `langfuse` bucket) that will **replace** these stubs when observability is actually
+>   turned on. Their only acceptance bar today is that `docker compose --profile observability config` parses.
+> - Local workflow is a root **`Makefile`** (`make up` / `make test-integration` / `make observability-up`);
+>   integration tests are opt-in under `AC_RUN_LOCALSTACK=1`. See `specs/022-local-dev-stack/quickstart.md`.
+
 ## 1. Topology at a glance
 
 ```mermaid
@@ -37,8 +74,9 @@ flowchart TB
   EGRESS -. allow-list .-> INT[approved internal/external endpoints]
   API -. decrypt key .-> VAULT[(Vault<br/>per-workspace DEK)]
   WRK -. decrypt key .-> VAULT
-  API --> LF[(Langfuse<br/>traces · cost)]
+  API --> LF[(Langfuse v3<br/>traces · cost)]
   WRK --> LF
+  LF --> CH[(ClickHouse<br/>trace backend · P2 analytics DB)]
   API --> PROV[LLM providers]
   WRK --> PROV
 ```
@@ -69,8 +107,17 @@ identical code (00 §1).
 | Postgres+pgvector | `pgvector/pgvector:pg16` | 1 (+replica later) | vertical + read replicas | **no** |
 | Redis | `redis:7` | 1 | vertical | **no** |
 | Vault | `hashicorp/vault` | 1 (HA: 3 raft) | — | **no** |
-| Langfuse | `langfuse/langfuse` | 1 | — | **no** |
+| Langfuse **v3** | `langfuse/langfuse@sha256:<digest>` (pinned — §2/§12) | 1 | — | **no** |
+| ClickHouse | `clickhouse/clickhouse-server` | 1 | vertical (external/dedicated via `CLICKHOUSE_URL` — 11 LLD) | **no** |
 | MinIO | `minio/minio` | 1 (HA: 4) | storage | **no** |
+
+> **Langfuse v3 brings ClickHouse (its only net-new dependency here).** v3 no longer runs Postgres-only — it
+> keeps traces in a **ClickHouse** columnar backend and also wants Redis + S3. We **already run Redis and
+> MinIO (S3-compatible)**, so v3 reuses those; the single net-new stateful service is **`clickhouse`**. That
+> columnar backend is what lets us retain **100% of traces** (the old 0.2 sampling is deleted, `lld/10 §8`).
+> The Langfuse image is **pinned by digest** (§2/§12) — it was the one unpinned outlier. (Phase 2) our own
+> derived `analytics` DB rides the **same** ClickHouse cluster (`lld/10 §8`); scale-out to a
+> dedicated/external cluster is a `CLICKHOUSE_URL` change (11 LLD), not a rewrite.
 
 > **Why split `worker` into interactive vs batch pools** (plan Part 4): eval + ingestion are bursty and
 > CPU/token-heavy. A single pool lets a 120-case eval run starve a user's file ingestion. Two pools with
@@ -160,8 +207,9 @@ x-app-env: &app-env
   AC_ENV: dev
   AC_DATABASE_URL: postgresql+asyncpg://app:app@postgres:5432/catalyst   # asyncpg driver (00-conv §4.1 / 11 LLD §2)
   AC_REDIS_URL: redis://redis:6379/0
-  AC_VAULT_ADDR: http://vault:8200
-  AC_VAULT_ROLE: dev
+  AC_SECRETS_PROVIDER: aws                  # pluggable custody (014); local provider for unit tests
+  AC_AWS_ENDPOINT_URL: http://localstack:4566   # LocalStack Secrets Manager; unset in prod → real AWS
+  AC_AWS_REGION: us-east-1
   AC_LANGFUSE_HOST: http://langfuse:3000
   AC_MINIO_ENDPOINT: http://minio:9000
   AC_OIDC_ISSUER: ${OIDC_ISSUER}            # from a gitignored .env (never committed)
@@ -177,11 +225,11 @@ services:
     image: redis:7
     healthcheck: { test: ["CMD","redis-cli","ping"], interval: 5s, retries: 10 }
 
-  vault:
-    image: hashicorp/vault
-    cap_add: ["IPC_LOCK"]
-    environment: { VAULT_DEV_ROOT_TOKEN_ID: dev-root, VAULT_DEV_LISTEN_ADDRESS: 0.0.0.0:8200 }
-    # dev mode auto-enables Transit; a bootstrap script creates the per-workspace keys (09).
+  localstack:
+    image: localstack/localstack:3
+    environment: { SERVICES: "secretsmanager,kms" }   # emulates AWS Secrets Manager + KMS on :4566
+    healthcheck: { test: ["CMD-SHELL","curl -sf http://localhost:4566/_localstack/health || exit 1"], interval: 5s, retries: 10 }
+    # prod has no localstack: the api runs AC_SECRETS_PROVIDER=aws against real Secrets Manager via an IAM role (09 §9).
 
   minio:
     image: minio/minio
@@ -189,10 +237,28 @@ services:
     environment: { MINIO_ROOT_USER: minio, MINIO_ROOT_PASSWORD: minio123 }
     volumes: ["miniodata:/data"]
 
-  langfuse:
-    image: langfuse/langfuse
-    environment: { DATABASE_URL: postgresql://app:app@postgres:5432/langfuse, NEXTAUTH_SECRET: dev }
-    depends_on: { postgres: { condition: service_healthy } }
+  clickhouse:                                # Langfuse v3 trace backend (+ P2 our analytics DB, lld/10 §8)
+    image: clickhouse/clickhouse-server
+    environment: { CLICKHOUSE_USER: langfuse, CLICKHOUSE_PASSWORD: langfuse }
+    ulimits: { nofile: { soft: 262144, hard: 262144 } }
+    volumes: ["chdata:/var/lib/clickhouse"]
+    healthcheck: { test: ["CMD","clickhouse-client","--query","SELECT 1"], interval: 5s, retries: 10 }
+
+  langfuse:                                  # v3: pin by digest in prod (§2/§12); needs ClickHouse + Redis + S3(MinIO)
+    image: langfuse/langfuse@sha256:<v3-digest>   # <-- pinned; dev may use langfuse/langfuse:3 for convenience
+    environment:
+      DATABASE_URL: postgresql://app:app@postgres:5432/langfuse   # Langfuse metadata still on Postgres
+      CLICKHOUSE_URL: http://clickhouse:8123                      # v3 trace store (own `langfuse` DB)
+      CLICKHOUSE_USER: langfuse
+      CLICKHOUSE_PASSWORD: langfuse
+      REDIS_CONNECTION_STRING: redis://redis:6379/1               # reuse the Redis we already run (own DB index)
+      LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse                   # reuse MinIO (S3-compatible) — endpoint via env
+      NEXTAUTH_SECRET: dev
+    depends_on:
+      postgres: { condition: service_healthy }
+      clickhouse: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      minio: { condition: service_started }
 
   migrate:                                   # runs Alembic then exits (01 §7)
     image: agent-catalyst/api
@@ -230,7 +296,7 @@ services:
     ports: ["8080:8080"]
     depends_on: [api, web]
 
-volumes: { pgdata: {}, miniodata: {} }
+volumes: { pgdata: {}, miniodata: {}, chdata: {} }
 ```
 
 `migrate` and `seed` are **run-once** containers (gate the app on their completion) — this keeps schema
@@ -428,8 +494,13 @@ semaphores (07) + cache. No app process holds tenant state in memory, so scale-o
 Split by shape (plan Part 5, cross-ref 01 + 10):
 
 - **Transactional entities** (`agents`, `versions`, `runs`, `spans`, `eval_runs`) → Postgres.
-- **High-volume trace/cost payloads** (full prompt/response bodies) → **Langfuse** (10); ClickHouse
-  later if trace volume outgrows it.
+- **High-volume trace/cost payloads** (full prompt/response bodies) → **Langfuse v3** (10), which stores them
+  in **ClickHouse** (its own columnar backend, now a present service — §1/§3). Traces are retained at **100%**
+  (no sampling, `lld/10 §8`); storage is bounded by time-based retention, not by dropping payloads.
+- **(Phase 2, when PG rollups strain)** our own **`analytics` ClickHouse DB** on the same cluster holds
+  derived eval/drift + cost rollups (ReplacingMergeTree + AggregatingMergeTree MVs + TTL, `lld/10 §8`). It is
+  **derived/non-authoritative, no RLS** — Postgres stays the SoR for money + tenancy. Scale-out to a
+  dedicated/external ClickHouse is a `CLICKHOUSE_URL` change (11 LLD), not a rewrite.
 - `runs` and `spans` are high-write → **partition by month** and apply a retention policy so the primary
   DB doesn't bloat. Large eval/trace payloads go to **MinIO** keyed from the row.
 
@@ -453,7 +524,8 @@ Per-workspace retention + PII redaction before any log/trace write are security 
 | pgvector indexes | Rebuilt from `chunks` rows; HNSW `REINDEX` after a restore if needed | — | ≤ 2 h (large KBs) | reindex runbook; retrieval degraded-but-serving during rebuild |
 | Vault (DEKs — **loss = all tenant keys unrecoverable**) | Raft snapshot backup; **unseal keys / recovery keys in separate custody** | ≤ 1 h | ≤ 1 h | restore snapshot → unseal with quorum of recovery keys |
 | MinIO (uploads, large payloads) | Bucket replication / versioning + periodic snapshot | ≤ 15 min | ≤ 1 h | re-point endpoint; re-ingest only if objects lost |
-| Langfuse (traces/cost) | Its Postgres is backed by the PITR above; non-critical to serving | ≤ 1 h | best-effort | observability data; not on the serving critical path |
+| Langfuse (metadata) | Its Postgres metadata is backed by the PITR above; non-critical to serving | ≤ 1 h | best-effort | observability data; not on the serving critical path |
+| ClickHouse (Langfuse v3 traces + P2 `analytics` rollups) | Native `BACKUP ... TO Disk/S3` or volume snapshot to object storage; derived data, so lower RPO tolerance | ≤ 24 h | best-effort | restore snapshot/`RESTORE`; `analytics` rollups are **re-derivable from Postgres** (`runs`/`spans`/`eval_runs`) if lost — re-run the rollup job rather than restore |
 | Secrets config (AppRole, OIDC) | In the platform secret store, IaC-managed | — | ≤ 30 min | re-provision from IaC |
 
 > ⚠️ **Vault is the highest-stakes asset.** Provider/tool/source keys are envelope-encrypted with

@@ -67,7 +67,7 @@ but the caller's identity comes from a **token or a federated channel login, nev
 | **Playground** | same `runtime.invoke` code path | console session (`run_source="playground"`) |
 
 The exported cURL/TS/Python snippets hit that same endpoint with a Bearer **caller-token placeholder —
-never a provider/LLM key**. The LLM key stays the workspace's vaulted, server-side key.
+never a provider/LLM key**. The LLM key stays the workspace's server-side-custodied key (secrets backend / AWS Secrets Manager — feature 014, `backend/09 §9`).
 
 ### What access the caller needs
 

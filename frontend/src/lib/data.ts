@@ -55,18 +55,23 @@ export type Member = {
   email: string;
   role: "Admin" | "Publisher" | "Builder" | "Viewer";   // resolved for the active workspace (display)
   groups: string[];                                      // mock-only raw per-workspace role claims (ap-<prefix>-<role> + maybe ap-platform-admin)
+  teams: string[];                                       // @backend server-owned functional teams (iam Team slugs; OIDC `groups` claim) — drive per-resource access policy; display-only in the roster (feature 013, FR-017)
   lastActive: string;
 };
 export const MEMBERS: Member[] = [
-  { name: "Raman Garg", email: `raman.garg@${ORG.emailDomain}`, role: "Admin", groups: ["ap-platform-admin"], lastActive: "2026-10-04T09:12:00Z" },
-  { name: "Priya Nair", email: `priya.nair@${ORG.emailDomain}`, role: "Publisher", groups: ["ap-xdr-publisher", "ap-grc-builder"], lastActive: "2026-10-04T07:40:00Z" },
-  { name: "Diego Fuentes", email: `diego.fuentes@${ORG.emailDomain}`, role: "Builder", groups: ["ap-xdr-builder", "ap-labs-publisher"], lastActive: "2026-10-03T18:22:00Z" },
-  { name: "Mei-Ling Chen", email: `meiling.chen@${ORG.emailDomain}`, role: "Builder", groups: ["ap-xdr-builder"], lastActive: "2026-10-03T14:05:00Z" },
-  { name: "Omar Haddad", email: `omar.haddad@${ORG.emailDomain}`, role: "Viewer", groups: ["ap-grc-viewer", "ap-labs-builder"], lastActive: "2026-10-01T11:48:00Z" },
-  { name: "Sofia Rossi", email: `sofia.rossi@${ORG.emailDomain}`, role: "Publisher", groups: ["ap-people-publisher", "ap-xdr-builder"], lastActive: "2026-10-02T16:30:00Z" },
+  { name: "Raman Garg", email: `raman.garg@${ORG.emailDomain}`, role: "Admin", groups: ["ap-platform-admin"], teams: ["SOC", "Platform", "People"], lastActive: "2026-10-04T09:12:00Z" },
+  { name: "Priya Nair", email: `priya.nair@${ORG.emailDomain}`, role: "Publisher", groups: ["ap-xdr-publisher", "ap-grc-builder"], teams: ["SOC", "GRC"], lastActive: "2026-10-04T07:40:00Z" },
+  { name: "Diego Fuentes", email: `diego.fuentes@${ORG.emailDomain}`, role: "Builder", groups: ["ap-xdr-builder", "ap-labs-publisher"], teams: ["Detection", "Research"], lastActive: "2026-10-03T18:22:00Z" },
+  { name: "Mei-Ling Chen", email: `meiling.chen@${ORG.emailDomain}`, role: "Builder", groups: ["ap-xdr-builder"], teams: ["Detection"], lastActive: "2026-10-03T14:05:00Z" },
+  { name: "Omar Haddad", email: `omar.haddad@${ORG.emailDomain}`, role: "Viewer", groups: ["ap-grc-viewer", "ap-labs-builder"], teams: ["GRC"], lastActive: "2026-10-01T11:48:00Z" },
+  { name: "Sofia Rossi", email: `sofia.rossi@${ORG.emailDomain}`, role: "Publisher", groups: ["ap-people-publisher", "ap-xdr-builder"], teams: ["People", "SOC"], lastActive: "2026-10-02T16:30:00Z" },
 ];
 
 export type Version = {
+  /** Server version UUID (live agents only; seeds are label-keyed). Re-point targets the id, never the label. */
+  id?: string;
+  /** Live: this version is the agent's active (pinned) one — from VersionOut.is_active. */
+  isActive?: boolean;
   label: string;
   status: "published" | "evaluated" | "draft" | "deprecated";
   model: string;
@@ -75,6 +80,9 @@ export type Version = {
   createdBy: string;
   evalVerdict: Verdict | "none";
   note: string;
+  /** Live: this version's OWN input variables (VersionOut.io_contract) — a run of it must use these field names,
+   *  which can differ from the draft's (026 review-2 #8). Absent for seeds. */
+  inputVariables?: InputVariable[];
 };
 
 export type Agent = {
@@ -104,16 +112,48 @@ export type Agent = {
   endpoint?: string;
   workspaceId?: string;
   accessPolicy?: AccessPolicy;
+  // @backend wired(026) live agent read model (AgentOut): description/provider/model come from the server's resolved
+  //   draft; the fields below are populated ONLY for live agents (seeds leave them undefined → mock behaviour).
+  /** Live: the saved draft differs from the active version (AgentOut.draft_dirty). */
+  draftDirty?: boolean;
+  /** Live, archived only: the status a restore returns to (AgentOut.restore_status). */
+  restoreStatus?: AgentStatus | null;
+  /** Live: the active version's UUID (AgentOut.active_version_id). */
+  activeVersionId?: string;
+  /** Live: the server version list, newest first (AgentOut.versions embed). Seeds use VERSIONS via getVersions. */
+  versionList?: Version[];
+  /** Live: the server's resolved draft, kept verbatim so a PATCH round-trips fields the console doesn't edit. */
+  draft?: LiveDraft;
+  /** Live: draft bindings the caller can't see (masked server-side; preserved by the server on save). */
+  restrictedBindings?: number;
   // @backend agent_versions.publishable proxy (FE versioning is cosmetic): a behavior-changing (trigger)
   //   edit — model/provider/params/prompt/guardrails/retrieval/tools/kb/skills — sets this true; a passing eval
   //   newer than that edit clears it. Gates publish alongside status==="eval_failing". [ref: backend/05 §5]
   needsReEval?: boolean;
+  // @backend derived from the existing model_deprecation_scan (no new detector): true when this agent's pinned
+  //   profile_snapshot.model is stale or past sunset_at — surfaced by GET /api/v1/org/compliance (the "outdated"
+  //   view). Distinct from needsReEval (config drift); here the model itself is being retired.
+  //   [ref: backend/02 §4, 10 §6, 16 §3; backend-integration-map]
+  profileOutdated?: boolean;
   // Mutable draft config (model params, prompt, memory, retrieval, guardrails, spend).
   // Mirrors the fields the backend freezes into an immutable version snapshot on publish
   // (agent_versions.model_config / system_prompt / memory_config / context_config /
   // guardrail_config — see docs/backend/01-data-model.md). Partial so seeds fall back to
   // DEFAULT_AGENT_CONFIG via resolveConfig().
   config?: Partial<AgentConfig>;
+};
+
+/** The server's editable draft (feature 026 D1) — backend shape, snake_case on purpose: it is round-tripped to
+ *  PATCH {draft} as-is with only the edited fields replaced. */
+export type LiveDraft = {
+  provider: string;
+  model: string;
+  model_params: Record<string, unknown>;
+  system_prompt: string;
+  io_contract: Record<string, unknown>;
+  kb_ids: string[];
+  tool_ids: string[];
+  skill_ids: string[];
 };
 
 /* ---- Agent configuration (the editable draft config) ---- */
@@ -126,7 +166,9 @@ export type GuardrailStage = { name: string; desc: string; on: boolean };
 export type InputVariableType = "string" | "number" | "boolean" | "enum";
 // A typed input declaration (name, type, required, default) injected into the prompt template and
 // validated at invoke. Maps to the backend's io_contract (spec B2.5 / backend/01 §4.2 io_contract).
-export type InputVariable = { name: string; type: InputVariableType; required: boolean; default?: string };
+// `options` (enum only, read-only): the allowed values from the backend schema — used for display/examples, never edited
+// here (the console's editor doesn't model enum values; schema round-trips keep them, see adapters.ts).
+export type InputVariable = { name: string; type: InputVariableType; required: boolean; default?: string; options?: string[] };
 
 export type AgentConfig = {
   // model params
@@ -292,6 +334,7 @@ export const AGENTS: Agent[] = [
     owner: "Sofia Rossi", createdAt: "2026-05-20T11:00:00Z", updatedAt: "2026-10-04T06:45:00Z",
     activeVersion: "v11", versions: 11, tags: ["support", "rag", "q&a"],
     calls30d: 98760, cost30d: 642.18, p95ms: 980, evalPass: 97.8, drift: "stable",
+    profileOutdated: true, // pinned model (claude-haiku-4-5) is being retired — needs re-eval before re-point
     callsSpark: [2100, 2250, 2400, 2380, 2600, 2700, 2900, 3100, 3050, 3300, 3400, 3520, 3600, 3810],
     knowledgeBases: ["product-docs", "release-notes"], tools: ["http-search-docs"],
     skills: ["citation-discipline"],
@@ -844,17 +887,38 @@ export const TOOLS_REPO: RepoTool[] = [
 ];
 
 /* ------------------------------------------------------------------- Evals */
-export type EvalDimension = { name: string; score: number; baseline: number };
+export type EvalDimension = { name: string; score: number; baseline: number | null };  // null = no baseline score (live)
 export type EvalCase = { input: string; issue: string };
 export type EvalRun = {
   id: string; agentId: string; agent: string; version: string; baseline: string;
   quality: number; qualityDelta: number; costDelta: number; latencyDelta: number;
   cases: number; verdict: Verdict; date: string; trigger: string;
   workspaceId?: string;
+  // Live (026 US4): false when the judge produced no quality score (judge unavailable / failed run) — render "—",
+  // never the 0 placeholder in `quality`. Absent = scored (mock seeds).
+  scored?: boolean;
   // Why the run landed where it did, and (for failures) the drill-down detail.
   reason?: string;
   dimensions?: EvalDimension[];
   failingCases?: EvalCase[];
+  // ---- live-only (feature 026 US4) — server-owned evidence; absent on mock rows ----
+  /** Where the baseline came from (D7). `baseline` above stays the display label ("v1" / "none"). */
+  baselineRef?: EvalRunBaseline | null;
+  status?: "completed" | "failed";      // failed = a provider deadline hit mid-run (no verdict drawn)
+  reasonCode?: string;
+  suiteId?: string;
+  suiteName?: string;
+  versionId?: string;
+  comparedCases?: number;               // cases present in BOTH this run and the baseline (D8)
+  newCases?: number;
+  droppedCases?: number;
+  createdBy?: string;
+};
+export type EvalRunBaseline = { origin: "automatic" | "frozen"; evalRunId: string; versionLabel: string | null };
+/** A suite's CURRENT resolved baseline (GET eval-suites) — frozen pointer, else the active version's newest run. */
+export type SuiteBaseline = {
+  origin: "automatic" | "frozen" | "none";
+  evalRunId: string | null; versionId: string | null; frozenBy: string | null; frozenAt: string | null;
 };
 export const EVAL_RUNS: EvalRun[] = [
   { id: "ev-4821", agentId: "triage-copilot", agent: "SOC Triage Copilot", version: "v7", baseline: "v6", quality: 96.2, qualityDelta: 1.4, costDelta: -3.1, latencyDelta: -40, cases: 64, verdict: "pass", date: "2026-10-03T16:18:00Z", trigger: "Prompt edit", reason: "All dimensions at or above baseline; the prompt edit improved quality with no regressions." },
@@ -931,6 +995,10 @@ export type EvalCaseDef = {
   assertions: Assertion[];
   rubric: RubricDimension[];
   expected?: string;              // optional reference answer for the pairwise judge
+  contentHash?: string;           // live: server hash of input+rubric+required_fields+expected (D8 case identity)
+  // live: the server's ORIGINAL non-string values behind the string fields above (message / vars / expected), so an
+  // unedited field round-trips exactly (same content_hash, same deterministic check) — see adapters.caseToEvalCaseIn.
+  raw?: { message?: unknown; vars?: Record<string, unknown>; expected?: unknown };
 };
 export type EvalSuite = {
   id: string;
@@ -939,6 +1007,7 @@ export type EvalSuite = {
   cases: EvalCaseDef[];
   workspaceId?: string;
   updatedAt: string;
+  baseline?: SuiteBaseline | null;  // live only
 };
 
 export const DEFAULT_RUBRIC: RubricDimension[] = [
@@ -1026,7 +1095,8 @@ export const TOOL_APPROVALS: ToolApproval[] = [
 
 /* ------------------------------------------------------ Tokens & keys */
 // `agent` names the published endpoint this token is bound to (one token -> one endpoint, 01 §4.7).
-export type ApiToken = { id: string; name: string; agent: string; prefix: string; created: string; lastUsed: string; scopes: string; expires?: string };
+// `agentId` is set for a server-owned (live) token — the roster is then keyed by id, not by the display name (G24).
+export type ApiToken = { id: string; name: string; agent: string; agentId?: string; prefix: string; created: string; lastUsed: string; scopes: string; expires?: string };
 export const API_TOKENS: ApiToken[] = [
   { id: "tok-1", name: "soc-dashboard-prod", agent: "SOC Triage Copilot", prefix: "ac_live_7Q2…", created: "2026-09-10T10:00:00Z", lastUsed: "2026-10-04T09:13:00Z", scopes: "invoke" },
   { id: "tok-2", name: "support-widget", agent: "Product Docs Assistant", prefix: "ac_live_Kp9…", created: "2026-08-02T14:00:00Z", lastUsed: "2026-10-04T09:14:00Z", scopes: "invoke" },
@@ -1065,12 +1135,28 @@ export const WORKSPACE_SETTINGS: Record<string, WorkspaceSettings> = {
   "trellix-people": { defaultProvider: "Anthropic", defaultModel: "claude-sonnet-5-5" },
 };
 
-// Spend and concurrency are per-workspace ceilings (not per-endpoint). Enforced at runtime in P2.
+// Spend and concurrency are per-workspace ceilings (not per-endpoint). The monthly SPEND cap
+// (monthlySpendUsd) is now enforced server-side as of M6 (feature 009) — an invoke/eval beyond it is
+// rejected with 402 budget.exceeded before any model call; maxConcurrent + requestTimeoutS remain P2.
 export const LIMITS: Record<string, Limits> = {
   "trellix-xdr": { monthlySpendUsd: 2000, maxConcurrent: 25, requestTimeoutS: 30 },
   "trellix-grc": { monthlySpendUsd: 1000, maxConcurrent: 10, requestTimeoutS: 30 },
   "trellix-labs": { monthlySpendUsd: 500, maxConcurrent: 10, requestTimeoutS: 30 },
   "trellix-people": { monthlySpendUsd: 750, maxConcurrent: 10, requestTimeoutS: 30 },
+};
+
+// @backend GET /v1/workspace/spend - month-to-date spend vs the active monthly cap (feature 009, M6).
+//   The server SUMs runs.cost_usd for the current calendar month (UTC) from the durable ledger — this is
+//   the SAME figure the spend-cap gate enforces. These are seed stand-ins for the mock; the real value
+//   comes from the endpoint. [ref: specs/009-spend-cap/contracts/spend-cap.md, backend/09]
+export type WorkspaceSpend = { monthToDateUsd: number; capUsd: number; remainingUsd: number };
+export const defaultWorkspaceSpend = (): WorkspaceSpend => ({ monthToDateUsd: 0, capUsd: 2000, remainingUsd: 2000 });
+const mkSpend = (mtd: number, cap: number): WorkspaceSpend => ({ monthToDateUsd: mtd, capUsd: cap, remainingUsd: cap - mtd });
+export const WORKSPACE_SPEND: Record<string, WorkspaceSpend> = {
+  "trellix-xdr": mkSpend(1284.5, 2000),
+  "trellix-grc": mkSpend(642.0, 1000),
+  "trellix-labs": mkSpend(0, 500),
+  "trellix-people": mkSpend(311.25, 750),
 };
 
 /* ---------------------------------------------------------------- Channels */

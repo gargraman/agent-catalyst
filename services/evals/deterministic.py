@@ -1,0 +1,151 @@
+"""Layer-1 deterministic checks (M3, feature 004) — verbatim port of `mvp/evals/deterministic.py`.
+
+Mirrors docs/backend/05-eval-drift.md §2 Layer 1 (05:45-61). Zero model calls. These are the correctness
+floor and the pre-filter that keeps judge cost down — a case that fails a HARD assertion never reaches the
+judge (FR-007). For the mock-incident triage task the default output contract is {severity, summary,
+next_step}; a case may override `required_fields` (FR-006). Pure + deterministic (F18/FR-022): no wall-clock,
+no RNG, no reliance on unordered iteration.
+"""
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+from typing import Any, Mapping
+
+# severity enum for the triage task
+SEVERITY_ENUM = {"critical", "high", "medium", "low", "info"}
+
+# default required fields for the triage output contract (a case may override via case["required_fields"])
+DEFAULT_REQUIRED = ("severity", "summary", "next_step")
+
+# refusal phrases → a spiking refusal rate is itself drift (05:60).
+# FIRST-PERSON-ANCHORED on purpose: a bare substring like "unable to" false-positives on legit SOC prose
+# ("the service was unable to start"), hard-failing valid incident JSON and inflating the H1 false-positive
+# metric. Only the model refusing in its own voice ("i'm unable to …") counts; third-person descriptions of
+# a system being unable to do something do not.
+REFUSAL_PHRASES = (
+    "i cannot", "i can't", "i can not",
+    "i'm sorry", "i am sorry",
+    "i'm unable to", "i am unable to", "i'm not able", "i am not able",
+    "i won't", "i will not",
+    "as an ai",
+)
+
+_EMPTY_VALUES = (None, "", [], {})
+
+
+@dataclass
+class DetResult:
+    # 05:45-49
+    passed: bool
+    checks: dict[str, bool]   # {"schema_valid": True, "required_fields": False, ...}
+    hard_fail: bool           # a hard_fail forces case FAIL regardless of the judge
+
+
+def _is_empty(output) -> bool:
+    if output is None:
+        return True
+    if isinstance(output, str):
+        return not output.strip()
+    if isinstance(output, dict):
+        return len(output) == 0
+    return False
+
+
+def run_deterministic(output: str | dict, case: Mapping[str, Any]) -> DetResult:
+    """Run the Layer-1 checks for one (output, case).
+
+    Hard-fail conditions (force FAIL, skip the judge): empty output, a refusal phrase (not for text-format agents,
+    where it is soft), or unparseable/schema-invalid JSON (not checked for text-format agents). Soft failures (passed=False, hard_fail=False): missing/empty required fields,
+    an out-of-enum severity, or an expected-value mismatch.
+    """
+    checks: dict[str, bool] = {}
+
+    # --- empty-output detection (hard) ---
+    if _is_empty(output):
+        checks["non_empty"] = False
+        return DetResult(passed=False, checks=checks, hard_fail=True)
+    checks["non_empty"] = True
+
+    # --- refusal detection (hard; text outputs only) ---
+    if isinstance(output, str):
+        lowered = output.lower()
+        refused = any(phrase in lowered for phrase in REFUSAL_PHRASES)
+        checks["no_refusal"] = not refused
+        # Owner decision f-B (026 US4, 2026-11-18): for TEXT agents a refusal phrase is a SOFT fail — first-person
+        # phrasing is legit in support-style prose ("I cannot see your logs, please paste them"), so the judge still
+        # scores the answer. JSON/legacy outputs keep the hard fail.
+        if refused and case.get("output_format") != "text":
+            return DetResult(passed=False, checks=checks, hard_fail=True)
+    else:
+        checks["no_refusal"] = True
+
+    # --- text-format agents (026 US4, live-found): prose is a valid answer. Keep the hard floor (empty/refusal)
+    # above, skip the JSON hard check; requested fields / a dict `expected` soft-fail unless the output happens to be
+    # a JSON object carrying them; a scalar `expected` is a case-insensitive containment check on the text. ---
+    if case.get("output_format") == "text":
+        return _text_checks(output, case, checks)
+
+    # --- JSON parse / schema validity (hard) ---
+    if isinstance(output, str):
+        try:
+            data = json.loads(output)
+            if not isinstance(data, dict):
+                raise ValueError("top-level JSON is not an object")
+            checks["schema_valid"] = True
+        except (ValueError, TypeError):
+            checks["schema_valid"] = False
+            return DetResult(passed=False, checks=checks, hard_fail=True)
+    else:
+        data = output
+        checks["schema_valid"] = True
+
+    # --- required fields present & non-empty (soft) ---
+    required = case.get("required_fields", DEFAULT_REQUIRED)
+    checks["required_fields"] = all(
+        field in data and data[field] not in _EMPTY_VALUES for field in required
+    )
+
+    # --- severity enum (soft) — only when `severity` is part of this case's contract. A case that overrides
+    # required_fields to a non-triage contract (FR-006) has no `severity`, so this check must not spuriously fire.
+    if "severity" in required:
+        checks["severity_enum"] = data.get("severity") in SEVERITY_ENUM
+
+    # --- expected-value match when provided (soft) ---
+    expected = case.get("expected")
+    if expected is not None:
+        if isinstance(expected, dict):
+            checks["expected_match"] = all(data.get(k) == v for k, v in expected.items())
+        else:
+            # scalar expected is the expected severity
+            checks["expected_match"] = data.get("severity") == expected
+
+    passed = all(checks.values())
+    return DetResult(passed=passed, checks=checks, hard_fail=False)
+
+
+def _as_object(output) -> dict | None:
+    if isinstance(output, dict):
+        return output
+    try:
+        data = json.loads(output)
+    except (ValueError, TypeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _text_checks(output, case: Mapping[str, Any], checks: dict[str, bool]) -> DetResult:
+    """Soft checks for a text-format agent (the hard floor already ran). Never applies the triage defaults."""
+    required = case.get("required_fields") or ()
+    expected = case.get("expected")
+    data = _as_object(output) if (required or isinstance(expected, dict)) else None
+    if required:
+        checks["required_fields"] = data is not None and all(
+            f in data and data[f] not in _EMPTY_VALUES for f in required)
+    if expected is not None:
+        if isinstance(expected, dict):
+            checks["expected_match"] = data is not None and all(data.get(k) == v for k, v in expected.items())
+        else:
+            text = output if isinstance(output, str) else json.dumps(output)
+            checks["expected_match"] = str(expected).lower() in text.lower()
+    return DetResult(passed=all(checks.values()), checks=checks, hard_fail=False)

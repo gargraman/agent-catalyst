@@ -4,6 +4,32 @@
 > connectors/crawl/re-sync/reranking are **P2**. Retrieval is a hidden quality lever, so it is pinned per
 > version and treated as a drift source (05).
 
+> **As built — P1 Must tier (feature `specs/024-m7-minimal-rag`, 2026-11-15).** Where this design and the code
+> disagree, the code and `specs/024-m7-minimal-rag/research.md` win:
+> - **Upload** = multipart through the API to `StorageBackend` (`api/storage/`: `local` in-memory for unit/dev,
+>   `s3` = AWS S3 / LocalStack S3; prod refuses `local`). Presigned upload is **deferred** (D6). No
+>   `data_sources` table in P1 (D4): documents + chunks + `ingestion_jobs` (migration `0013`).
+> - **Ingestion** runs in-process (`api/ingest_executor.py`): bounded semaphore, heartbeat lease from submission,
+>   compare-and-set job claim, and a SECURITY DEFINER stale-job reaper (D5). Atomic replace via chunk
+>   **generations**. Extraction is pypdf / python-docx / stdlib (off the event loop), **not** LangChain /
+>   unstructured (D7 — supersedes §3). Own structure-aware chunker (D8).
+> - **Embeddings**: one deployment dimension **1024** (`vector(1024)`); customer content embeds only on Bedrock
+>   Titan v2, OpenAI `text-embedding-3-small@1024` is dev-only (D2/D3, enforced under `AC_ENV=prod`). Embedding
+>   spend counts toward the cap, including failed ingests (D16).
+> - **Retrieval** is **always-on stuffing** only: the runtime orchestrates, the API supplies data access through
+>   the `KnowledgeAccess` port (D1), one wiring seam for playground / published / eval (`api/retrieval_wiring.py`).
+>   Overflow trims the lowest-scoring passages and fails only when zero fit. Retrieved text is rendered as a
+>   delimited, escaped data block (D13).
+> - **Injection scan** (`runtime/guardrails/injection.py`, `inj-v1`) on every retrieved passage before trim;
+>   flagged → withheld + detection record (ids only); scanner error → fail closed (D11). Ingest-time scan only
+>   flags. Held-out SC-004 measurement still pending owner-authored corpora.
+> - **Citations**: runtime event + `InvokeResult.citations` + SSE `citations` frame (D14); denied KBs masked on
+>   the console plane.
+> - **Not built yet (Nice tier, parked):** retrieval-as-a-tool (`search_knowledge` tool loop, US4/D10 — §6
+>   "retrieve-as-tool" is design only), the `retrieved_source` eval assertion + KB-refresh disclosure (US5/D17),
+>   SC-005 latency benchmark. Also absent: malware scanning, OCR, connectors, reranking, FE wiring (knowledge pages
+>   are still mock).
+
 ## 1. The shape of knowledge
 
 ```mermaid

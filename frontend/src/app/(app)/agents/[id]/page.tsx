@@ -4,23 +4,23 @@ import * as React from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import {
-  Archive, ArrowLeft, Blocks, ChevronDown, ChevronRight, Copy,
+  Archive, ArrowLeft, Blocks, Bot, ChevronDown, ChevronRight, Copy,
   Database, FlaskConical, GitBranch, History, Lock, MessageSquare, MoreHorizontal,
   Plug, Plus, Rocket, Settings2, Shield, ShieldCheck, Sparkles, Trash2, TriangleAlert,
   Wrench, X,
 } from "lucide-react";
 import {
   Badge, Button, Card, CardContent, CardHeader, CardTitle, CodeBlock, EmptyState,
-  Field, Input, Progress, Select, Separator, StatusDot, Table, TD, TH, THead, TR, Textarea,
+  Field, Input, Select, Separator, StatusDot, Table, TD, TH, THead, TR, Textarea,
 } from "@/components/ui";
 import { Tabs, Segmented } from "@/components/tabs";
 import { CopyButton } from "@/components/copy-button";
 import { Dialog, ConfirmDialog } from "@/components/dialog";
 import {
-  getAgent, getKb, getModel, getVersions, resolveConfig, parseNum,
+  getAgent, getKb, getModel, resolveConfig, parseNum,
   MODELS, driftTone, statusLabel, statusTone, verdictLabel, verdictTone,
   ASSERTION_KINDS, newRubric,
-  type Agent, type EvalRun, type EvalSuite, type EvalCaseDef, type Assertion, type AssertionKind, type RubricDimension,
+  type Agent, type EvalSuite, type EvalCaseDef, type Assertion, type AssertionKind, type RubricDimension,
   type ReasoningEffort, type OutputFormat, type TruncationStrategy, type InjectionStrategy, type Reranker, type GuardrailStage,
   type InputVariable, type InputVariableType,
 } from "@/lib/data";
@@ -30,12 +30,18 @@ import {
   addSuite, renameSuite, deleteSuite, upsertCase, deleteCase,
   updateAgent, updateAgentConfig, deleteAgent, duplicateAgent, toast, genId, nowIso,
   publishAgent, unpublishAgent, archiveAgent, restoreAgent, rollbackVersion, reFreezeBaseline,
+  useEnsureAgent, useRemoteStatus, useIsLiveWorkspace, loadAgent, usePublishAdvisory, useEnsureTokens, mintTokenLive,
+  useEnsureEvals, loadEvalRunDetail, loadEvalRuns, freezeBaseline, clearBaseline,
+  versionsOf, saveLiveDraft, createVersion, useEditConflict, useAgentRevision, resolveEditConflict,
 } from "@/lib/store";
+import { LIVE_API } from "@/lib/api/client";
+import { LiveStatus } from "@/components/live-status";
+import { EvalRunDetail, LiveRunEvalDialog } from "@/components/eval-run-live";
 import { useAuth, usePrincipal } from "@/lib/auth";
 import { ORG } from "@/lib/org";
 import { GateButton } from "@/components/gate";
 import { Term } from "@/components/term";
-import { EvalExplainer, EvalFailingBanner, NeedsReEvalBanner, EvalFailureSummary, publishGateDecision, PublishGateDialogs, type PublishGate } from "@/components/eval-explainer";
+import { EvalExplainer, EvalFailingBanner, NeedsReEvalBanner, ProfileOutdatedBanner, EvalFailureSummary, publishGateDecision, PublishGateDialogs, type PublishGate } from "@/components/eval-explainer";
 import { canUse, canManage } from "@/lib/access-policy";
 import { resolveToolRef, mcpRef } from "@/lib/tools";
 import { AccessNote } from "@/components/access-note";
@@ -79,10 +85,15 @@ function SectionCard({ title, desc, children, action }: { title: React.ReactNode
  *  - @backend Tools tab: PATCH /v1/agents/:id - bind/detach tools [via updateAgent]; GET /v1/tools picker [via useTools]; GET /v1/mcp-servers picker [via useMcpServers]
  *  - @backend Guardrails tab: GET/PUT /v1/agents/:id/guardrails - per-version config [persisted via updateAgentConfig.guardrails]
  *  - @backend Access tab: PUT /v1/agents/:id/access-policy - access policy [via setAccessPolicy]
- *  - @backend Versions tab: GET versions; PATCH /v1/agents/:id activeVersion for rollback [via rollbackVersion - validates the label]; "Save as new version" -> POST version and "Re-freeze baseline" -> PATCH baseline (mock toasts today)
+ *  - @backend wired(026) Versions tab: versions from the live AgentOut embed [via versionsOf]; re-point = PATCH active_version_id by version id [via rollbackVersion]; "Save as new version" -> POST …/versions [via createVersion]. "Re-freeze baseline" is still a mock toast (US4).
  *  - @backend Playground moved to its own route (/playground); header "Open in Playground" deep-links there. Invoke contract lives on that page and in src/components/playground.tsx.
- *  - @backend Evals tab: GET /v1/agents/:id/evals [via useEvalRunsForAgent]; POST /v1/agents/:id/evals async run [via addEvalRun]
- *  - @backend Publish & Export: endpoint URL + cURL/TS/Python snippets + OpenAPI are GET; POST /v1/agents/:id/tokens (addToken); DELETE /v1/tokens/:id (revokeToken); GET /v1/agents/:id/tokens (useTokens)
+ *  - @backend wired(026) Evals tab: GET /api/v1/agents/:id/eval-runs + /eval-suites [via useEnsureEvals]; GET /api/v1/eval-runs/:id
+ *    [loadEvalRunDetail]; POST /api/v1/agents/:id/eval-runs {version_id, suite_id} [LiveRunEvalDialog → runEvalLive];
+ *    suite/case CRUD [addSuite/renameSuite/deleteSuite/upsertCase/deleteCase]; PUT/DELETE /api/v1/eval-suites/:sid/baseline
+ *    [freezeBaseline/clearBaseline]. Mock mode keeps addEvalRun/simulateEvalRun.
+ *  - @backend wired(026) Publish & Export: publish -> POST /api/v1/agents/:id/publish, advisory shown [via publishAgent/usePublishAdvisory];
+ *    tokens -> GET/POST /api/v1/agents/:id/tokens + DELETE /api/v1/tokens/:id [via useEnsureTokens/mintTokenLive/revokeToken];
+ *    the cURL targets ${NEXT_PUBLIC_PUBLIC_API_BASE || origin}/v1/agents/:id/invoke with `Bearer $AC_TOKEN` (D17). Mock agents keep the seeds.
  * See src/lib/store.ts markers + docs/backend-integration-map.md for the authoritative contracts.
  */
 export default function AgentDetailPage() {
@@ -97,9 +108,39 @@ export default function AgentDetailPage() {
   const [runEvalOpen, setRunEvalOpen] = React.useState(false);
   const [gate, setGate] = React.useState<PublishGate | null>(null);
   const [deleteOpen, setDeleteOpen] = React.useState(false);
+  // Live mode: a deep link / reload lands here before the list has loaded — fetch the one agent.
+  useEnsureAgent(params.id);
+  const remote = useRemoteStatus(`agent:${params.id}`);
+  const discovery = useRemoteStatus("workspaces");
+  const live = useIsLiveWorkspace();
+
+  // Live cold load: until discovery has run (and, for a live workspace, until the one-agent fetch has run), a missing
+  // agent means "not loaded yet", not "not found" — otherwise the page flashes "Agent not found" first.
+  const pendingDiscovery = LIVE_API && (discovery.status === "idle" || discovery.status === "loading");
+  const pendingAgent = live && (remote.status === "idle" || remote.status === "loading");
+  if (!agent && (pendingDiscovery || pendingAgent)) {
+    return (
+      <div className="space-y-6">
+        <Link href="/agents" className="inline-flex items-center gap-1.5 text-sm text-muted hover:text-ink"><ArrowLeft className="size-4" /> Back to agents</Link>
+        <EmptyState icon={<Bot className="size-6" />} title="Loading agent…" hint="Fetching this agent from the API." />
+      </div>
+    );
+  }
+
+  // Live: a transport/server failure is NOT "not found" — surface it with Retry. (404, and 403 which the API
+  // deliberately makes indistinguishable from 404 — P5 no-leak, fall through to not-found below.)
+  if (!agent && remote.status === "error" && remote.httpStatus !== 404 && remote.httpStatus !== 403) {
+    return (
+      <div className="space-y-6">
+        <Link href="/agents" className="inline-flex items-center gap-1.5 text-sm text-muted hover:text-ink"><ArrowLeft className="size-4" /> Back to agents</Link>
+        <LiveStatus live status={remote} label="this agent" onRetry={() => void loadAgent(params.id, { force: true })} />
+      </div>
+    );
+  }
 
   // Cross-workspace defense-in-depth: useAgent resolves by id across all workspaces, so treat an agent
   // belonging to another tenant as not-found (AppBoundary only gates the active workspace).
+  // Live: a 404 from the API (or a 403 — no existence leak) also lands here.
   if (!agent || agent.workspaceId !== activeWorkspaceId) {
     return (
       <div className="space-y-6">
@@ -109,13 +150,24 @@ export default function AgentDetailPage() {
     );
   }
 
-  const versions = getVersions(agent.id);
+  const versions = versionsOf(agent);
   const model = getModel(agent.model);
+  const archivedLive = live && agent.status === "archived";
+  const naLive = "Not available yet for live agents";
   const manage = canManage(agent.accessPolicy, principal);
   const manageTitle = manage ? undefined : "Restricted by this agent's access policy";
+  // needsReEval (config drift) gates publish; profileOutdated (model sunset) is informational. When both
+  // apply on a draft, show only the gating one so two near-identical "run eval" banners don't stack.
+  const showNeedsReEval = agent.status === "draft" && publishGateDecision(agent, evals[0]?.verdict, policy) === "needs_reeval";
 
   return (
     <div className="space-y-6">
+      {live && (
+        <LiveStatus live status={remote.status === "error" ? { status: "ready" } : remote} label="this agent"
+          onRetry={() => void loadAgent(params.id, { force: true })}
+          note="name, description, model, prompt, I/O contract, versions, re-point, archive/restore, publish (advisory), API tokens and eval suites / runs / baselines are live; bindings, guardrails, memory, spend and tags are not saved to the server yet" />
+      )}
+      <ConflictDialog agentId={agent.id} />
       <div>
         <Link href="/agents" className="inline-flex items-center gap-1.5 text-sm text-muted hover:text-ink"><ArrowLeft className="size-4" /> Agents</Link>
         <div className="mt-3 flex flex-wrap items-start justify-between gap-4">
@@ -124,29 +176,30 @@ export default function AgentDetailPage() {
               <h1 className="text-xl font-semibold tracking-tight text-ink">{agent.name}</h1>
               <Badge tone={statusTone[agent.status]}><StatusDot tone={statusTone[agent.status]} />{statusLabel[agent.status]}</Badge>
               <Badge tone="neutral">{agent.activeVersion} active</Badge>
+              {agent.draftDirty && <Badge tone="warning" title="The saved draft differs from the active version — create a version to freeze it">Draft changed since {agent.activeVersion}</Badge>}
             </div>
             <p className="mt-1.5 max-w-2xl text-sm text-muted">{agent.description}</p>
           </div>
           <div className="flex items-center gap-2">
-            <GateButton permission="agent.edit" variant="outline" onClick={() => { const id = duplicateAgent(agent.id); if (id) router.push(`/agents/${id}`); }}><Copy className="size-4" /> Duplicate</GateButton>
+            <GateButton permission="agent.edit" variant="outline" disabled={live} title={live ? naLive : undefined} onClick={() => { const id = duplicateAgent(agent.id); if (id) router.push(`/agents/${id}`); }}><Copy className="size-4" /> Duplicate</GateButton>
             <GateButton permission="eval.run" variant="outline" onClick={() => setRunEvalOpen(true)}><FlaskConical className="size-4" /> Run eval</GateButton>
             {agent.status !== "archived" && (
               <GateButton permission="playground.use" variant="outline" href={`/playground?agent=${agent.id}`}><MessageSquare className="size-4" /> Open in Playground</GateButton>
             )}
             {agent.status === "published"
-              ? <GateButton permission="agent.publish" disabled={!manage} title={manageTitle} variant="outline" onClick={() => unpublishAgent(agent.id)}><Rocket className="size-4" /> Unpublish</GateButton>
+              ? <GateButton permission="agent.publish" disabled={!manage || live} title={live ? naLive : manageTitle} variant="outline" onClick={() => unpublishAgent(agent.id)}><Rocket className="size-4" /> Unpublish</GateButton>
               : (
                 <GateButton
                   permission="agent.publish"
                   disabled={!manage}
                   title={manageTitle}
                   variant="primary"
-                  onClick={() => setGate(publishGateDecision(agent, evals[0]?.verdict, policy))}
+                  onClick={() => setGate(live ? "ok" : publishGateDecision(agent, evals[0]?.verdict, policy))}
                 >
                   <Rocket className="size-4" /> Publish {agent.activeVersion}
                 </GateButton>
               )}
-            <HeaderMenu agent={agent} can={can} onDelete={() => setDeleteOpen(true)} />
+            <HeaderMenu agent={agent} can={can} live={live} onDelete={() => setDeleteOpen(true)} />
           </div>
         </div>
         <div className="mt-4 flex flex-wrap items-center gap-x-6 gap-y-2 text-xs text-muted">
@@ -157,12 +210,30 @@ export default function AgentDetailPage() {
         </div>
       </div>
 
+      {archivedLive && (
+        <div className="flex items-start gap-2 rounded-lg border border-border bg-elevated px-4 py-3 text-sm text-ink-2">
+          <Archive className="mt-0.5 size-4 shrink-0 text-muted" />
+          <p><span className="font-medium text-ink">This agent is archived — read-only.</span> The playground and its published endpoint refuse it. Restore it{agent.restoreStatus ? <> (back to <span className="font-medium">{statusLabel[agent.restoreStatus]}</span>)</> : null} from the ⋯ menu to edit or run it again.</p>
+        </div>
+      )}
+
+      {live && (agent.restrictedBindings ?? 0) > 0 && (
+        <p className="text-xs text-muted">This draft also binds {agent.restrictedBindings} resource(s) you don&apos;t have access to. They are kept when you save.</p>
+      )}
+
       {agent.status === "eval_failing" && (
         <EvalFailingBanner agent={agent} onRunEval={() => setRunEvalOpen(true)} />
       )}
 
-      {agent.status === "draft" && publishGateDecision(agent, evals[0]?.verdict, policy) === "needs_reeval" && (
+      {showNeedsReEval && (
         <NeedsReEvalBanner agent={agent} onRunEval={() => setRunEvalOpen(true)} />
+      )}
+
+      {/* @backend profileOutdated: a DISTINCT informational flag from the "outdated" view over the existing
+          model_deprecation_scan detector (backend/08 /org/compliance) — NOT needsReEval, so it never gates publish.
+          Suppressed when the re-eval banner already shows to avoid stacking. */}
+      {agent.status !== "archived" && agent.profileOutdated && !showNeedsReEval && (
+        <ProfileOutdatedBanner agent={agent} onRunEval={() => setRunEvalOpen(true)} />
       )}
 
       {agent.status !== "archived" && (
@@ -184,10 +255,10 @@ export default function AgentDetailPage() {
 
       <Tabs
         tabs={[
-          { key: "configure", label: "Configure", icon: <Settings2 className="size-4" />, content: <Configure agent={agent} model={model} /> },
-          { key: "knowledge", label: "Knowledge", icon: <Database className="size-4" />, content: <Knowledge agent={agent} /> },
-          { key: "tools", label: "Tools & MCP", icon: <Plug className="size-4" />, content: <ToolsTab agent={agent} /> },
-          { key: "skills", label: "Skills", icon: <Sparkles className="size-4" />, content: <SkillsTab agent={agent} /> },
+          { key: "configure", label: "Configure", icon: <Settings2 className="size-4" />, content: <ConfigureKeyed agent={agent} model={model} /> },
+          { key: "knowledge", label: "Knowledge", icon: <Database className="size-4" />, content: <><LiveBindingsNote agent={agent} kind="kb" /><Knowledge agent={agent} /></> },
+          { key: "tools", label: "Tools & MCP", icon: <Plug className="size-4" />, content: <><LiveBindingsNote agent={agent} kind="tool" /><ToolsTab agent={agent} /></> },
+          { key: "skills", label: "Skills", icon: <Sparkles className="size-4" />, content: <><LiveBindingsNote agent={agent} kind="skill" /><SkillsTab agent={agent} /></> },
           { key: "guardrails", label: "Guardrails", icon: <Shield className="size-4" />, content: <Guardrails agent={agent} /> },
           { key: "access", label: "Access", icon: <Lock className="size-4" />, content: <AccessTab agent={agent} canManage={can("access.manage")} /> },
           { key: "versions", label: "Versions", icon: <History className="size-4" />, content: <Versions agent={agent} versions={versions} /> },
@@ -208,7 +279,7 @@ export default function AgentDetailPage() {
       <ConfirmDialog
         open={deleteOpen}
         onClose={() => setDeleteOpen(false)}
-        onConfirm={() => { deleteAgent(agent.id); router.push("/agents"); }}
+        onConfirm={() => { if (deleteAgent(agent.id)) router.push("/agents"); }}
         title="Delete agent"
         confirmLabel="Delete"
         body={<>Delete <span className="font-medium text-ink">{agent.name}</span> and all its versions? This cannot be undone.</>}
@@ -217,7 +288,7 @@ export default function AgentDetailPage() {
   );
 }
 
-function HeaderMenu({ agent, can, onDelete }: { agent: Agent; can: (p: Permission) => boolean; onDelete: () => void }) {
+function HeaderMenu({ agent, can, live, onDelete }: { agent: Agent; can: (p: Permission) => boolean; live: boolean; onDelete: () => void }) {
   const [open, setOpen] = React.useState(false);
   const item = "flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-ink-2 hover:bg-elevated hover:text-ink";
   const archived = agent.status === "archived";
@@ -236,12 +307,69 @@ function HeaderMenu({ agent, can, onDelete }: { agent: Agent; can: (p: Permissio
               <Archive className="size-4" /> {archived ? "Restore" : "Archive"}
             </button>
             <div className="my-1 h-px bg-border" />
-            <button className={`${item} text-critical hover:text-critical`} onClick={() => { setOpen(false); onDelete(); }}>
+            <button className={`${item} text-critical hover:text-critical disabled:cursor-not-allowed disabled:opacity-50`} disabled={live}
+              title={live ? "Not available yet for live agents" : undefined} onClick={() => { setOpen(false); onDelete(); }}>
               <Trash2 className="size-4" /> Delete
             </button>
           </div>
         </>
       )}
+    </div>
+  );
+}
+
+/* ============================================================ live helpers */
+/** 409 conflict.stale on a live save: someone else changed the agent since this tab loaded it (D13). */
+function ConflictDialog({ agentId }: { agentId: string }) {
+  const conflict = useEditConflict(agentId);
+  const [busy, setBusy] = React.useState(false);
+  const resolve = async (reapply: boolean) => {
+    setBusy(true);
+    try { await resolveEditConflict(agentId, reapply); } finally { setBusy(false); }
+  };
+  return (
+    <Dialog
+      open={!!conflict}
+      onClose={() => void resolve(false)}
+      title="Changed by someone else"
+      description="This agent was changed since you opened it, so your save was not applied."
+      footer={
+        <>
+          <Button variant="ghost" disabled={busy} onClick={() => void resolve(false)}>Reload, discard my edit</Button>
+          <Button variant="primary" disabled={busy} onClick={() => void resolve(true)}>Reload and re-apply my edit</Button>
+        </>
+      }
+    >
+      <p className="text-sm text-ink-2">
+        <span className="font-medium text-ink">Re-apply</span> loads the latest version and saves only the fields you just
+        changed on top of it — the other person&apos;s changes to other fields are kept. <span className="font-medium text-ink">Discard</span> loads
+        the latest version and drops your unsaved edit.
+      </p>
+    </Dialog>
+  );
+}
+
+/** Configure re-initialises its form state from the server after a conflict reload (revision bump). */
+function ConfigureKeyed(props: { agent: Agent; model: ReturnType<typeof getModel> }) {
+  const revision = useAgentRevision(props.agent.id);
+  return <Configure key={revision} {...props} />;
+}
+
+/** Live: bindings are authored in the server draft, but the knowledge/tools/skills families are still mock, so the
+ *  console can't edit them yet — show what the server draft binds instead of an empty (misleading) list. */
+function LiveBindingsNote({ agent, kind }: { agent: Agent; kind: "kb" | "tool" | "skill" }) {
+  const live = useIsLiveWorkspace();
+  if (!live || !agent.draft) return null;
+  const ids = kind === "kb" ? agent.draft.kb_ids : kind === "tool" ? agent.draft.tool_ids : agent.draft.skill_ids;
+  const noun = kind === "kb" ? "knowledge base" : kind;
+  return (
+    <div className="mb-4 rounded-lg border border-border bg-elevated px-4 py-3 text-xs text-ink-2">
+      <p>
+        <Badge tone="neutral">Live</Badge>{" "}
+        The server draft binds <span className="font-medium text-ink">{ids.length}</span> {noun}{ids.length === 1 ? "" : "s"}.
+        Editing bindings in the console is not available yet — they are carried into the next version as-is.
+      </p>
+      {ids.length > 0 && <p className="mt-1.5 break-all font-mono text-[11px] text-muted">{ids.join(", ")}</p>}
     </div>
   );
 }
@@ -262,6 +390,9 @@ function Configure({ agent, model }: { agent: ReturnType<typeof getAgent> & {}; 
   const [saveOpen, setSaveOpen] = React.useState(false);
   const [deleteOpen, setDeleteOpen] = React.useState(false);
   const router = useRouter();
+  const live = useIsLiveWorkspace();
+  const readOnly = live && agent.status === "archived";
+  const naLive = "Not available yet for live agents";
   const [name, setName] = React.useState(agent.name);
   const [description, setDescription] = React.useState(agent.description);
   const [tags, setTags] = React.useState(agent.tags.join(", "));
@@ -269,6 +400,12 @@ function Configure({ agent, model }: { agent: ReturnType<typeof getAgent> & {}; 
   // Model params
   const [temperature, setTemperature] = React.useState(String(base.temperature));
   const [maxTokens, setMaxTokens] = React.useState(String(base.maxOutputTokens));
+  // Live (review #9): a param the server never set renders the console default, so "unchanged text" can't tell an
+  // untouched field from the user deliberately picking that default. Track a real touched flag instead.
+  const [tempTouched, setTempTouched] = React.useState(false);
+  const [maxTouched, setMaxTouched] = React.useState(false);
+  const tempUnset = live && agent.draft?.model_params.temperature === undefined;
+  const maxUnset = live && agent.draft?.model_params.max_tokens === undefined;
   const [reasoning, setReasoning] = React.useState<ReasoningEffort>(base.reasoningEffort);
   const [fallback, setFallback] = React.useState(base.fallbackModel);
   // System prompt
@@ -289,15 +426,17 @@ function Configure({ agent, model }: { agent: ReturnType<typeof getAgent> & {}; 
 
 
   const generalDirty = name !== agent.name || description !== agent.description || parsedTags.join("\u0000") !== agent.tags.join("\u0000");
-  const modelDirty = provider !== agent.provider || modelId !== agent.model || parseNum(temperature, base.temperature) !== base.temperature || parseNum(maxTokens, base.maxOutputTokens) !== base.maxOutputTokens || reasoning !== base.reasoningEffort || fallback !== base.fallbackModel;
+  const modelDirty = provider !== agent.provider || modelId !== agent.model || parseNum(temperature, base.temperature) !== base.temperature || parseNum(maxTokens, base.maxOutputTokens) !== base.maxOutputTokens || (tempUnset && tempTouched) || (maxUnset && maxTouched) || reasoning !== base.reasoningEffort || fallback !== base.fallbackModel;
   const promptDirty = systemPrompt !== base.systemPrompt;
   const ioDirty = outputFormat !== base.outputFormat || includeCitations !== base.includeCitations || JSON.stringify(inputVariables) !== JSON.stringify(base.inputVariables);
   const memoryDirty = truncation !== base.truncationStrategy || sessionMemory !== base.sessionMemory || parseNum(maxTurns, base.maxTurnsRetained) !== base.maxTurnsRetained || longTerm !== base.longTermMemory;
   const spendDirty = parseNum(monthlyCap, base.spend.monthlyCapUsd) !== base.spend.monthlyCapUsd || parseNum(concurrency, base.spend.maxConcurrency) !== base.spend.maxConcurrency || parseNum(timeout, base.spend.timeoutSec) !== base.spend.timeoutSec;
 
   const curModel = getModel(modelId) ?? model;
-  const saveBtn = (dirty: boolean, onClick: () => void) => (
-    <GateButton permission="agent.edit" variant="primary" size="sm" disabled={!dirty || !manage} title={manageTitle} onClick={onClick}>Save changes</GateButton>
+  const saveBtn = (dirty: boolean, onClick: () => void, liveSupported = true) => (
+    <GateButton permission="agent.edit" variant="primary" size="sm"
+      disabled={!dirty || !manage || readOnly || (live && !liveSupported)}
+      title={live && !liveSupported ? naLive : readOnly ? "Archived — restore to edit" : manageTitle} onClick={onClick}>Save changes</GateButton>
   );
   return (
     <div className="grid gap-6 lg:grid-cols-3">
@@ -305,8 +444,8 @@ function Configure({ agent, model }: { agent: ReturnType<typeof getAgent> & {}; 
         <SectionCard title="General" desc="Lifecycle is managed by the Publish and Archive controls — not edited here." action={saveBtn(generalDirty, () => updateAgent(agent.id, { name: name.trim() || agent.name, description, tags: parsedTags }))}>
           <div className="grid gap-4 sm:grid-cols-2">
             <Field label="Agent name"><Input value={name} onChange={(e) => setName(e.target.value)} /></Field>
-            <Field label="Tags" hint="Comma-separated; used for filtering on the agents list">
-              <Input value={tags} onChange={(e) => setTags(e.target.value)} placeholder="security, triage, rag" />
+            <Field label="Tags" hint={live ? `${naLive} (no server field)` : "Comma-separated; used for filtering on the agents list"}>
+              <Input value={tags} onChange={(e) => setTags(e.target.value)} placeholder="security, triage, rag" disabled={live} />
             </Field>
           </div>
           <div className="mt-4"><Field label="Description"><Textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={2} /></Field></div>
@@ -317,7 +456,17 @@ function Configure({ agent, model }: { agent: ReturnType<typeof getAgent> & {}; 
           )}
         </SectionCard>
 
-        <SectionCard title="Model" desc="Model-agnostic. Edits save to the agent's draft config; a provider or model swap should be re-evaluated before you publish." action={saveBtn(modelDirty, () => { updateAgent(agent.id, { provider: provider as Agent["provider"], model: modelId }, false); updateAgentConfig(agent.id, { temperature: parseNum(temperature, base.temperature), maxOutputTokens: parseNum(maxTokens, base.maxOutputTokens), reasoningEffort: reasoning, fallbackModel: fallback }); })}>
+        <SectionCard title="Model" desc="Model-agnostic. Edits save to the agent's draft config; a provider or model swap should be re-evaluated before you publish." action={saveBtn(modelDirty, () => {
+          if (live) {
+            void saveLiveDraft(agent.id, {
+              provider, model: modelId,
+              ...(tempTouched ? { temperature: parseNum(temperature, base.temperature) } : {}),
+              ...(maxTouched ? { maxOutputTokens: parseNum(maxTokens, base.maxOutputTokens) } : {}),
+            });
+            return;
+          }
+          updateAgent(agent.id, { provider: provider as Agent["provider"], model: modelId }, false); updateAgentConfig(agent.id, { temperature: parseNum(temperature, base.temperature), maxOutputTokens: parseNum(maxTokens, base.maxOutputTokens), reasoningEffort: reasoning, fallbackModel: fallback });
+        })}>
           <div className="grid gap-4 sm:grid-cols-2">
             <Field label="Provider">
               <Select value={provider} onChange={(e) => { setProvider(e.target.value); const first = MODELS.find((m) => m.provider === e.target.value); if (first) setModelId(first.model); }}>{providers.map((p) => <option key={p}>{p}</option>)}</Select>
@@ -325,13 +474,13 @@ function Configure({ agent, model }: { agent: ReturnType<typeof getAgent> & {}; 
             <Field label="Model">
               <Select value={modelId} onChange={(e) => setModelId(e.target.value)}>{MODELS.filter((m) => m.provider === provider).map((m) => <option key={m.model}>{m.model}</option>)}</Select>
             </Field>
-            <Field label={<Term id="temperature">Temperature</Term>}><Input value={temperature} onChange={(e) => setTemperature(e.target.value)} inputMode="decimal" /></Field>
-            <Field label={<>Max output <Term id="token">tokens</Term></>}><Input value={maxTokens} onChange={(e) => setMaxTokens(e.target.value)} inputMode="numeric" /></Field>
-            <Field label={<Term id="reasoning-effort">Reasoning effort</Term>}>
-              <Select value={reasoning} onChange={(e) => setReasoning(e.target.value as ReasoningEffort)}><option value="low">low</option><option value="medium">medium</option><option value="high">high</option><option value="xhigh">xhigh</option><option value="max">max</option></Select>
+            <Field label={<Term id="temperature">Temperature</Term>} hint={live && agent.draft?.model_params.temperature === undefined ? "Not set on the server (provider default) — shown value is the console default" : undefined}><Input value={temperature} onChange={(e) => { setTemperature(e.target.value); setTempTouched(true); }} inputMode="decimal" /></Field>
+            <Field label={<>Max output <Term id="token">tokens</Term></>} hint={live && agent.draft?.model_params.max_tokens === undefined ? "Not set on the server (provider default) — shown value is the console default" : undefined}><Input value={maxTokens} onChange={(e) => { setMaxTokens(e.target.value); setMaxTouched(true); }} inputMode="numeric" /></Field>
+            <Field label={<Term id="reasoning-effort">Reasoning effort</Term>} hint={live ? naLive : undefined}>
+              <Select value={reasoning} disabled={live} onChange={(e) => setReasoning(e.target.value as ReasoningEffort)}><option value="low">low</option><option value="medium">medium</option><option value="high">high</option><option value="xhigh">xhigh</option><option value="max">max</option></Select>
             </Field>
-            <Field label="Fallback model" hint="Used on provider refusal or error">
-              <Select value={fallback} onChange={(e) => setFallback(e.target.value)}>{MODELS.map((m) => <option key={m.model}>{m.model}</option>)}</Select>
+            <Field label="Fallback model" hint={live ? naLive : "Used on provider refusal or error"}>
+              <Select value={fallback} disabled={live} onChange={(e) => setFallback(e.target.value)}>{MODELS.map((m) => <option key={m.model}>{m.model}</option>)}</Select>
             </Field>
           </div>
           {curModel && (
@@ -352,7 +501,8 @@ function Configure({ agent, model }: { agent: ReturnType<typeof getAgent> & {}; 
           desc="Typed inputs become the published API request schema."
           action={saveBtn(ioDirty, () => {
             const cleaned = inputVariables.filter((v) => v.name.trim()).map((v) => ({ ...v, name: v.name.trim() }));
-            updateAgentConfig(agent.id, { outputFormat, includeCitations, inputVariables: cleaned });
+            if (live) void saveLiveDraft(agent.id, { outputFormat, inputVariables: cleaned });
+            else updateAgentConfig(agent.id, { outputFormat, includeCitations, inputVariables: cleaned });
             setInputVariables(cleaned);
           })}
         >
@@ -395,13 +545,13 @@ function Configure({ agent, model }: { agent: ReturnType<typeof getAgent> & {}; 
           <p className="mt-2 text-xs text-muted">Typed inputs are validated at invoke and become part of the published OpenAPI request schema.</p>
           <div className="mt-4 grid gap-4 sm:grid-cols-2">
             <Field label="Output format"><Select value={outputFormat} onChange={(e) => setOutputFormat(e.target.value as OutputFormat)}><option value="text">Free text</option><option value="json">Structured output (JSON schema)</option></Select></Field>
-            <button type="button" onClick={() => setIncludeCitations((v) => !v)} className="flex items-center justify-between rounded-lg border border-border bg-elevated px-3 py-2 text-left">
+            <button type="button" disabled={live} title={live ? naLive : undefined} onClick={() => setIncludeCitations((v) => !v)} className="flex items-center justify-between rounded-lg border border-border bg-elevated px-3 py-2 text-left disabled:cursor-not-allowed disabled:opacity-60">
               <span className="text-sm text-ink-2">Include citations</span><Toggle on={includeCitations} />
             </button>
           </div>
         </SectionCard>
 
-        <SectionCard title="Context & memory" action={saveBtn(memoryDirty, () => updateAgentConfig(agent.id, { truncationStrategy: truncation, sessionMemory, maxTurnsRetained: parseNum(maxTurns, base.maxTurnsRetained), longTermMemory: longTerm }))}>
+        <SectionCard title="Context & memory" action={saveBtn(memoryDirty, () => updateAgentConfig(agent.id, { truncationStrategy: truncation, sessionMemory, maxTurnsRetained: parseNum(maxTurns, base.maxTurnsRetained), longTermMemory: longTerm }), false)}>
           <div className="mb-4 flex items-start gap-2 rounded-lg border border-warning/30 bg-warning-soft px-3 py-2">
             <Badge tone="warning">Planned</Badge>
             <p className="text-xs text-ink-2">These settings are captured as config but <span className="font-medium">not enforced at runtime yet</span> — session/long-term memory is designed but unimplemented. See <span className="font-mono">docs/session-memory-status.md</span>.</p>
@@ -424,16 +574,20 @@ function Configure({ agent, model }: { agent: ReturnType<typeof getAgent> & {}; 
             <Row label="Total versions">{agent.versions}</Row>
             <Row label="Owner">{agent.owner}</Row>
           </div>
-          <Button
+          <GateButton
+            permission="agent.publish"
             variant="primary"
             className="mt-4 w-full"
-            onClick={() => setGate(publishGateDecision(agent, evals[0]?.verdict, policy))}
+            disabled={!manage || readOnly}
+            title={readOnly ? "Archived — restore to publish" : manageTitle}
+            onClick={() => setGate(live ? "ok" : publishGateDecision(agent, evals[0]?.verdict, policy))}
           >
             <Rocket className="size-4" /> Publish {agent.activeVersion}
-          </Button>
-          <Button variant="outline" className="mt-2 w-full" onClick={() => setSaveOpen(true)}>Save as new version</Button>
+          </GateButton>
+          <GateButton permission="agent.edit" variant="outline" className="mt-2 w-full" disabled={!manage || readOnly}
+            title={readOnly ? "Archived — restore to create a version" : manageTitle} onClick={() => setSaveOpen(true)}>Save as new version</GateButton>
         </SectionCard>
-        <SectionCard title="Spend controls" action={saveBtn(spendDirty, () => updateAgentConfig(agent.id, { spend: { monthlyCapUsd: parseNum(monthlyCap, base.spend.monthlyCapUsd), maxConcurrency: parseNum(concurrency, base.spend.maxConcurrency), timeoutSec: parseNum(timeout, base.spend.timeoutSec) } }))}>
+        <SectionCard title="Spend controls" action={saveBtn(spendDirty, () => updateAgentConfig(agent.id, { spend: { monthlyCapUsd: parseNum(monthlyCap, base.spend.monthlyCapUsd), maxConcurrency: parseNum(concurrency, base.spend.maxConcurrency), timeoutSec: parseNum(timeout, base.spend.timeoutSec) } }), false)}>
           <div className="space-y-4">
             <Field label="Monthly spend cap (USD)"><Input value={monthlyCap} onChange={(e) => setMonthlyCap(e.target.value)} inputMode="numeric" /></Field>
             <Field label={<Term id="concurrency">Max concurrency</Term>}><Input value={concurrency} onChange={(e) => setConcurrency(e.target.value)} inputMode="numeric" /></Field>
@@ -447,9 +601,9 @@ function Configure({ agent, model }: { agent: ReturnType<typeof getAgent> & {}; 
                 <p className="text-sm font-medium text-ink">{agent.status === "archived" ? "Restore agent" : "Archive agent"}</p>
                 <p className="text-xs text-muted">{agent.status === "archived" ? "Make this agent active again." : "Hide from active lists. Reversible."}</p>
               </div>
-              <Button variant="outline" size="sm" onClick={() => (agent.status === "archived" ? restoreAgent(agent.id) : archiveAgent(agent.id))}>
+              <GateButton permission="agent.delete" variant="outline" size="sm" disabled={!manage} title={manageTitle} onClick={() => (agent.status === "archived" ? restoreAgent(agent.id) : archiveAgent(agent.id))}>
                 {agent.status === "archived" ? "Restore" : "Archive"}
-              </Button>
+              </GateButton>
             </div>
             <Separator />
             <div className="flex items-center justify-between gap-3">
@@ -457,13 +611,14 @@ function Configure({ agent, model }: { agent: ReturnType<typeof getAgent> & {}; 
                 <p className="text-sm font-medium text-ink">Delete agent</p>
                 <p className="text-xs text-muted">Remove the agent and all versions. Cannot be undone.</p>
               </div>
-              <Button variant="danger" size="sm" onClick={() => setDeleteOpen(true)}>Delete</Button>
+              <GateButton permission="agent.delete" variant="danger" size="sm" disabled={live || !manage} title={live ? naLive : manageTitle} onClick={() => setDeleteOpen(true)}>Delete</GateButton>
             </div>
           </div>
         </SectionCard>
       </aside>
 
-      <SaveVersionDialog agent={agent} open={saveOpen} onClose={() => setSaveOpen(false)} />
+      {/* keyed by the version count so the suggested next label resets after each create */}
+      <SaveVersionDialog key={agent.versions} agent={agent} open={saveOpen} onClose={() => setSaveOpen(false)} />
       <RunEvalDialog agent={agent} open={runEvalOpen} onClose={() => setRunEvalOpen(false)} />
       <PublishGateDialogs
         agent={agent}
@@ -476,7 +631,7 @@ function Configure({ agent, model }: { agent: ReturnType<typeof getAgent> & {}; 
       <ConfirmDialog
         open={deleteOpen}
         onClose={() => setDeleteOpen(false)}
-        onConfirm={() => { deleteAgent(agent.id); router.push("/agents"); }}
+        onConfirm={() => { if (deleteAgent(agent.id)) router.push("/agents"); }}
         title="Delete agent"
         confirmLabel="Delete"
         body={<>Delete <span className="font-medium text-ink">{agent.name}</span> and all its versions? This cannot be undone.</>}
@@ -490,7 +645,8 @@ function Knowledge({ agent }: { agent: ReturnType<typeof getAgent> & {} }) {
   const { can } = useAuth();
   const principal = usePrincipal();
   const manage = canManage(agent.accessPolicy, principal);
-  const canEdit = can("agent.edit") && manage;
+  const live = useIsLiveWorkspace();
+  const canEdit = can("agent.edit") && manage && !live;
   const [attachOpen, setAttachOpen] = React.useState(false);
   const kbs = agent.knowledgeBases.map(getKb).filter(Boolean) as NonNullable<ReturnType<typeof getKb>>[];
   const base = resolveConfig(agent).retrieval;
@@ -508,7 +664,7 @@ function Knowledge({ agent }: { agent: ReturnType<typeof getAgent> & {} }) {
   return (
     <div className="space-y-6">
       {kbs.length > 0 && (
-        <SectionCard title="Retrieval configuration" desc="How this version retrieves context. Changing the embedding model triggers a re-eval." action={<GateButton permission="agent.edit" variant="primary" size="sm" disabled={!retrievalDirty || !manage} title={manage ? undefined : "Restricted by this agent's access policy"} onClick={() => updateAgentConfig(agent.id, { retrieval: { injection, topK: parseNum(topK, base.topK), similarityThreshold: parseNum(threshold, base.similarityThreshold), reranker, maxInjectedTokens: parseNum(maxInjected, base.maxInjectedTokens), hybrid } })}>Save changes</GateButton>}>
+        <SectionCard title="Retrieval configuration" desc="How this version retrieves context. Changing the embedding model triggers a re-eval." action={<GateButton permission="agent.edit" variant="primary" size="sm" disabled={!retrievalDirty || !manage || live} title={live ? "Not available yet for live agents" : manage ? undefined : "Restricted by this agent's access policy"} onClick={() => updateAgentConfig(agent.id, { retrieval: { injection, topK: parseNum(topK, base.topK), similarityThreshold: parseNum(threshold, base.similarityThreshold), reranker, maxInjectedTokens: parseNum(maxInjected, base.maxInjectedTokens), hybrid } })}>Save changes</GateButton>}>
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             <Field label="Injection strategy"><Select value={injection} onChange={(e) => setInjection(e.target.value as InjectionStrategy)}><option value="tool">Retrieval as a tool</option><option value="stuff">Always-on context</option></Select></Field>
             <Field label={<Term id="top-k">Top-k</Term>}><Input value={topK} onChange={(e) => setTopK(e.target.value)} inputMode="numeric" /></Field>
@@ -593,7 +749,8 @@ function SkillsTab({ agent }: { agent: ReturnType<typeof getAgent> & {} }) {
   const { can } = useAuth();
   const principal = usePrincipal();
   const manage = canManage(agent.accessPolicy, principal);
-  const canEdit = can("agent.edit") && manage;
+  const live = useIsLiveWorkspace();
+  const canEdit = can("agent.edit") && manage && !live;
   const [attachOpen, setAttachOpen] = React.useState(false);
   const allSkills = useSkills();
   const boundIds = agent.skills ?? [];
@@ -689,7 +846,8 @@ function ToolsTab({ agent }: { agent: ReturnType<typeof getAgent> & {} }) {
   const { can } = useAuth();
   const principal = usePrincipal();
   const manage = canManage(agent.accessPolicy, principal);
-  const canEdit = can("agent.edit") && manage;
+  const live = useIsLiveWorkspace();
+  const canEdit = can("agent.edit") && manage && !live;
   const manageTitle = manage ? undefined : "Restricted by this agent's access policy";
   // Full lists for resolving bound refs (so a ref to a paused/other server still shows its name, and
   // deleted ones render as dangling); the filtered list drives the "available to bind" section.
@@ -757,6 +915,7 @@ function ToolsTab({ agent }: { agent: ReturnType<typeof getAgent> & {} }) {
 function Guardrails({ agent }: { agent: ReturnType<typeof getAgent> & {} }) {
   const principal = usePrincipal();
   const manage = canManage(agent.accessPolicy, principal);
+  const live = useIsLiveWorkspace();
   const base = resolveConfig(agent).guardrails;
   const [input, setInput] = React.useState<GuardrailStage[]>(base.input);
   const [output, setOutput] = React.useState<GuardrailStage[]>(base.output);
@@ -784,7 +943,7 @@ function Guardrails({ agent }: { agent: ReturnType<typeof getAgent> & {} }) {
       </Card>
       <div className="flex justify-end">
         {/* @backend PUT /v1/agents/:id/guardrails - per-version guardrail config [via updateAgentConfig] */}
-        <GateButton permission="agent.edit" variant="primary" size="sm" disabled={!dirty || !manage} title={manage ? undefined : "Restricted by this agent's access policy"} onClick={() => updateAgentConfig(agent.id, { guardrails: { input, output } })}>Save changes</GateButton>
+        <GateButton permission="agent.edit" variant="primary" size="sm" disabled={!dirty || !manage || live} title={live ? "Not available yet for live agents" : manage ? undefined : "Restricted by this agent's access policy"} onClick={() => updateAgentConfig(agent.id, { guardrails: { input, output } })}>Save changes</GateButton>
       </div>
       <div className="grid gap-6 lg:grid-cols-2">
         <SectionCard title="Input stages"><div className="divide-y divide-border">{input.map((s, i) => <StageRow key={s.name} s={s} onToggle={() => toggle(setInput, i)} />)}</div></SectionCard>
@@ -826,29 +985,34 @@ function AccessTab({ agent, canManage }: { agent: ReturnType<typeof getAgent> & 
 }
 
 /* ================================================================= Versions */
-function Versions({ agent, versions }: { agent: ReturnType<typeof getAgent> & {}; versions: ReturnType<typeof getVersions> }) {
+function Versions({ agent, versions }: { agent: ReturnType<typeof getAgent> & {}; versions: ReturnType<typeof versionsOf> }) {
   const principal = usePrincipal();
+  const live = useIsLiveWorkspace();
   const manage = canManage(agent.accessPolicy, principal);
   const manageTitle = manage ? undefined : "Restricted by this agent's access policy";
   return (
     <SectionCard title="Version history" desc="Every version is an immutable snapshot. A published endpoint always runs exactly one pinned version." action={<Button variant="outline" size="sm" onClick={() => toast("Version compare (coming soon)", "neutral")}><GitBranch className="size-4" /> Compare</Button>}>
       <ol className="relative space-y-6 before:absolute before:left-[7px] before:top-1 before:h-full before:w-px before:bg-border">
         {versions.map((v) => {
-          const active = v.label === agent.activeVersion;
+          // Live: the server marks the active version (is_active); labels are display-only.
+          const active = v.isActive ?? v.label === agent.activeVersion;
           return (
-            <li key={v.label} className="relative pl-7">
+            <li key={v.id ?? v.label} className="relative pl-7">
               <span className={`absolute left-0 top-1 size-3.5 rounded-full border-2 ${active ? "border-accent bg-accent" : "border-border-strong bg-surface"}`} />
               <div className="flex flex-wrap items-center gap-2">
                 <span className="font-semibold text-ink">{v.label}</span>
                 {active && <Badge tone="accent">Active</Badge>}
-                <Badge tone="neutral">{v.status}</Badge>
+                {!v.id && <Badge tone="neutral">{v.status}</Badge>}
                 {v.evalVerdict !== "none" && <Badge tone={verdictTone[v.evalVerdict]}>{verdictLabel[v.evalVerdict]}</Badge>}
                 <span className="font-mono text-xs text-muted">{v.model}</span>
               </div>
-              <p className="mt-1 text-sm text-ink-2">{v.note}</p>
-              <p className="mt-1 text-xs text-muted">{v.createdBy} · {dateShort(v.createdAt)}</p>
+              {v.note && <p className="mt-1 text-sm text-ink-2">{v.note}</p>}
+              <p className="mt-1 text-xs text-muted">
+                {v.createdBy || "unknown creator"} · {dateShort(v.createdAt)}
+                {v.id && <> · <span className="font-mono" title={v.id}>{v.id.slice(0, 8)}</span></>}
+              </p>
               <div className="mt-2 flex gap-2">
-                {!active && <GateButton permission="agent.publish" variant="outline" size="sm" disabled={!manage} title={manageTitle} onClick={() => rollbackVersion(agent.id, v.label)}>Roll back to {v.label}</GateButton>}
+                {!active && <GateButton permission="agent.publish" variant="outline" size="sm" disabled={!manage} title={manageTitle} onClick={() => rollbackVersion(agent.id, v.label, v.id)}>{live ? "Make active" : "Roll back to"} {v.label}</GateButton>}
                 <Button variant="ghost" size="sm" onClick={() => toast(`Opening eval for ${v.label}`, "neutral")}>View eval</Button>
               </div>
             </li>
@@ -860,55 +1024,23 @@ function Versions({ agent, versions }: { agent: ReturnType<typeof getAgent> & {}
 }
 
 /* ================================================================= Evals */
-function EvalRunDetail({ run }: { run: EvalRun }) {
-  const hasDetail = !!run.reason || !!run.dimensions?.length || !!run.failingCases?.length;
-  return (
-    <div className="space-y-3">
-      {run.reason && <p className="max-w-[80ch] text-xs leading-relaxed text-ink-2">{run.reason}</p>}
-      {run.dimensions && run.dimensions.length > 0 && (
-        <div className="space-y-1.5">
-          <p className="text-[11px] font-medium uppercase tracking-wide text-muted">Dimensions vs baseline</p>
-          {run.dimensions.map((d) => {
-            const delta = Math.round((d.score - d.baseline) * 10) / 10;
-            const regressed = delta < 0;
-            return (
-              <div key={d.name} className="flex items-center gap-3 text-xs">
-                <span className="w-28 shrink-0 truncate text-ink-2" title={d.name}>{d.name}</span>
-                <Progress value={d.score} tone={regressed ? "critical" : "good"} className="max-w-xs flex-1" />
-                <span className="w-20 shrink-0 text-right tnum text-muted">{d.score} / {d.baseline}</span>
-                <span className={`w-12 shrink-0 text-right tnum ${regressed ? "text-critical" : "text-good"}`}>{delta > 0 ? "+" : ""}{delta}</span>
-              </div>
-            );
-          })}
-        </div>
-      )}
-      {run.failingCases && run.failingCases.length > 0 && (
-        <div className="space-y-1.5">
-          <p className="text-[11px] font-medium uppercase tracking-wide text-muted">Example failing cases</p>
-          <ul className="space-y-1.5">
-            {run.failingCases.map((c, i) => (
-              <li key={i} className="rounded-lg border border-border bg-surface px-3 py-2 text-xs">
-                <p className="font-medium text-ink-2">{c.input}</p>
-                <p className="mt-0.5 text-muted">{c.issue}</p>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-      {!hasDetail && <p className="text-xs text-muted">No additional detail for this run.</p>}
-    </div>
-  );
-}
-
 function Evals({ agent }: { agent: ReturnType<typeof getAgent> & {} }) {
+  const live = useIsLiveWorkspace();
+  useEnsureEvals(agent.id, live);
   const evals = useEvalRunsForAgent(agent.id);
+  const evalRemote = useRemoteStatus(`evalRuns:${agent.id}`);
   const [runEvalOpen, setRunEvalOpen] = React.useState(false);
   const [expandedId, setExpandedId] = React.useState<string | null>(null);
+  function toggle(id: string, open: boolean) {
+    setExpandedId(open ? null : id);
+    if (!open && live) void loadEvalRunDetail(id);
+  }
   return (
     <div className="space-y-6">
+      {live && <LiveStatus live status={evalRemote} label="eval runs" onRetry={() => void loadEvalRuns(agent.id, { force: true })} />}
       <div className="grid gap-4 sm:grid-cols-3">
         <SectionCard title={<Term id="eval-pass">Eval pass rate</Term>}><p className="text-3xl font-semibold tnum text-ink">{pct(agent.evalPass)}</p></SectionCard>
-        <SectionCard title={<Term id="baseline">Baseline</Term>}><p className="text-sm text-ink-2">Frozen at <span className="font-medium text-ink">{agent.activeVersion === "v7" ? "v6" : "previous version"}</span></p><GateButton permission="eval.govern" variant="outline" size="sm" className="mt-3" onClick={() => reFreezeBaseline(agent.id)}>Re-freeze baseline</GateButton></SectionCard>
+        {live ? <LiveBaselineCard agentId={agent.id} /> : <SectionCard title={<Term id="baseline">Baseline</Term>}><p className="text-sm text-ink-2">Frozen at <span className="font-medium text-ink">{agent.activeVersion === "v7" ? "v6" : "previous version"}</span></p><GateButton permission="eval.govern" variant="outline" size="sm" className="mt-3" onClick={() => reFreezeBaseline(agent.id)}>Re-freeze baseline</GateButton></SectionCard>}
         <SectionCard title={<Term id="drift">Drift</Term>}><Badge tone={driftTone[agent.drift]}>{agent.drift}</Badge><p className="mt-2 text-xs text-muted">Model, prompt or knowledge changes trigger a re-eval.</p></SectionCard>
       </div>
       <SectionCard title="Eval runs" action={<GateButton permission="eval.run" variant="primary" size="sm" onClick={() => setRunEvalOpen(true)}><FlaskConical className="size-4" /> Run eval</GateButton>}>
@@ -920,18 +1052,18 @@ function Evals({ agent }: { agent: ReturnType<typeof getAgent> & {} }) {
                 const open = expandedId === e.id;
                 return (
                   <React.Fragment key={e.id}>
-                    <TR className="cursor-pointer" onClick={() => setExpandedId(open ? null : e.id)}>
+                    <TR className="cursor-pointer" onClick={() => toggle(e.id, open)}>
                       <TD className="font-mono text-xs text-muted">
                         <span className="inline-flex items-center gap-1.5">
-                          {open ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}{e.id}
+                          {open ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}{live ? e.id.slice(0, 8) : e.id}
                         </span>
                       </TD>
                       <TD className="font-mono text-xs text-ink-2">{e.version} vs {e.baseline}</TD>
                       <TD><Badge tone="neutral">{e.trigger}</Badge></TD>
-                      <TD className="text-right tnum font-medium text-ink">{e.quality.toFixed(1)}</TD>
+                      <TD className="text-right tnum font-medium text-ink">{e.scored === false ? "—" : e.quality.toFixed(1)}</TD>
                       <TD className={`text-right tnum ${e.costDelta > 0 ? "text-critical" : "text-good"}`}>{e.costDelta > 0 ? "+" : ""}{e.costDelta}%</TD>
                       <TD className={`text-right tnum ${e.latencyDelta > 0 ? "text-critical" : "text-good"}`}>{e.latencyDelta > 0 ? "+" : ""}{e.latencyDelta}ms</TD>
-                      <TD><Badge tone={verdictTone[e.verdict]}>{verdictLabel[e.verdict]}</Badge></TD>
+                      <TD>{e.status === "failed" ? <Badge tone="critical">Failed</Badge> : <Badge tone={verdictTone[e.verdict]}>{verdictLabel[e.verdict]}</Badge>}</TD>
                       <TD className="whitespace-nowrap text-xs text-muted">{relative(e.date)}</TD>
                     </TR>
                     {open && (
@@ -951,6 +1083,48 @@ function Evals({ agent }: { agent: ReturnType<typeof getAgent> & {} }) {
 
       <RunEvalDialog agent={agent} open={runEvalOpen} onClose={() => setRunEvalOpen(false)} />
     </div>
+  );
+}
+
+/** Live Baseline card (026 US4, D7/O2): the baseline is per SUITE — frozen pointer, else the active version's latest
+ *  completed run, else none. Freeze/unfreeze are admin-only (eval.govern); a server 403 is toasted by the store. */
+function LiveBaselineCard({ agentId }: { agentId: string }) {
+  const suites = useSuitesForAgent(agentId);
+  const evals = useEvalRunsForAgent(agentId);
+  const [sid, setSid] = React.useState("");
+  const [busy, setBusy] = React.useState(false);
+  const suite = suites.find((x) => x.id === sid) ?? suites[0];
+  const latest = suite ? evals.find((e) => e.suiteId === suite.id && e.status === "completed") : undefined;
+  const b = suite?.baseline;
+  async function act(fn: () => Promise<boolean>) { setBusy(true); try { await fn(); } finally { setBusy(false); } }
+  return (
+    <SectionCard title={<Term id="baseline">Baseline</Term>}>
+      {!suite ? (
+        <p className="text-sm text-ink-2">None yet — a baseline is a completed run of an eval suite.</p>
+      ) : (
+        <div className="space-y-2">
+          {suites.length > 1 && (
+            <Select value={suite.id} onChange={(e) => setSid(e.target.value)} aria-label="Suite">
+              {suites.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}
+            </Select>
+          )}
+          <p className="text-sm text-ink-2">
+            {b?.origin === "frozen" ? <>Frozen{b.frozenBy ? <> by <span className="font-medium text-ink">{b.frozenBy}</span></> : null}</>
+              : b?.origin === "automatic" ? "Automatic — the active version's latest run"
+              : "None yet — run the active version first"}
+          </p>
+          {b?.evalRunId && <p className="font-mono text-[11px] text-muted">run {b.evalRunId.slice(0, 8)}</p>}
+          <div className="flex flex-wrap gap-2 pt-1">
+            <GateButton permission="eval.govern" variant="outline" size="sm" disabled={busy || !latest || (b?.origin === "frozen" && b.evalRunId === latest?.id)}
+              title={latest ? `Pin run ${latest.id.slice(0, 8)} (${latest.version})` : "No completed run of this suite yet"}
+              onClick={() => latest && void act(() => freezeBaseline(suite.id, latest.id))}>Freeze latest run</GateButton>
+            {b?.origin === "frozen" && (
+              <GateButton permission="eval.govern" variant="ghost" size="sm" disabled={busy} onClick={() => void act(() => clearBaseline(suite.id))}>Unfreeze</GateButton>
+            )}
+          </div>
+        </div>
+      )}
+    </SectionCard>
   );
 }
 
@@ -1022,7 +1196,10 @@ function SuiteCard({
             <Badge tone={thin ? "warning" : "good"}>{suite.cases.length} {suite.cases.length === 1 ? "case" : "cases"}</Badge>
             {thin && <span className="text-[11px] text-warning">below min {minCases}</span>}
           </div>
-          <p className="mt-0.5 text-[11px] text-muted">Updated {relative(suite.updatedAt)}</p>
+          <p className="mt-0.5 text-[11px] text-muted">
+            Updated {relative(suite.updatedAt)}
+            {suite.baseline !== undefined && <> · baseline {suite.baseline?.origin === "frozen" ? "frozen" : suite.baseline?.origin === "automatic" ? "automatic" : "none"}</>}
+          </p>
         </div>
         <div className="flex shrink-0 items-center gap-2">
           <GateButton permission="eval.author" variant="ghost" size="sm" onClick={onRename}>Rename</GateButton>
@@ -1081,7 +1258,10 @@ function SuiteNameDialog({ agentId, initial, onClose }: { agentId: string; initi
   );
 }
 
+/** Live (026 US4): the engine's deterministic layer only checks `required_fields`, and the rubric is capped at 8. */
+const LIVE_MAX_RUBRIC = 8;
 function CaseEditorDialog({ agent, suiteId, initial, onClose }: { agent: Agent; suiteId: string; initial: EvalCaseDef | null; onClose: () => void }) {
+  const live = useIsLiveWorkspace();
   const inputVars = resolveConfig(agent).inputVariables;
   const [input, setInput] = React.useState(initial?.input ?? "");
   const [vars, setVars] = React.useState<Record<string, string>>(() => {
@@ -1090,7 +1270,9 @@ function CaseEditorDialog({ agent, suiteId, initial, onClose }: { agent: Agent; 
     return seed;
   });
   // Clone arrays so editing never aliases the stored case (seed cases share a rubric reference).
-  const [assertions, setAssertions] = React.useState<Assertion[]>(() => (initial ? initial.assertions.map((a) => ({ ...a })) : [{ kind: "no_refusal", hard: true }]));
+  const [assertions, setAssertions] = React.useState<Assertion[]>(() =>
+    initial ? initial.assertions.filter((a) => !live || a.kind === "required_fields").map((a) => ({ ...a }))
+      : live ? [] : [{ kind: "no_refusal", hard: true }]);
   const [rubric, setRubric] = React.useState<RubricDimension[]>(() => (initial ? initial.rubric.map((d) => ({ ...d })) : newRubric()));
   const [expected, setExpected] = React.useState(initial?.expected ?? "");
 
@@ -1100,12 +1282,17 @@ function CaseEditorDialog({ agent, suiteId, initial, onClose }: { agent: Agent; 
     const needsDetail = (ASSERTION_KINDS.find((x) => x.kind === a.kind)?.detailHint ?? "") !== "";
     return !needsDetail || !!a.detail?.trim();
   });
-  const valid = input.trim().length > 0 && assertionsValid && rubric.length > 0 && rubric.every((d) => d.name.trim() && d.weight > 0);
+  const liveValid = !live || (rubric.length <= LIVE_MAX_RUBRIC && assertions.every((a) => a.kind === "required_fields"));
+  const valid = input.trim().length > 0 && assertionsValid && liveValid && rubric.length > 0 && rubric.every((d) => d.name.trim() && d.weight > 0);
 
   function submit() {
     if (!valid) return;
     // Only persist vars the agent actually declares, dropping blanks.
-    const keptVars: Record<string, string> = {};
+    // Vars the agent doesn't declare (e.g. an API-authored case) aren't editable here — carry them through unchanged
+    // so saving never silently rewrites the server case (review #5).
+    const declared = new Set(inputVars.map((v) => v.name));
+    const keptVars: Record<string, string> = Object.fromEntries(
+      Object.entries(initial?.vars ?? {}).filter(([k]) => !declared.has(k)));
     for (const v of inputVars) if (vars[v.name]?.trim()) keptVars[v.name] = vars[v.name].trim();
     const c: EvalCaseDef = {
       id: initial?.id ?? genId("case"),
@@ -1114,9 +1301,11 @@ function CaseEditorDialog({ agent, suiteId, initial, onClose }: { agent: Agent; 
       assertions: assertions.map((a) => ({ ...a, detail: a.detail?.trim() || undefined })),
       rubric: rubric.map((d) => ({ name: d.name.trim(), weight: d.weight })),
       ...(expected.trim() ? { expected: expected.trim() } : {}),
+      // live: the server's original non-string values, so unedited fields round-trip exactly (adapters.restore)
+      ...(initial?.raw ? { raw: initial.raw } : {}),
     };
-    upsertCase(suiteId, c);
-    toast(initial ? "Case updated" : "Case added");
+    upsertCase(suiteId, c);   // live: the store toasts the server result (or its refusal)
+    if (!live) toast(initial ? "Case updated" : "Case added");
     onClose();
   }
 
@@ -1154,8 +1343,8 @@ function CaseEditorDialog({ agent, suiteId, initial, onClose }: { agent: Agent; 
           </div>
         )}
 
-        <AssertionRows assertions={assertions} setAssertions={setAssertions} />
-        <RubricRows rubric={rubric} setRubric={setRubric} />
+        <AssertionRows assertions={assertions} setAssertions={setAssertions} live={live} />
+        <RubricRows rubric={rubric} setRubric={setRubric} max={live ? LIVE_MAX_RUBRIC : undefined} />
 
         <Field label="Reference answer" hint="Optional. The pairwise judge compares to the frozen baseline, so a golden answer isn't required.">
           <Textarea rows={2} value={expected} onChange={(e) => setExpected(e.target.value)} placeholder="(optional) expected answer sketch" />
@@ -1165,15 +1354,16 @@ function CaseEditorDialog({ agent, suiteId, initial, onClose }: { agent: Agent; 
   );
 }
 
-function AssertionRows({ assertions, setAssertions }: { assertions: Assertion[]; setAssertions: React.Dispatch<React.SetStateAction<Assertion[]>> }) {
+function AssertionRows({ assertions, setAssertions, live = false }: { assertions: Assertion[]; setAssertions: React.Dispatch<React.SetStateAction<Assertion[]>>; live?: boolean }) {
   const update = (i: number, patch: Partial<Assertion>) => setAssertions((p) => p.map((a, j) => (j === i ? { ...a, ...patch } : a)));
   const detailHintFor = (k: AssertionKind) => ASSERTION_KINDS.find((x) => x.kind === k)?.detailHint ?? "";
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between">
         <p className="text-xs font-medium text-ink-2">Deterministic assertions</p>
-        <Button variant="ghost" size="sm" onClick={() => setAssertions((p) => [...p, { kind: "no_refusal", hard: false }])}><Plus className="size-4" /> Add assertion</Button>
+        <Button variant="ghost" size="sm" onClick={() => setAssertions((p) => [...p, live ? { kind: "required_fields", hard: true } : { kind: "no_refusal", hard: false }])}><Plus className="size-4" /> Add assertion</Button>
       </div>
+      {live && <p className="text-[11px] text-muted">Only <span className="text-ink-2">Required fields</span> is checked by the eval engine today (always hard); the other kinds are not available yet.</p>}
       {assertions.length === 0 ? (
         <p className="text-[11px] text-muted">No assertions — this case is scored by the rubric alone.</p>
       ) : (
@@ -1183,11 +1373,14 @@ function AssertionRows({ assertions, setAssertions }: { assertions: Assertion[];
             return (
               <div key={i} className="flex flex-wrap items-center gap-2 rounded-lg border border-border bg-elevated/40 px-2.5 py-2">
                 <Select className="w-auto" value={a.kind} onChange={(e) => update(i, { kind: e.target.value as AssertionKind })}>
-                  {ASSERTION_KINDS.map((x) => <option key={x.kind} value={x.kind}>{x.label}</option>)}
+                  {ASSERTION_KINDS.map((x) => {
+                    const off = live && x.kind !== "required_fields";
+                    return <option key={x.kind} value={x.kind} disabled={off}>{x.label}{off ? " — not available yet" : ""}</option>;
+                  })}
                 </Select>
                 {hint && <Input className={`min-w-40 flex-1 ${!a.detail?.trim() ? "border-warning/60" : ""}`} value={a.detail ?? ""} onChange={(e) => update(i, { detail: e.target.value })} placeholder={`${hint} (required)`} />}
                 <button
-                  type="button" onClick={() => update(i, { hard: !a.hard })}
+                  type="button" disabled={live} onClick={() => update(i, { hard: !a.hard })}
                   className={`rounded-md border px-2.5 py-1 text-xs font-medium transition-colors ${a.hard ? "border-transparent bg-accent-soft text-accent" : "border-border bg-elevated text-ink-2"}`}
                   title={a.hard ? "Hard: failing this fails the case" : "Soft: informs the judge only"}
                 >
@@ -1203,7 +1396,7 @@ function AssertionRows({ assertions, setAssertions }: { assertions: Assertion[];
   );
 }
 
-function RubricRows({ rubric, setRubric }: { rubric: RubricDimension[]; setRubric: React.Dispatch<React.SetStateAction<RubricDimension[]>> }) {
+function RubricRows({ rubric, setRubric, max }: { rubric: RubricDimension[]; setRubric: React.Dispatch<React.SetStateAction<RubricDimension[]>>; max?: number }) {
   const update = (i: number, patch: Partial<RubricDimension>) => setRubric((p) => p.map((d, j) => (j === i ? { ...d, ...patch } : d)));
   return (
     <div className="space-y-2">
@@ -1212,8 +1405,9 @@ function RubricRows({ rubric, setRubric }: { rubric: RubricDimension[]; setRubri
           <p className="text-xs font-medium text-ink-2">Judge rubric</p>
           <p className="text-[11px] text-muted">The judge scores each dimension 1–5; the weighted blend is the case quality.</p>
         </div>
-        <Button variant="ghost" size="sm" onClick={() => setRubric((p) => [...p, { name: "", weight: 1 }])}><Plus className="size-4" /> Add dimension</Button>
+        <Button variant="ghost" size="sm" disabled={max !== undefined && rubric.length >= max} onClick={() => setRubric((p) => [...p, { name: "", weight: 1 }])}><Plus className="size-4" /> Add dimension</Button>
       </div>
+      {max !== undefined && rubric.length > max && <p className="text-[11px] text-warning">At most {max} dimensions — remove {rubric.length - max}.</p>}
       {rubric.length === 0 ? (
         <p className="text-[11px] text-warning">Add at least one rubric dimension.</p>
       ) : (
@@ -1235,21 +1429,97 @@ function RubricRows({ rubric, setRubric }: { rubric: RubricDimension[]; setRubri
 }
 
 /* ================================================================= Publish */
+const noopSubscribe = () => () => {};
+/** Example value for an io_contract input variable (cURL body, D17). */
+/** A value the published endpoint will ACCEPT for this input (026 US3 review #6): never NaN (→ `null` in JSON), never
+ *  an empty enum. Enum → the default if it is an allowed value, else the first option. */
+function exampleValue(v: InputVariable): unknown {
+  const d = v.default !== undefined && v.default !== "" ? v.default : undefined;
+  switch (v.type) {
+    case "number": { const n = d === undefined ? NaN : Number(d); return Number.isFinite(n) ? n : 1; }
+    case "boolean": return d === undefined ? true : d === "true";
+    case "enum": return d !== undefined && (!v.options || v.options.includes(d)) ? d : v.options?.[0] ?? d ?? "";
+    default: return d ?? "Hello";
+  }
+}
+/** JSON value → a Python literal (review #4): a regex over JSON text also rewrote `true`/`null` INSIDE strings. */
+function toPython(v: unknown): string {
+  if (v === null || v === undefined) return "None";
+  if (typeof v === "boolean") return v ? "True" : "False";
+  if (typeof v === "number") return Number.isFinite(v) ? String(v) : "None";
+  if (typeof v === "string") return JSON.stringify(v); // a JSON string literal is a valid Python str literal
+  if (Array.isArray(v)) return `[${v.map(toPython).join(", ")}]`;
+  return `{${Object.entries(v as Record<string, unknown>).map(([k, x]) => `${JSON.stringify(k)}: ${toPython(x)}`).join(", ")}}`;
+}
+const ADVISORY_TEXT: Record<string, { label: string; tone: "good" | "critical" | "warning" }> = {
+  pass: { label: "Eval passing", tone: "good" },
+  fail: { label: "Eval failing", tone: "critical" },
+  low_confidence: { label: "Low confidence", tone: "warning" },
+};
+function PublishAdvisoryCard({ agentId }: { agentId: string }) {
+  const adv = usePublishAdvisory(agentId);
+  if (!adv) return null;
+  const t = ADVISORY_TEXT[adv.verdict] ?? ADVISORY_TEXT.low_confidence;
+  return (
+    <SectionCard title="Publish advisory" desc={`From the last publish of ${adv.versionLabel} in this session. Advisory only: the verdict never blocks publishing.`}
+      action={<Badge tone={t.tone}><StatusDot tone={t.tone} />{t.label}</Badge>}>
+      <div className="grid gap-3 text-sm sm:grid-cols-3">
+        <div><p className="text-xs text-muted">Reason</p><p className="font-mono text-xs text-ink">{adv.reason_code}</p></div>
+        {adv.eval_run_id ? (
+          <>
+            <div><p className="text-xs text-muted">Eval run</p><p className="font-mono text-xs text-ink" title={adv.eval_run_id}>{adv.eval_run_id.slice(0, 8)}</p></div>
+            <div><p className="text-xs text-muted">Suite</p><p className="font-mono text-xs text-ink" title={adv.suite_id ?? ""}>{adv.suite_id?.slice(0, 8)}</p></div>
+          </>
+        ) : (
+          <p className="text-xs text-muted sm:col-span-2">No completed eval run exists for this version. Run an eval to get a real verdict.</p>
+        )}
+      </div>
+    </SectionCard>
+  );
+}
+
 function Publish({ agent }: { agent: ReturnType<typeof getAgent> & {} }) {
   const [fmt, setFmt] = React.useState("curl");
-  const tokens = useTokens().filter((t) => t.agent === agent.name);
+  const live = useIsLiveWorkspace();
+  const { can } = useAuth();
+  // GET tokens is agent.publish server-side: a builder never fetches (it would only 403) - FR-020.
+  useEnsureTokens(agent.id, live && can("agent.publish"));
+  const tokens = useTokens().filter((t) => (live ? t.agentId === agent.id : t.agent === agent.name));
   const channels = useChannelsForAgent(agent.id);
   const [createOpen, setCreateOpen] = React.useState(false);
   const [revokeId, setRevokeId] = React.useState<string | null>(null);
   const [runEvalOpen, setRunEvalOpen] = React.useState(false);
+  const origin = React.useSyncExternalStore(noopSubscribe, () => window.location.origin, () => "");
   const endpoint = agent.endpoint ?? agent.id;
-  const url = `https://agent-platform.internal/v1/agents/${endpoint}/invoke`;
+  // D17: the published plane is /v1/agents/{id}/invoke on the public API base; the token is NEVER interpolated.
+  const url = live
+    ? `${process.env.NEXT_PUBLIC_PUBLIC_API_BASE || origin}/v1/agents/${agent.id}/invoke`
+    : `https://agent-platform.internal/v1/agents/${endpoint}/invoke`;
+  const tokenVar = live ? "AC_TOKEN" : "AGENT_PLATFORM_TOKEN";
+  const activeVars = versionsOf(agent).find((v) => v.isActive)?.inputVariables ?? [];
+  const body: Record<string, unknown> = live
+    ? { inputs: Object.fromEntries(activeVars.map((v) => [v.name, exampleValue(v)])) }
+    : { messages: [{ role: "user", content: "Hello" }], stream: true };
+  const bodyJson = JSON.stringify(body);
+  const pyJson = toPython(body);
+  // review #5: the body sits inside a single-quoted shell string — a `'` in a default value would end it.
+  const shellJson = bodyJson.replace(/'/g, "'\\''");
   const snippets: Record<string, string> = {
-    curl: `curl -N ${url} \\\n  -H "Authorization: Bearer $AGENT_PLATFORM_TOKEN" \\\n  -H "Content-Type: application/json" \\\n  -d '{"messages":[{"role":"user","content":"Hello"}],"stream":true}'`,
-    ts: `const res = await fetch("${url}", {\n  method: "POST",\n  headers: {\n    Authorization: \`Bearer \${process.env.AGENT_PLATFORM_TOKEN}\`,\n    "Content-Type": "application/json",\n  },\n  body: JSON.stringify({ messages: [{ role: "user", content: "Hello" }], stream: true }),\n});`,
-    python: `import os, requests\nres = requests.post(\n    "${url}",\n    headers={"Authorization": f"Bearer {os.environ['AGENT_PLATFORM_TOKEN']}"},\n    json={"messages": [{"role": "user", "content": "Hello"}], "stream": True},\n)`,
+    curl: `curl -N ${url} \\\n  -H "Authorization: Bearer $${tokenVar}" \\\n  -H "Content-Type: application/json" \\\n  -d '${shellJson}'`,
+    ts: `const res = await fetch("${url}", {\n  method: "POST",\n  headers: {\n    Authorization: \`Bearer \${process.env.${tokenVar}}\`,\n    "Content-Type": "application/json",\n  },\n  body: JSON.stringify(${bodyJson}),\n});`,
+    python: `import os, requests\nres = requests.post(\n    "${url}",\n    headers={"Authorization": f"Bearer {os.environ['${tokenVar}']}"},\n    json=${pyJson},\n    stream=True,\n)`,
   };
 
+  if (live && agent.status === "draft") {
+    return (
+      <div className="space-y-4">
+        <PublishAdvisoryCard agentId={agent.id} />
+        <SectionCard title="Not published yet" desc="Publish the active version from the header. The latest completed eval of that version is shown as an advisory verdict and never blocks publishing.">
+          <p className="text-sm text-muted">Once published, this tab shows the endpoint, a cURL snippet and the API tokens that can call it.</p>
+        </SectionCard>
+      </div>
+    );
+  }
   if (agent.status === "draft") {
     return (
       <div className="space-y-4">
@@ -1272,15 +1542,16 @@ function Publish({ agent }: { agent: ReturnType<typeof getAgent> & {} }) {
 
   return (
     <div className="space-y-6">
-      <SectionCard title="Published endpoint" action={<Badge tone="good"><StatusDot tone="good" />Live</Badge>}>
+      {live && <PublishAdvisoryCard agentId={agent.id} />}
+      <SectionCard title="Published endpoint" action={agent.status === "archived" ? <Badge tone="neutral">Archived: calls return 404</Badge> : <Badge tone="good"><StatusDot tone="good" />Live</Badge>}>
         <div className="flex items-center gap-2">
           <code className="flex-1 truncate rounded-lg border border-border bg-canvas px-3 py-2 font-mono text-xs text-ink-2">{url}</code>
           <CopyButton value={url} />
         </div>
         <div className="mt-4 grid gap-4 sm:grid-cols-3 text-sm">
           <div><p className="text-xs text-muted">Pinned version</p><p className="font-medium text-ink">{agent.activeVersion}</p></div>
-          <div><p className="text-xs text-muted">Auth</p><p className="font-medium text-ink">Caller&apos;s {ORG.idpName} token</p></div>
-          <div><p className="text-xs text-muted">Rate limit</p><p className="font-medium text-ink">60 req/min</p></div>
+          <div><p className="text-xs text-muted">Auth</p><p className="font-medium text-ink">{live ? "API token (Bearer)" : <>Caller&apos;s {ORG.idpName} token</>}</p></div>
+          <div><p className="text-xs text-muted">Rate limit</p><p className="font-medium text-ink">{live ? "Workspace policy" : "60 req/min"}</p></div>
         </div>
       </SectionCard>
 
@@ -1320,17 +1591,18 @@ function Publish({ agent }: { agent: ReturnType<typeof getAgent> & {} }) {
 
       <SectionCard title="API tokens" desc="Tokens are shown once at creation and scoped to this endpoint." action={<GateButton permission="agent.publish" variant="primary" size="sm" onClick={() => setCreateOpen(true)}>Create token</GateButton>}>
         <Table>
-          <THead><TR><TH>Name</TH><TH>Prefix</TH><TH>Created</TH><TH>Last used</TH><TH></TH></TR></THead>
+          <THead><TR><TH>Name</TH><TH>Prefix</TH><TH>Created</TH><TH>Expires</TH><TH>Last used</TH><TH></TH></TR></THead>
           <tbody>
             {tokens.length === 0 ? (
-              <TR><TD colSpan={5} className="py-6 text-center text-xs text-muted">No tokens yet. Create one to call this endpoint.</TD></TR>
+              <TR><TD colSpan={6} className="py-6 text-center text-xs text-muted">No tokens yet. Create one to call this endpoint.</TD></TR>
             ) : (
               tokens.map((t) => (
                 <TR key={t.id}>
                   <TD className="text-ink">{t.name}</TD>
                   <TD className="font-mono text-xs text-muted">{t.prefix}</TD>
                   <TD className="text-xs text-muted">{dateShort(t.created)}</TD>
-                  <TD className="text-xs text-muted">{t.lastUsed === "-" ? "-" : relative(t.lastUsed)}</TD>
+                  <TD className="text-xs text-muted">{t.expires ? dateShort(t.expires) : "-"}</TD>
+                  <TD className="text-xs text-muted">{!t.lastUsed || t.lastUsed === "-" ? "Never" : relative(t.lastUsed)}</TD>
                   <TD className="text-right"><GateButton permission="agent.publish" variant="ghost" size="sm" className="text-critical" onClick={() => setRevokeId(t.id)}>Revoke</GateButton></TD>
                 </TR>
               ))
@@ -1346,15 +1618,22 @@ function Publish({ agent }: { agent: ReturnType<typeof getAgent> & {} }) {
         onConfirm={() => { if (revokeId) revokeToken(revokeId); }}
         title="Revoke token"
         confirmLabel="Revoke"
-        body="Revoking this token immediately breaks any integration using it. This cannot be undone."
+        body={live ? "Revoking cuts open streams within about 2 seconds and every later call gets 401. This cannot be undone." : "Revoking this token immediately breaks any integration using it. This cannot be undone."}
       />
     </div>
   );
 }
 
 /* ================================================================= Dialogs */
-function RunEvalDialog({ agent, open, onClose }: { agent: Agent; open: boolean; onClose: () => void }) {
-  const versions = getVersions(agent.id);
+/** Live vs mock run surface. Live (026 US4) sends ONLY {version_id, suite_id}: the server picks the baseline (no
+ *  picker) and applies the workspace policy, then returns the persisted run, which is shown inline. */
+function RunEvalDialog(props: { agent: Agent; open: boolean; onClose: () => void }) {
+  const live = useIsLiveWorkspace();
+  return live ? <LiveRunEvalDialog {...props} /> : <MockRunEvalDialog {...props} />;
+}
+
+function MockRunEvalDialog({ agent, open, onClose }: { agent: Agent; open: boolean; onClose: () => void }) {
+  const versions = versionsOf(agent);
   const policy = useEvalPolicyFor(agent.workspaceId);
   const suites = useSuitesForAgent(agent.id);
   const [baseline, setBaseline] = React.useState(versions[0]?.label ?? agent.activeVersion);
@@ -1409,12 +1688,22 @@ function RunEvalDialog({ agent, open, onClose }: { agent: Agent; open: boolean; 
 }
 
 function SaveVersionDialog({ agent, open, onClose }: { agent: Agent; open: boolean; onClose: () => void }) {
+  const live = useIsLiveWorkspace();
   const [label, setLabel] = React.useState(`v${agent.versions + 1}`);
   const [note, setNote] = React.useState("");
+  const [busy, setBusy] = React.useState(false);
 
-  function submit() {
-    toast("Draft version saved. Run an eval before publishing.");
-    onClose();
+  async function submit() {
+    if (!live) {
+      toast("Draft version saved. Run an eval before publishing.");
+      onClose();
+      return;
+    }
+    setBusy(true);
+    try {
+      // A refusal (e.g. 404 detail.binding — a bound KB was deleted) is toasted with its distinct message by the store.
+      if (await createVersion(agent.id, label)) { setNote(""); onClose(); }
+    } finally { setBusy(false); }
   }
 
   return (
@@ -1422,17 +1711,21 @@ function SaveVersionDialog({ agent, open, onClose }: { agent: Agent; open: boole
       open={open}
       onClose={onClose}
       title="Save as new version"
-      description="Creates an immutable draft snapshot. Publish only after a passing eval."
+      description={live
+        ? "Freezes the saved draft (config + bindings) into an immutable version. It is not made active until you re-point to it."
+        : "Creates an immutable draft snapshot. Publish only after a passing eval."}
       footer={
         <>
-          <Button variant="ghost" onClick={onClose}>Cancel</Button>
-          <Button variant="primary" onClick={submit}>Save version</Button>
+          <Button variant="ghost" onClick={onClose} disabled={busy}>Cancel</Button>
+          <Button variant="primary" onClick={() => void submit()} disabled={busy}>{busy ? "Saving…" : "Save version"}</Button>
         </>
       }
     >
       <div className="space-y-4">
         <Field label="Version label"><Input value={label} onChange={(e) => setLabel(e.target.value)} /></Field>
-        <Field label="Change note"><Textarea rows={3} value={note} onChange={(e) => setNote(e.target.value)} placeholder="What changed in this version?" /></Field>
+        <Field label="Change note" hint={live ? "Not available yet for live agents (no server field)" : undefined}>
+          <Textarea rows={3} value={note} disabled={live} onChange={(e) => setNote(e.target.value)} placeholder="What changed in this version?" />
+        </Field>
       </div>
     </Dialog>
   );
@@ -1522,19 +1815,39 @@ function ToolsDialog({ agent, open, onClose }: { agent: Agent; open: boolean; on
 function CreateTokenDialog({ agent, open, onClose }: { agent: Agent; open: boolean; onClose: () => void }) {
   const [name, setName] = React.useState("");
   const [expiry, setExpiry] = React.useState("none");
+  // The one-time secret lives ONLY in this component's state (cleared on close) - never in the store/localStorage.
   const [full, setFull] = React.useState<string | null>(null);
+  const [busy, setBusy] = React.useState(false);
+  // review #3: no close while a live mint is in flight — the server would create the token and its one-time secret
+  // would land in a dialog that's gone (or show up when the dialog is next opened for a new token). A ref, not `busy`:
+  // an Escape/backdrop in the same tick as the click would still see the pre-render `busy=false` closure.
+  const minting = React.useRef(false);
+  const live = useIsLiveWorkspace();
 
   function close() {
+    if (minting.current) return;
     setName("");
     setExpiry("none");
     setFull(null);
     onClose();
   }
-  function submit() {
+  async function submit() {
+    const tokenName = name.trim() || `${agent.endpoint ?? agent.id}-token`;
+    if (live) {
+      if (minting.current) return;
+      minting.current = true;
+      setBusy(true);
+      const days = expiry === "none" ? null : Number(expiry);
+      const out = await mintTokenLive(agent.id, tokenName, days ? new Date(Date.now() + days * 86_400_000).toISOString() : undefined)
+        .finally(() => { minting.current = false; });
+      setBusy(false);
+      if (out) setFull(out.secret);
+      return;
+    }
     const f = `ac_live_${genId("")}${genId("")}`.replace(/-/g, "");
     addToken({
       id: genId("tok"),
-      name: name.trim() || `${agent.endpoint ?? agent.id}-token`,
+      name: tokenName,
       agent: agent.name,
       prefix: f.slice(0, 14) + "…",
       created: nowIso(),
@@ -1555,8 +1868,8 @@ function CreateTokenDialog({ agent, open, onClose }: { agent: Agent; open: boole
           <Button variant="primary" onClick={close}>Done</Button>
         ) : (
           <>
-            <Button variant="ghost" onClick={close}>Cancel</Button>
-            <Button variant="primary" onClick={submit}>Create token</Button>
+            <Button variant="ghost" disabled={busy} onClick={close}>Cancel</Button>
+            <Button variant="primary" disabled={busy} onClick={() => void submit()}>{busy ? "Creating..." : "Create token"}</Button>
           </>
         )
       }
@@ -1577,7 +1890,8 @@ function CreateTokenDialog({ agent, open, onClose }: { agent: Agent; open: boole
           <Field label="Token name"><Input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. prod-dashboard" /></Field>
           <Field label="Expiry">
             <Select value={expiry} onChange={(e) => setExpiry(e.target.value)}>
-              <option value="none">No expiry</option><option value="30">30 days</option><option value="90">90 days</option>
+              {/* review #2: live max IS 90 days (server cap) — a separate "90 days" option would be a duplicate of the default. */}
+              <option value="none">{live ? "Maximum (90 days)" : "No expiry"}</option><option value="30">30 days</option>{!live && <option value="90">90 days</option>}
             </Select>
           </Field>
         </div>

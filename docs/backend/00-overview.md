@@ -44,8 +44,10 @@ variant used only on the P2 MCP/tool path; the first three are the always-on cor
 | `web` (Next.js standalone) | The existing console. | Yes | — |
 | `sandbox` (P2) | Network-isolated per-call MCP + tool execution under a hardened runtime (gVisor + egress allow-list proxy); reachable only via `api`/`worker` dispatch. See `11-deployment.md §1`. | Yes (ephemeral per call) | per-call jobs (queue depth / KEDA) |
 
-Shared stateful backing services (see `11-deployment.md`): Postgres+pgvector, Redis, Vault, Langfuse,
-MinIO.
+Shared stateful backing services (see `11-deployment.md`): Postgres+pgvector, Redis, **AWS Secrets Manager**
+(LocalStack locally — secret custody, feature 014; replaces Vault), Langfuse **v3**, ClickHouse (Langfuse's
+columnar trace store; + a Phase-2 derived `analytics` DB, 10 §2), AWS S3 (LocalStack locally — object
+storage, feature 022; replaces MinIO, which pulled its community images — see `scope.md` 2026-11-13).
 
 > **Why `api` serves both builder and published invoke:** same runtime, same auth primitives, half the
 > infra. Separate them into two Deployments later *only* for blast-radius isolation (a runaway public
@@ -187,7 +189,7 @@ version snapshot, builds `RunContext(run_source="playground", stream=True)`, and
 
 **B. Published invoke (SSE or JSON, external)** — `publish/endpoint.py → runtime.invoke`
 Bearer token → tenant/scope/revocation check (09) → `[P2]` concurrency slot + spend check (07) →
-decrypt provider key into memory from Vault (09) → `invoke()` → record Run tagged with
+resolve provider key into memory from the secrets custody service (09 §9, feature 014) → `invoke()` → record Run tagged with
 `caller_token_id` + `workspace_id` for cost attribution (10). Accepts an **idempotency key**.
 
 **C. Eval run (async job)** — `api → Redis → evals/drift.py`
@@ -204,7 +206,7 @@ Re-ingest of a *bound* KB raises a stale-index warning + drift trigger (05).
 
 ## 6. Configuration & settings
 
-One typed settings object, env-driven, no secrets in images (Vault for those). `pydantic-settings`:
+One typed settings object, env-driven, no secrets in images (the secrets backend holds those — 09 §9). `pydantic-settings`:
 
 ```python
 # services/api/settings.py
@@ -217,10 +219,13 @@ class Settings(BaseSettings):
     env: str = "dev"                                  # dev | qa | prod
     database_url: PostgresDsn
     redis_url: RedisDsn
-    vault_addr: AnyUrl
-    vault_role: str                                   # AppRole auth; token fetched at boot (09)
+    # Secret custody (feature 014) — pluggable backend; replaces the earlier Vault AppRole settings (09 §9).
+    secrets_provider: str = "local"                   # AC_SECRETS_PROVIDER: local | aws (AWS Secrets Manager)
+    aws_endpoint_url: AnyUrl | None = None            # LocalStack URL locally; unset → real AWS
+    aws_region: str = "us-east-1"
+    secrets_prefix: str = "ac"                         # secret-name namespace root
     langfuse_host: AnyUrl
-    minio_endpoint: AnyUrl
+    aws_endpoint_url: AnyUrl | None                    # Secrets Manager + S3 (LocalStack in dev; unset → real AWS) — replaces minio_endpoint (feature 022)
 
     oidc_issuer: AnyUrl                               # Trellix IAM
     oidc_client_id: str
@@ -253,6 +258,7 @@ These extend or push back on the locked spec. Each is justified in the reference
 | 6 | Single "MCP worker" (spec B7) | A **separate, network-isolated `sandbox` unit** for MCP + tool execution (per-call gVisor + egress allow-list proxy), dispatched by `api`/`worker` — not folded into the general worker | 11 §1, this doc §2 |
 | 7 | MCP/tool mgmt gated to **publisher/admin** (spec B12) | MCP/tool management reconciled **down to builder+** (`mcp.manage`/`tool.manage`); only **provider-key** mgmt stays admin-only | 09, spec B12 |
 | 8 | Spec lists "tools & skills" (A0 #6, A1 §3) without defining skills | **Skills are a first-class, version-bindable capability** — a signed instruction+resource package that is injected into the prompt and **does not execute code** (peer to KBs; not a tool). Open-registration + signing; folds into `snapshot_hash` | 01 §4.4, 03 §4, 05 §6, 08, 09 |
+| 9 | Version immutability (F15) covers `agent_versions` only | **Binding integrity is enforced by the database** (feature 025, migration `0015`): composite `(workspace_id, id)` FKs from every binding / chunk to its catalog row (RI bypasses RLS, so the FK must pin the workspace itself), `ON DELETE RESTRICT` (archive, never hard-delete); `bindings_freeze` + `bindings_insert_window` triggers give bindings F15 parity (no UPDATE/DELETE, no INSERT after the version's transaction); a deferred same-agent FK on `agents.active_version_id`; `ck_tool_bindings_one_target`; `kb_chunks_dim_check`. Refusals map to typed 4xx in `api/db_errors.py`; the 0015 preflight refuses (never repairs) dirty data | 01, `specs/025-platform-hardening/data-model.md` §B |
 
 ## 8. Naming conventions (so every doc agrees)
 

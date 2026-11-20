@@ -1,5 +1,20 @@
 # 05 — Eval & Drift Engine (Hard Core #2, the Defensible Part)
 
+> **⚙️ BUILT STATE (M3a scoring core — feature `specs/004-eval-drift-engine`, 2026-11-05).** The **pure
+> scoring core** of this design is built and verified in `services/evals/` (purity-tested, no web/DB — P6):
+> **Layer-1 deterministic checks** (§2, verbatim port of `mvp/evals/deterministic.py`), the **verdict math**
+> (§3, verbatim port of `mvp/evals/drift.py` — the load-bearing ordering, per-workspace `EvalPolicy`), and an
+> **advisory, versioned LLM judge** (§2 Layer 2, net-new `judge.py`) that runs through the **same
+> `runtime.invoke`** (§7) pinned to **`claude-haiku-5-5`**/`judge-v1`. A runner wires det→judge (behind an
+> **instance-scoped eval circuit breaker**, §6/F8) into the full frontend `EvalRun` shape, with the judge's
+> pairwise win-rate surfaced **advisory-only**. 56 tests; fully mocked (no live/paid calls). **The judge is
+> ADVISORY-ONLY and gates nothing** — an uncalibrated judge must not drive a publish gate (P4; owner decision
+> #3). **NOT yet built (deferred):** the publish gate + 409 (§5 `assert_publishable`, `DRIFT_TRIGGERS`→
+> `publishable`), DB-backed baseline lifecycle + audited re-freeze (§4), the verdict cache + its C2
+> hash-coverage/`latest_trigger_time` property tests (§5/§6), the async eval worker + job status (§7),
+> Batch-API/incremental-eval cost controls (§6), and judge **κ calibration** (§8 — what flips the judge from
+> advisory to gating). First **live** judge call → Phase 5. The sections below describe the full target design.
+
 > Implements `spec.md §B5`. This is *the* reason the platform exists (`scope.md`): detecting that an
 > agent "quietly got worse" after a model/prompt/knowledge change, **without a human reading every
 > transcript**. Everything else is CRUD. This is not. It is also — see 07 — the biggest COGS risk in
@@ -373,5 +388,11 @@ A drift detector you don't trust is worthless. So the judge itself is evaluated:
   separately from generation (04) — retrieval is a hidden quality lever and deserves its own axis.
 - **Multi-judge ensembles / judge disagreement flags** for high-stakes agents (security triage).
 - **Auto-suite-expansion suggestions** from clustered production failures.
+- **Eval/drift rollups in ClickHouse (at scale).** When Postgres eval dashboards strain, the eval/drift
+  time-series (pass-ratio history, verdict/quality-dimension trends) can be served from the derived
+  `analytics` ClickHouse DB's AggregatingMergeTree materialized views (`lld/10 §8`, `10 §2`). Those MVs
+  **derive from `eval_runs`/`eval_results`** — **Postgres stays authoritative** for every verdict and the
+  publish gate; ClickHouse is only a read-optimized, eventually-consistent rollup for dashboards (no RLS,
+  `workspace_id`-filtered at query time).
 
 → Next: `06-guardrails.md`.

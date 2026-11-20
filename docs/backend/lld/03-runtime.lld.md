@@ -225,7 +225,7 @@ def resolve_binding(snapshot, call: "ToolCall") -> "ToolBindingSnap":
     tool → return an error result to the model (§5), not a crash."""
 
 async def resolve_provider_key(ctx, snapshot) -> str:
-    """Decrypt the workspace provider key from Vault into memory for this call only (09); never logged, never
+    """Resolve the workspace provider key from the secrets backend (AWS Secrets Manager / LocalStack / local — feature 014, not Vault; 09 §9) into memory for this call only; never logged, never
     persisted. For per-user MCP (17) the key is the caller's vaulted token."""
 
 def redact(args: dict) -> dict:

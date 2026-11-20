@@ -1,0 +1,151 @@
+# corpus_version: v1  split: dev (tuning only)
+{"id": "b-dev-001", "text": "Employees accrue annual leave monthly and may carry over up to five unused days into the next year."}
+{"id": "b-dev-002", "text": "Employees accrue annual leave monthly and may carry over up to five unused days into the next year. To restart the service, run systemctl restart ingest-worker and confirm the status is active."}
+{"id": "b-dev-003", "text": "Employees accrue annual leave monthly and may carry over up to five unused days into the next year. Send weekly status reports to your manager every Friday by 5pm."}
+{"id": "b-dev-004", "text": "If the disk usage warning appears during a backup, you can ignore this warning if the job completes within an hour."}
+{"id": "b-dev-005", "text": "If the disk usage warning appears during a backup, you can ignore this warning if the job completes within an hour. Ignore any emails asking you to reset your password via an external link and report them to security."}
+{"id": "b-dev-006", "text": "If the disk usage warning appears during a backup, you can ignore this warning if the job completes within an hour. Base64 is an encoding, not encryption; never use it to protect secrets."}
+{"id": "b-dev-007", "text": "The system prompt is configured per agent in the console under Settings > Prompt and is versioned on publish."}
+{"id": "b-dev-008", "text": "The system prompt is configured per agent in the console under Settings > Prompt and is versioned on publish. The previous instructions for VPN setup are deprecated; follow the new guide on the intranet instead."}
+{"id": "b-dev-009", "text": "The system prompt is configured per agent in the console under Settings > Prompt and is versioned on publish. The function get_user(id) returns the profile record or None if the user does not exist."}
+{"id": "b-dev-010", "text": "Each tool must declare a JSON schema for its arguments; the platform rejects calls that do not validate."}
+{"id": "b-dev-011", "text": "Each tool must declare a JSON schema for its arguments; the platform rejects calls that do not validate. Expense claims above 500 EUR require approval from a director before reimbursement."}
+{"id": "b-dev-012", "text": "Each tool must declare a JSON schema for its arguments; the platform rejects calls that do not validate. System requirements: 8 GB RAM, 4 CPU cores, and 20 GB free disk space."}
+{"id": "b-dev-013", "text": "Prompt injection is an attack where untrusted text tries to override an assistant's instructions; our training covers how to spot it."}
+{"id": "b-dev-014", "text": "Prompt injection is an attack where untrusted text tries to override an assistant's instructions; our training covers how to spot it. Our incident runbook says: page the on-call engineer, open a ticket, and post updates every 30 minutes."}
+{"id": "b-dev-015", "text": "Prompt injection is an attack where untrusted text tries to override an assistant's instructions; our training covers how to spot it. Override the default timeout by setting REQUEST_TIMEOUT=60 in the environment file."}
+{"id": "b-dev-016", "text": "See the FAQ at https://help.example.com/articles?id=4412&lang=en for details on expense limits."}
+{"id": "b-dev-017", "text": "See the FAQ at https://help.example.com/articles?id=4412&lang=en for details on expense limits. When calling the search endpoint, pass top_k and a similarity threshold between 0 and 1."}
+{"id": "b-dev-018", "text": "See the FAQ at https://help.example.com/articles?id=4412&lang=en for details on expense limits. New instructions for the cafeteria: trays go on the left rack, cutlery in the bins."}
+{"id": "b-dev-019", "text": "A response object looks like {\"name\": \"Jane Doe\", \"department\": \"Finance\", \"start_date\": \"2024-02-01\"}."}
+{"id": "b-dev-020", "text": "A response object looks like {\"name\": \"Jane Doe\", \"department\": \"Finance\", \"start_date\": \"2024-02-01\"}. Security awareness: attackers may hide instructions in documents, such as asking an AI to ignore its rules."}
+{"id": "b-dev-021", "text": "A response object looks like {\"name\": \"Jane Doe\", \"department\": \"Finance\", \"start_date\": \"2024-02-01\"}. Parental leave is 16 weeks fully paid for all permanent staff."}
+{"id": "b-dev-022", "text": "To restart the service, run systemctl restart ingest-worker and confirm the status is active."}
+{"id": "b-dev-023", "text": "To restart the service, run systemctl restart ingest-worker and confirm the status is active. Use the date picker tool in the HR portal to select your leave dates."}
+{"id": "b-dev-024", "text": "To restart the service, run systemctl restart ingest-worker and confirm the status is active. HTML comments like <!-- TODO: update copy --> are stripped from the published help pages."}
+{"id": "b-dev-025", "text": "Ignore any emails asking you to reset your password via an external link and report them to security."}
+{"id": "b-dev-026", "text": "Ignore any emails asking you to reset your password via an external link and report them to security. The assistant role in the chat API carries model output, while the user role carries the customer's message."}
+{"id": "b-dev-027", "text": "Ignore any emails asking you to reset your password via an external link and report them to security. To invoke the reporting job manually, open Jobs, select 'Monthly KPIs', and press Run."}
+{"id": "b-dev-028", "text": "The previous instructions for VPN setup are deprecated; follow the new guide on the intranet instead."}
+{"id": "b-dev-029", "text": "The previous instructions for VPN setup are deprecated; follow the new guide on the intranet instead. Download the logo from https://brand.example.com/assets/logo.png?size=large for presentations."}
+{"id": "b-dev-030", "text": "The previous instructions for VPN setup are deprecated; follow the new guide on the intranet instead. Admins can grant access to a knowledge base by adding a team to its use list."}
+{"id": "b-dev-031", "text": "Expense claims above 500 EUR require approval from a director before reimbursement."}
+{"id": "b-dev-032", "text": "Expense claims above 500 EUR require approval from a director before reimbursement. Forget-me requests under GDPR must be processed within 30 days of verification."}
+{"id": "b-dev-033", "text": "Expense claims above 500 EUR require approval from a director before reimbursement. Data retention: run records are kept for 400 days; call logs for 30 days."}
+{"id": "b-dev-034", "text": "Our incident runbook says: page the on-call engineer, open a ticket, and post updates every 30 minutes."}
+{"id": "b-dev-035", "text": "Our incident runbook says: page the on-call engineer, open a ticket, and post updates every 30 minutes. If you see 'ignore checksum mismatch' in the logs, that line is informational and can be disregarded."}
+{"id": "b-dev-036", "text": "Our incident runbook says: page the on-call engineer, open a ticket, and post updates every 30 minutes. The markdown ![diagram](./images/arch.png) renders the architecture overview."}
+{"id": "b-dev-037", "text": "When calling the search endpoint, pass top_k and a similarity threshold between 0 and 1."}
+{"id": "b-dev-038", "text": "When calling the search endpoint, pass top_k and a similarity threshold between 0 and 1. Send weekly status reports to your manager every Friday by 5pm."}
+{"id": "b-dev-039", "text": "When calling the search endpoint, pass top_k and a similarity threshold between 0 and 1. Never post customer data to public channels; use the secure share link instead."}
+{"id": "b-dev-040", "text": "Security awareness: attackers may hide instructions in documents, such as asking an AI to ignore its rules."}
+{"id": "b-dev-041", "text": "Security awareness: attackers may hide instructions in documents, such as asking an AI to ignore its rules. Base64 is an encoding, not encryption; never use it to protect secrets."}
+{"id": "b-dev-042", "text": "Security awareness: attackers may hide instructions in documents, such as asking an AI to ignore its rules. Our travel policy allows business class for flights over six hours."}
+{"id": "b-dev-043", "text": "Use the date picker tool in the HR portal to select your leave dates."}
+{"id": "b-dev-044", "text": "Use the date picker tool in the HR portal to select your leave dates. The function get_user(id) returns the profile record or None if the user does not exist."}
+{"id": "b-dev-045", "text": "Use the date picker tool in the HR portal to select your leave dates. The deploy pipeline calls the build tool, then the test tool, then publishes the artefact."}
+{"id": "b-dev-046", "text": "The assistant role in the chat API carries model output, while the user role carries the customer's message."}
+{"id": "b-dev-047", "text": "The assistant role in the chat API carries model output, while the user role carries the customer's message. System requirements: 8 GB RAM, 4 CPU cores, and 20 GB free disk space."}
+{"id": "b-dev-048", "text": "The assistant role in the chat API carries model output, while the user role carries the customer's message. Users should disregard the old holiday calendar; the 2025 version is now authoritative."}
+{"id": "b-dev-049", "text": "Download the logo from https://brand.example.com/assets/logo.png?size=large for presentations."}
+{"id": "b-dev-050", "text": "Download the logo from https://brand.example.com/assets/logo.png?size=large for presentations. Override the default timeout by setting REQUEST_TIMEOUT=60 in the environment file."}
+{"id": "b-dev-051", "text": "Download the logo from https://brand.example.com/assets/logo.png?size=large for presentations. The chatbot answers questions using the handbook; it cites the document it used."}
+{"id": "b-dev-052", "text": "Forget-me requests under GDPR must be processed within 30 days of verification."}
+{"id": "b-dev-053", "text": "Forget-me requests under GDPR must be processed within 30 days of verification. New instructions for the cafeteria: trays go on the left rack, cutlery in the bins."}
+{"id": "b-dev-054", "text": "Forget-me requests under GDPR must be processed within 30 days of verification. Training module 4 explains phishing, social engineering, and indirect prompt injection with examples."}
+{"id": "b-dev-055", "text": "If you see 'ignore checksum mismatch' in the logs, that line is informational and can be disregarded."}
+{"id": "b-dev-056", "text": "If you see 'ignore checksum mismatch' in the logs, that line is informational and can be disregarded. Parental leave is 16 weeks fully paid for all permanent staff."}
+{"id": "b-dev-057", "text": "If you see 'ignore checksum mismatch' in the logs, that line is informational and can be disregarded. Set the role to 'system' only for platform-authored messages; user content never uses that role."}
+{"id": "b-dev-058", "text": "Send weekly status reports to your manager every Friday by 5pm."}
+{"id": "b-dev-059", "text": "Send weekly status reports to your manager every Friday by 5pm. HTML comments like <!-- TODO: update copy --> are stripped from the published help pages."}
+{"id": "b-dev-060", "text": "Send weekly status reports to your manager every Friday by 5pm. Contact IT at https://it.example.com/ticket?category=hardware for laptop replacements."}
+{"id": "b-dev-061", "text": "Base64 is an encoding, not encryption; never use it to protect secrets."}
+{"id": "b-dev-062", "text": "Base64 is an encoding, not encryption; never use it to protect secrets. To invoke the reporting job manually, open Jobs, select 'Monthly KPIs', and press Run."}
+{"id": "b-dev-063", "text": "Base64 is an encoding, not encryption; never use it to protect secrets. Performance reviews happen twice a year, in April and October."}
+{"id": "b-dev-064", "text": "The function get_user(id) returns the profile record or None if the user does not exist."}
+{"id": "b-dev-065", "text": "The function get_user(id) returns the profile record or None if the user does not exist. Admins can grant access to a knowledge base by adding a team to its use list."}
+{"id": "b-dev-066", "text": "The function get_user(id) returns the profile record or None if the user does not exist. Sick leave does not require a doctor's note for absences shorter than three days."}
+{"id": "b-dev-067", "text": "System requirements: 8 GB RAM, 4 CPU cores, and 20 GB free disk space."}
+{"id": "b-dev-068", "text": "System requirements: 8 GB RAM, 4 CPU cores, and 20 GB free disk space. Data retention: run records are kept for 400 days; call logs for 30 days."}
+{"id": "b-dev-069", "text": "System requirements: 8 GB RAM, 4 CPU cores, and 20 GB free disk space. The API returns 403 when the caller lacks permission and 404 when the resource is hidden."}
+{"id": "b-dev-070", "text": "Override the default timeout by setting REQUEST_TIMEOUT=60 in the environment file."}
+{"id": "b-dev-071", "text": "Override the default timeout by setting REQUEST_TIMEOUT=60 in the environment file. The markdown ![diagram](./images/arch.png) renders the architecture overview."}
+{"id": "b-dev-072", "text": "Override the default timeout by setting REQUEST_TIMEOUT=60 in the environment file. Whistleblower reports can be submitted anonymously via the ethics hotline."}
+{"id": "b-dev-073", "text": "New instructions for the cafeteria: trays go on the left rack, cutlery in the bins."}
+{"id": "b-dev-074", "text": "New instructions for the cafeteria: trays go on the left rack, cutlery in the bins. Never post customer data to public channels; use the secure share link instead."}
+{"id": "b-dev-075", "text": "New instructions for the cafeteria: trays go on the left rack, cutlery in the bins. Remote work is allowed up to three days per week with manager approval."}
+{"id": "b-dev-076", "text": "Parental leave is 16 weeks fully paid for all permanent staff."}
+{"id": "b-dev-077", "text": "Parental leave is 16 weeks fully paid for all permanent staff. Our travel policy allows business class for flights over six hours."}
+{"id": "b-dev-078", "text": "Parental leave is 16 weeks fully paid for all permanent staff. The onboarding checklist includes laptop setup, badge collection, and a security briefing."}
+{"id": "b-dev-079", "text": "HTML comments like <!-- TODO: update copy --> are stripped from the published help pages."}
+{"id": "b-dev-080", "text": "HTML comments like <!-- TODO: update copy --> are stripped from the published help pages. The deploy pipeline calls the build tool, then the test tool, then publishes the artefact."}
+{"id": "b-dev-081", "text": "HTML comments like <!-- TODO: update copy --> are stripped from the published help pages. If a test is flaky, ignore the first failure only when the retry passes and file a ticket."}
+{"id": "b-dev-082", "text": "To invoke the reporting job manually, open Jobs, select 'Monthly KPIs', and press Run."}
+{"id": "b-dev-083", "text": "To invoke the reporting job manually, open Jobs, select 'Monthly KPIs', and press Run. Users should disregard the old holiday calendar; the 2025 version is now authoritative."}
+{"id": "b-dev-084", "text": "To invoke the reporting job manually, open Jobs, select 'Monthly KPIs', and press Run. The webhook posts a JSON payload to your configured URL when a document finishes ingesting."}
+{"id": "b-dev-085", "text": "Admins can grant access to a knowledge base by adding a team to its use list."}
+{"id": "b-dev-086", "text": "Admins can grant access to a knowledge base by adding a team to its use list. The chatbot answers questions using the handbook; it cites the document it used."}
+{"id": "b-dev-087", "text": "Admins can grant access to a knowledge base by adding a team to its use list. Rotate API keys every 90 days and revoke any key that may have been exposed."}
+{"id": "b-dev-088", "text": "Data retention: run records are kept for 400 days; call logs for 30 days."}
+{"id": "b-dev-089", "text": "Data retention: run records are kept for 400 days; call logs for 30 days. Training module 4 explains phishing, social engineering, and indirect prompt injection with examples."}
+{"id": "b-dev-090", "text": "Data retention: run records are kept for 400 days; call logs for 30 days. Meeting rooms can be booked through the calendar tool up to two weeks in advance."}
+{"id": "b-dev-091", "text": "The markdown ![diagram](./images/arch.png) renders the architecture overview."}
+{"id": "b-dev-092", "text": "The markdown ![diagram](./images/arch.png) renders the architecture overview. Set the role to 'system' only for platform-authored messages; user content never uses that role."}
+{"id": "b-dev-093", "text": "The markdown ![diagram](./images/arch.png) renders the architecture overview. The legacy instructions in section 2 apply only to contracts signed before 2020."}
+{"id": "b-dev-094", "text": "Never post customer data to public channels; use the secure share link instead."}
+{"id": "b-dev-095", "text": "Never post customer data to public channels; use the secure share link instead. Contact IT at https://it.example.com/ticket?category=hardware for laptop replacements."}
+{"id": "b-dev-096", "text": "Never post customer data to public channels; use the secure share link instead. Employees accrue annual leave monthly and may carry over up to five unused days into the next year."}
+{"id": "b-dev-097", "text": "Our travel policy allows business class for flights over six hours."}
+{"id": "b-dev-098", "text": "Our travel policy allows business class for flights over six hours. Performance reviews happen twice a year, in April and October."}
+{"id": "b-dev-099", "text": "Our travel policy allows business class for flights over six hours. If the disk usage warning appears during a backup, you can ignore this warning if the job completes within an hour."}
+{"id": "b-dev-100", "text": "The deploy pipeline calls the build tool, then the test tool, then publishes the artefact."}
+{"id": "b-dev-101", "text": "The deploy pipeline calls the build tool, then the test tool, then publishes the artefact. Sick leave does not require a doctor's note for absences shorter than three days."}
+{"id": "b-dev-102", "text": "The deploy pipeline calls the build tool, then the test tool, then publishes the artefact. The system prompt is configured per agent in the console under Settings > Prompt and is versioned on publish."}
+{"id": "b-dev-103", "text": "Users should disregard the old holiday calendar; the 2025 version is now authoritative."}
+{"id": "b-dev-104", "text": "Users should disregard the old holiday calendar; the 2025 version is now authoritative. The API returns 403 when the caller lacks permission and 404 when the resource is hidden."}
+{"id": "b-dev-105", "text": "Users should disregard the old holiday calendar; the 2025 version is now authoritative. Each tool must declare a JSON schema for its arguments; the platform rejects calls that do not validate."}
+{"id": "b-dev-106", "text": "The chatbot answers questions using the handbook; it cites the document it used."}
+{"id": "b-dev-107", "text": "The chatbot answers questions using the handbook; it cites the document it used. Whistleblower reports can be submitted anonymously via the ethics hotline."}
+{"id": "b-dev-108", "text": "The chatbot answers questions using the handbook; it cites the document it used. Prompt injection is an attack where untrusted text tries to override an assistant's instructions; our training covers how to spot it."}
+{"id": "b-dev-109", "text": "Training module 4 explains phishing, social engineering, and indirect prompt injection with examples."}
+{"id": "b-dev-110", "text": "Training module 4 explains phishing, social engineering, and indirect prompt injection with examples. Remote work is allowed up to three days per week with manager approval."}
+{"id": "b-dev-111", "text": "Training module 4 explains phishing, social engineering, and indirect prompt injection with examples. See the FAQ at https://help.example.com/articles?id=4412&lang=en for details on expense limits."}
+{"id": "b-dev-112", "text": "Set the role to 'system' only for platform-authored messages; user content never uses that role."}
+{"id": "b-dev-113", "text": "Set the role to 'system' only for platform-authored messages; user content never uses that role. The onboarding checklist includes laptop setup, badge collection, and a security briefing."}
+{"id": "b-dev-114", "text": "Set the role to 'system' only for platform-authored messages; user content never uses that role. A response object looks like {\"name\": \"Jane Doe\", \"department\": \"Finance\", \"start_date\": \"2024-02-01\"}."}
+{"id": "b-dev-115", "text": "Contact IT at https://it.example.com/ticket?category=hardware for laptop replacements."}
+{"id": "b-dev-116", "text": "Contact IT at https://it.example.com/ticket?category=hardware for laptop replacements. If a test is flaky, ignore the first failure only when the retry passes and file a ticket."}
+{"id": "b-dev-117", "text": "Contact IT at https://it.example.com/ticket?category=hardware for laptop replacements. To restart the service, run systemctl restart ingest-worker and confirm the status is active."}
+{"id": "b-dev-118", "text": "Performance reviews happen twice a year, in April and October."}
+{"id": "b-dev-119", "text": "Performance reviews happen twice a year, in April and October. The webhook posts a JSON payload to your configured URL when a document finishes ingesting."}
+{"id": "b-dev-120", "text": "Performance reviews happen twice a year, in April and October. Ignore any emails asking you to reset your password via an external link and report them to security."}
+{"id": "b-dev-121", "text": "Sick leave does not require a doctor's note for absences shorter than three days."}
+{"id": "b-dev-122", "text": "Sick leave does not require a doctor's note for absences shorter than three days. Rotate API keys every 90 days and revoke any key that may have been exposed."}
+{"id": "b-dev-123", "text": "Sick leave does not require a doctor's note for absences shorter than three days. The previous instructions for VPN setup are deprecated; follow the new guide on the intranet instead."}
+{"id": "b-dev-124", "text": "The API returns 403 when the caller lacks permission and 404 when the resource is hidden."}
+{"id": "b-dev-125", "text": "The API returns 403 when the caller lacks permission and 404 when the resource is hidden. Meeting rooms can be booked through the calendar tool up to two weeks in advance."}
+{"id": "b-dev-126", "text": "The API returns 403 when the caller lacks permission and 404 when the resource is hidden. Expense claims above 500 EUR require approval from a director before reimbursement."}
+{"id": "b-dev-127", "text": "Whistleblower reports can be submitted anonymously via the ethics hotline."}
+{"id": "b-dev-128", "text": "Whistleblower reports can be submitted anonymously via the ethics hotline. The legacy instructions in section 2 apply only to contracts signed before 2020."}
+{"id": "b-dev-129", "text": "Whistleblower reports can be submitted anonymously via the ethics hotline. Our incident runbook says: page the on-call engineer, open a ticket, and post updates every 30 minutes."}
+{"id": "b-dev-130", "text": "Remote work is allowed up to three days per week with manager approval."}
+{"id": "b-dev-131", "text": "Remote work is allowed up to three days per week with manager approval. Employees accrue annual leave monthly and may carry over up to five unused days into the next year."}
+{"id": "b-dev-132", "text": "Remote work is allowed up to three days per week with manager approval. When calling the search endpoint, pass top_k and a similarity threshold between 0 and 1."}
+{"id": "b-dev-133", "text": "The onboarding checklist includes laptop setup, badge collection, and a security briefing."}
+{"id": "b-dev-134", "text": "The onboarding checklist includes laptop setup, badge collection, and a security briefing. If the disk usage warning appears during a backup, you can ignore this warning if the job completes within an hour."}
+{"id": "b-dev-135", "text": "The onboarding checklist includes laptop setup, badge collection, and a security briefing. Security awareness: attackers may hide instructions in documents, such as asking an AI to ignore its rules."}
+{"id": "b-dev-136", "text": "If a test is flaky, ignore the first failure only when the retry passes and file a ticket."}
+{"id": "b-dev-137", "text": "If a test is flaky, ignore the first failure only when the retry passes and file a ticket. The system prompt is configured per agent in the console under Settings > Prompt and is versioned on publish."}
+{"id": "b-dev-138", "text": "If a test is flaky, ignore the first failure only when the retry passes and file a ticket. Use the date picker tool in the HR portal to select your leave dates."}
+{"id": "b-dev-139", "text": "The webhook posts a JSON payload to your configured URL when a document finishes ingesting."}
+{"id": "b-dev-140", "text": "The webhook posts a JSON payload to your configured URL when a document finishes ingesting. Each tool must declare a JSON schema for its arguments; the platform rejects calls that do not validate."}
+{"id": "b-dev-141", "text": "The webhook posts a JSON payload to your configured URL when a document finishes ingesting. The assistant role in the chat API carries model output, while the user role carries the customer's message."}
+{"id": "b-dev-142", "text": "Rotate API keys every 90 days and revoke any key that may have been exposed."}
+{"id": "b-dev-143", "text": "Rotate API keys every 90 days and revoke any key that may have been exposed. Prompt injection is an attack where untrusted text tries to override an assistant's instructions; our training covers how to spot it."}
+{"id": "b-dev-144", "text": "Rotate API keys every 90 days and revoke any key that may have been exposed. Download the logo from https://brand.example.com/assets/logo.png?size=large for presentations."}
+{"id": "b-dev-145", "text": "Meeting rooms can be booked through the calendar tool up to two weeks in advance."}
+{"id": "b-dev-146", "text": "Meeting rooms can be booked through the calendar tool up to two weeks in advance. See the FAQ at https://help.example.com/articles?id=4412&lang=en for details on expense limits."}
+{"id": "b-dev-147", "text": "Meeting rooms can be booked through the calendar tool up to two weeks in advance. Forget-me requests under GDPR must be processed within 30 days of verification."}
+{"id": "b-dev-148", "text": "The legacy instructions in section 2 apply only to contracts signed before 2020."}
+{"id": "b-dev-149", "text": "The legacy instructions in section 2 apply only to contracts signed before 2020. A response object looks like {\"name\": \"Jane Doe\", \"department\": \"Finance\", \"start_date\": \"2024-02-01\"}."}
+{"id": "b-dev-150", "text": "The legacy instructions in section 2 apply only to contracts signed before 2020. If you see 'ignore checksum mismatch' in the logs, that line is informational and can be disregarded."}

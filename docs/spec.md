@@ -14,8 +14,16 @@ guardrails, model-agnosticism, and a drift-aware evaluation core.
 engineering goes into exactly two things: **(1) the provider abstraction / runtime** and **(2) the
 eval + drift-detection core.** Everything else is assembled from free/OSS frameworks.
 
-**Assumes the viability MVP has passed** (drift harness flags quality drops on model swap; provider
-abstraction holds across ≥2 providers) and turns that into a phased build spec.
+**The viability MVP has not passed yet.** The standalone H2 harness has live-call records for OpenAI
+`gpt-5-mini` and Ollama `llama3.1:8b`, but its saved log lacks the token/substitution/assertion report and
+contains one empty Ollama output among four. H1 (baseline, judge calibration, regression detection) is not
+implemented. Treat the phased plan below as a target design, not approval to claim the viability gate
+passed; see [`mvp-spec.md`](./mvp-spec.md) for current evidence and pass criteria.
+
+**Release boundary confirmed 2026-10-31:** the first product release is an internal pilot for one
+corporate deployment. The eventual backend target is the full capability surface already represented in
+the frontend; P1/P0 is the pilot slice and existing P2 surfaces remain later phases. This is not approval
+for an external commercial launch.
 
 **Decisions locked with the user (2026-10-04):** real internal tooling · portable/container deploy
 (no cloud lock-in) · **LangChain/LangGraph** for orchestration · **voice dropped** · OSS preferred ·
@@ -118,7 +126,9 @@ reproducible (capability profile + retrieval + tool schemas snapshotted per vers
 
 ### A3. Out of scope (decisions, not gaps)
 Voice · fine-tuning / model hosting · external marketplace · billing/chargeback beyond internal cost
-accounting · non-LLM workflow automation.
+accounting · non-LLM workflow automation · **stateful coding agents** (repo working tree / resumable
+uncommitted edits / PR authorship — inverts stateless `invoke()`; see
+`backend/data-isolation-topology.md §7`).
 
 ---
 
@@ -136,10 +146,10 @@ accounting · non-LLM workflow automation.
 | Vector store | **pgvector** (in Postgres) | One store; no extra infra |
 | Ingestion | LangChain loaders + splitters (OSS) | Don't hand-build parsers |
 | Eval/drift | **Built in-house** + promptfoo/Langfuse datasets as scaffolding | Defensible core |
-| Observability | **Langfuse** (OSS, self-hosted) | Per-call logs, traces, cost, eval — free LangSmith alt |
+| Observability | **Langfuse v3** (OSS, self-hosted, pinned) + **ClickHouse** (columnar analytics) | Per-call logs, traces, cost, eval — free LangSmith alt. v3 is columnar (ships ClickHouse) so traces are unsampled; Postgres stays SoT for money+tenancy, ClickHouse is a derived, non-authoritative analytics store (10, 11) |
 | Guardrails | **Guardrails AI / NeMo Guardrails** (OSS) behind our stage API | Don't hand-build PII/toxicity |
 | DB / queue | Postgres + pgvector · Redis + RQ/Celery | Transactional + async eval/ingest jobs |
-| Secrets | **HashiCorp Vault (Transit)** | Portable KMS-equivalent |
+| Secrets | ~~HashiCorp Vault (Transit)~~ → **pluggable secrets backend (AWS Secrets Manager / LocalStack)** | Reversed 2026-11-11 (deploy target is AWS) — see `scope.md` decision log + `backend/09 §9`. Custody is pluggable (`AC_SECRETS_PROVIDER`); provider keys built (feature 014) |
 | Deploy | Docker + compose (dev); Helm/k8s or compose (prod) | Portable |
 
 **Pushback captured:** LangGraph/LangChain's model wrapper flattens provider-specific features
@@ -237,7 +247,7 @@ flowchart LR
   WORKER --> PG
   PUB[Published endpoint] --> ORCH
   EXT[External dev / cURL] -->|Bearer| PUB
-  API -.->|secrets| VAULT[(Vault)]
+  API -.->|secrets| VAULT[(Secrets backend<br/>AWS Secrets Manager)]
   GW -.-> VAULT
   MCPW -.-> VAULT
   ORCH --> OBS[Langfuse]
@@ -328,7 +338,7 @@ Immutable per version → changing guardrails = new version = re-eval.
 
 ### B10. Published-agent runtime + export
 `POST /v1/agents/:endpointId/invoke` (JSON or SSE): bearer auth → `[P2]` concurrency slot → `[P2]`
-spend check → input guardrails → inject decrypted provider/tool creds (Vault, in-memory only) → run
+spend check → input guardrails → inject resolved provider/tool creds (secrets backend / AWS Secrets Manager, in-memory only) → run
 pinned version via LangGraph (retrieval + MCP as configured) → output guardrails → record Run/usage/
 cost → respond. Accepts an **idempotency key** (dedupes retried invokes). Editing the agent changes
 nothing live until an explicit, eval-gated re-point.
@@ -345,8 +355,9 @@ cases, `versions/:vid/eval-runs` (async), `versions/:vid/baseline`; `versions/:v
 route has separate bearer-token auth.
 
 ### B12. Security
-Provider/tool/source creds: envelope encryption via **Vault Transit** (per-workspace DEK); plaintext
-only in memory at call time; log-redaction scrubs key-shaped strings; never in config/traces/exports.
+Provider/tool/source creds: custodied in a **pluggable secrets backend** (AWS Secrets Manager / LocalStack
+/ in-process `local`; **reverses Vault Transit** — `scope.md` 2026-11-11, `backend/09 §9`, feature 014);
+plaintext only in memory at call time; log-redaction scrubs key-shaped strings; never in config/traces/exports.
 Builder UI: OIDC/SSO + CSRF; `[P2]` RBAC — per-workspace `viewer|builder|publisher` + an **app-wide `admin`**
 claim + the **`executer`** caller role (09 §1; claim-based, IdP-agnostic): **publish** gated to publisher+,
 **provider-key mgmt + governance + workspace CRUD gated to admin**, **MCP/tool mgmt gated to builder+**
@@ -422,7 +433,7 @@ RBAC + audit hardening; usage/cost dashboards.
 
 ## Part F — Resolved decisions
 - **RAG + MCP phasing (decided 2026-10-04):** minimal file-upload RAG in **P1**; MCP in **P2**.
-- Stack: Python/FastAPI + LangGraph + LiteLLM + pgvector + Langfuse + Vault (portable containers).
+- Stack: Python/FastAPI + LangGraph + LiteLLM + pgvector + Langfuse + AWS Secrets Manager/LocalStack (feature 014, replaces Vault; portable containers).
 - Voice dropped. Reference video to be reconciled first on implementation.
 - **P0 gaps promoted into P1 (decided 2026-10-18; see `scope.md` decision log):**
   - **Adoption/enforcement = key custody** (platform-exclusive provider creds; BYO superseded; teeth
@@ -435,12 +446,17 @@ RBAC + audit hardening; usage/cost dashboards.
 
 ---
 
-## First files to create (on implementation)
+## Production file candidates (after viability GO)
+
+These are architecture candidates, not an approved task order. The standalone `mvp/` feature and its
+GO/NO-GO gate come first; a Spec Kit feature plan must order and scope production work after GO.
+
 - `services/runtime/providers/abstraction.py` — IR + adapter interface + profile resolution + LiteLLM
   wrapping (B2). *Load-bearing.*
 - `services/runtime/providers/profiles/*.json` — per-(provider,model,version) profiles.
 - `services/runtime/retrieval/retriever.py` — pgvector retrieval + RetrievalConfig (B6).
-- `services/runtime/mcp/worker.py` — MCP connect/discover/invoke in egress-restricted sandbox (B7).
+- `services/runtime/mcp/worker.py` — **P2 follow-on**: MCP connect/discover/invoke in egress-restricted
+  sandbox (B7); not part of the first internal pilot.
 - `services/evals/drift.py` — baseline, deterministic + judge scoring, verdict, publish gate (B5).
   *Defensible core.*
 - `services/api/models.py` (Alembic) — full data model, P2 tables stubbed (B3).

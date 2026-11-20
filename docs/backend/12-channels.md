@@ -1,5 +1,7 @@
 # 12 — Messaging Channels (inbound adapter)
 
+> **⚠️ Secret custody — as built (feature 014, 2026-11-11):** provider-key custody now runs through a pluggable secrets backend (**AWS Secrets Manager** / LocalStack / `local`), **not** HashiCorp Vault Transit. The Vault / per-workspace-DEK material in this doc is the **superseded design baseline** for the still-unbuilt channel-credential family — it will be re-reconciled to the new backend when channels are built (P2). See `docs/scope.md` (2026-11-11) and `backend/09 §9`.
+
 > Implementation-level design for hosting agents behind Slack / Microsoft Teams / Google Chat. The
 > product/cross-cutting view is `docs/channels-design.md`; this doc is the backend module. It builds on
 > the one-shared-runtime principle (`00 §1`) and the auth planes (`09 §1`). **P2** — lands after the

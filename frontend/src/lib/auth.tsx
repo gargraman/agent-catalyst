@@ -24,6 +24,23 @@ import {
 //   and the dev role/team/platform-admin overrides are dropped. [ref: frontend-auth-access-plan.md]
 const profile = MOCK_PROFILE;
 
+/** Visible workspaces = claim-derived membership (mock IAM) ∪ workspaces the SERVER says the caller is a member of
+ *  (live discovery set `backendRole`). Live membership is authoritative; the claim path covers mock-only spaces. */
+// TODO(fe-wiring): in live mode, mock-only workspaces (no backendId) stay visible alongside the server's set, and
+//   platform-admin still comes from MOCK_PROFILE.groups — so workspace create/delete UI shows with no backend behind
+//   it (workspace-root plane is DEFERRED). Once every family is wired, show ONLY discovered workspaces and source
+//   platform-admin from the session.
+function visibleWorkspaces(all: Workspace[], platformAdmin: boolean): Workspace[] {
+  const claimed = new Set(memberWorkspaces(profile, all, platformAdmin).map((w) => w.id));
+  return all.filter((w) => claimed.has(w.id) || w.backendRole != null);
+}
+
+/** Role in a workspace: the server-resolved role when live (so UI gating matches what the API enforces), else the
+ *  mock claim-derived role. The dev preview override is applied by the caller on top. */
+function effectiveRole(workspace: Workspace | undefined, platformAdmin: boolean): Role {
+  return workspace?.backendRole ?? roleFor(profile, workspace, platformAdmin);
+}
+
 export type AuthUser = { name: string; email: string; role: Role; teams: string[] };
 
 export type Auth = {
@@ -51,8 +68,8 @@ export function useAuth(): Auth {
   const active = useWorkspaceActiveFor(activeWs);
   // Resolve the active workspace from the VISIBLE set (membership-enforced): a non-member active id yields
   // no workspace → viewer, and the boundary shows the picker rather than leaking a non-member tenant.
-  const workspace = memberWorkspaces(profile, allWorkspaces, platformAdmin).find((w) => w.id === activeWs);
-  const role: Role = override ?? roleFor(profile, workspace, platformAdmin);
+  const workspace = visibleWorkspaces(allWorkspaces, platformAdmin).find((w) => w.id === activeWs);
+  const role: Role = override ?? effectiveRole(workspace, platformAdmin);
   const teams = teamOverride ?? profile.teams;
   // Inactive workspace = workspace-level read-only freeze: every write/invoke permission is denied, only
   // read ("view") survives. The single choke point for GateButton/Gate/page self-guards. Workspace CRUD
@@ -93,7 +110,7 @@ export function useWorkspace(): WorkspaceCtx {
   const activeWs = useActiveWorkspaceId();
   const { role, user, isPlatformAdmin: platformAdmin } = useAuth();
   const allWorkspaces = useWorkspaces();
-  const workspaces = memberWorkspaces(profile, allWorkspaces, platformAdmin);
+  const workspaces = visibleWorkspaces(allWorkspaces, platformAdmin);
   // Membership-enforced: resolve from the visible set, not the registry, so a non-member active id (e.g. after
   // dropping platform-admin while in a non-member space) renders the picker, not that tenant's console.
   const workspace = workspaces.find((w) => w.id === activeWs);
@@ -101,7 +118,7 @@ export function useWorkspace(): WorkspaceCtx {
   return {
     workspaces,
     workspace,
-    membershipRole: roleFor(profile, workspace, platformAdmin),
+    membershipRole: effectiveRole(workspace, platformAdmin),
     active,
     isPlatformAdmin: platformAdmin,
     role,

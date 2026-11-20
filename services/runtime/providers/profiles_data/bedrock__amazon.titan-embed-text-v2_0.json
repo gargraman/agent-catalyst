@@ -1,0 +1,14 @@
+{
+  "provider": "bedrock",
+  "model": "amazon.titan-embed-text-v2:0",
+  "kind": "embedding",
+  "dimension": 1024,
+  "max_batch": 1,
+  "max_input_tokens": 8192,
+  "provisional": true,
+  "availability": "active",
+  "pricing_usd_per_mtok": {"input": 0.02, "output": 0},
+  "limits": {},
+  "features": {"dimensions_param": true},
+  "_note": "CUSTOMER-DATA embedding model (decision 2026-11-14). Titan v2 takes one input text per InvokeModel call, hence max_batch 1. Pricing provisional and UNVERIFIED (believed $0.02/MTok; reconcile against the AWS price list before go-live). Live call unverified (model access + R-CA) — tasks T086."
+}

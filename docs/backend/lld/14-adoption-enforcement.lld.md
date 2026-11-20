@@ -1,5 +1,7 @@
 # 14 (LLD) — Adoption & Enforcement (modes, policy surface, shadow-usage measurement)
 
+> **⚠️ Secret custody — as built (feature 014, 2026-11-11):** provider-key custody now runs through a pluggable secrets backend (**AWS Secrets Manager** / LocalStack / `local`), **not** HashiCorp Vault Transit. The `transit/keys/platform-pool` / Vault detail in this LLD is the **superseded design baseline** for the still-unbuilt enforcement path — the *concept* (one platform-scope key path for enforced orgs) holds; only the custody engine changed. See `docs/scope.md` (2026-11-11) and [`../09-security-tenancy.md §9`](../09-security-tenancy.md).
+
 > **Parent:** [`../14-adoption-enforcement.md`](../14-adoption-enforcement.md) (the key-custody spine §1, the
 > create-time registration gate §2, the similarity/dedup scanner §3, import/migration §4, MCP §5 + skill §6
 > open-registration governance).

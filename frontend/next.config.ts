@@ -1,7 +1,35 @@
 import type { NextConfig } from "next";
 
+// Backend origin for the same-origin API proxy below. Server-side only (no NEXT_PUBLIC_ prefix) — it is read
+// when the rewrite table is built, never shipped to the browser. Defaults to the local dev stack (make up → :8000).
+const API_ORIGIN = process.env.AC_API_ORIGIN ?? "http://localhost:8000";
+
 const nextConfig: NextConfig = {
-  /* config options here */
+  // Proxy the backend's console API through the Next origin. The browser only ever talks to its own origin, so:
+  //   - there is no CORS surface on the API (it deliberately has no CORS middleware);
+  //   - the real OIDC cookie session + double-submit CSRF (feature 019) work unchanged when they replace dev auth.
+  // Only /api/v1/* is proxied — /healthz, /metrics and the published /v1 invoke plane are not console traffic.
+  // TODO(auth): when 019 OIDC login replaces dev headers, also proxy `/auth/:path*` (login/callback/logout) so the
+  //   session + `ac_csrf` cookies are set on THIS origin; otherwise the browser never sends them to /api/v1.
+  // TODO(deploy): in a deployed build, set AC_API_ORIGIN at BUILD time (rewrites are compiled into the routes
+  //   manifest) or front both with one ingress and drop the rewrite.
+  // The rewrite proxy cuts an upstream socket that's been idle for `proxyTimeout` (default 30 s — and `0` also means
+  // 30 s, see next/dist/server/lib/router-utils/proxy-request.js). The invoke stream can legitimately be silent for
+  // the server's whole 30 s deadline (slow first token / reasoning), and then must still deliver its `error`+`done`
+  // frames — at the default the proxy wins the race and the browser sees "connection lost" (026 L10 live finding).
+  experimental: { proxyTimeout: 120_000 },
+  // The Publish tab's endpoint + cURL snippet target `${NEXT_PUBLIC_PUBLIC_API_BASE || origin}/v1/agents/:id/invoke`
+  // (D17). /v1 is NOT proxied (see above), so in dev the console origin (:3000) would hand callers a 404 URL
+  // (026 US3 UI live finding). Dev default = the API origin that really serves /v1. In a production build it is
+  // left unset unless NEXT_PUBLIC_PUBLIC_API_BASE is given: `env` values are inlined into the browser bundle, and
+  // AC_API_ORIGIN may be an internal hostname there — prod falls back to the console origin (one shared ingress).
+  env: {
+    NEXT_PUBLIC_PUBLIC_API_BASE:
+      process.env.NEXT_PUBLIC_PUBLIC_API_BASE ?? (process.env.NODE_ENV === "production" ? "" : API_ORIGIN),
+  },
+  async rewrites() {
+    return [{ source: "/api/v1/:path*", destination: `${API_ORIGIN}/api/v1/:path*` }];
+  },
 };
 
 export default nextConfig;

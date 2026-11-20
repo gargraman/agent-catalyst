@@ -1,5 +1,10 @@
 # Backend integration map
 
+> **⚠️ Secret custody (feature 014, 2026-11-11):** rows that say a secret goes "to the vault" / "vaulted"
+> refer to the **pluggable secrets backend** (AWS Secrets Manager / LocalStack / `local`), **not** HashiCorp
+> Vault. Provider-key custody is BUILT on it; connector/tool/channel/MCP credential rows are designed for the
+> same seam but not yet built. See `docs/scope.md` (2026-11-11) and `docs/backend/09 §9`.
+
 The frontend is currently **mock-only**: reads come from seeds in `frontend/src/lib/data.ts` through a
 client store (`frontend/src/lib/store.ts`), writes are in-memory store mutations, auth/tenancy is a
 mock IAM profile (`frontend/src/lib/auth.tsx` + `iam.ts`), and the runtime token check is a
@@ -202,10 +207,12 @@ hook + an inline `@backend` marker when the FE surface is built (follow-up, not 
 | `lib/store.ts:addToken` | POST /v1/agents/:id/tokens | session (publisher) | yes | - | Caller token bound to a published endpoint, shown once. |
 | `lib/store.ts:revokeToken` | DELETE /v1/tokens/:id | session (publisher) | yes | - | Immediate revoke. |
 | `lib/store.ts:useProviderKeys` | GET /v1/provider-keys?workspace=:id | session | yes | - | Masked. |
-| `lib/store.ts:addProviderKey` | POST /v1/provider-keys | session (admin) | yes | - | Stored in vault; value never returned. |
-| `lib/store.ts:rotateProviderKey` / `revokeProviderKey` | POST /v1/provider-keys/:id/rotate\|revoke | session (admin) | yes | - | Rotate replaces the vaulted secret + mask; revoke tombstones (status=revoked). Audited (09 §12). |
+| `lib/store.ts:addProviderKey` | POST /v1/provider-keys | session (admin) | yes | - | **BUILT (014)** · write-once; raw value custodied in the pluggable secrets backend (`api/secrets/`: `local`/`aws` Secrets Manager — NOT Vault, see `scope.md` 2026-11-11), never returned; `key.manage` + RLS. |
+| `lib/store.ts:rotateProviderKey` / `revokeProviderKey` | POST /v1/provider-keys/:id/rotate\|revoke | session (admin) | yes | - | **BUILT (014)** · Rotate replaces the custodied secret + mask + sets `rotated_at` (old stops resolving); revoke tombstones (status=revoked, row retained, disables backend secret → resolve fails closed). |
 | `lib/store.ts:useMembers` | GET /v1/members?workspace=:id | session | yes | - | **READ-ONLY** roster projected from the workspace's per-role claim holders (each member's role = the `ap-<prefix>-<role>` claim they hold), resolved via the identity adapter (18 §4). No in-app invite/remove — membership managed in the IdP. |
 | `settings/page.tsx:RolesAccess` → `lib/store.ts:setAccessPolicy` | PUT /v1/{agents\|knowledge\|tools\|mcp\|channels\|skills}/:id/access-policy | session (admin) | yes | - | Roles & access tab EDITS per-resource policies across all kinds (agents/knowledge/tools/mcp/channels/skills) via `AccessPolicyEditor`. |
+| `settings` admin → force-logout action (**net FE**) | POST /api/v1/org/revoke-user | session (**admin**) | yes | - | **NET-NEW FE.** Admin force-logout / revoke-user: writes `{subject\|token_id}` to the transient Redis deny-set → active console sessions **+** caller tokens fail closed on their next request (09 §2.1). Requires a net-new FE **401 interceptor + redirect-to-login** (resolves the open sign-out decision, `frontend-auth-access-plan` #3). No roster, no SCIM. |
+| `agents` list + detail → 'Model sunsetting' badge + `ProfileOutdatedBanner` (`Agent.profileOutdated`) | GET /api/v1/org/compliance (admin view) · agent-level flag | session | yes | - | **Partly net FE.** The `outdated` view lists agents pinned to a stale/`sunset_at` model profile (over the existing `model_deprecation_scan` detector — **no new detector**). FE shipped a **distinct** `Agent.profileOutdated` flag → a `tone="warning"` 'Model sunsetting' badge (agents list) + a dedicated `ProfileOutdatedBanner` (agent detail) — **not** a reuse of `NeedsReEvalBanner`/the drift badge, and **not** `needsReEval` (informational, non-gating). Dashboard surfacing not done. |
 
 ## Guardrails & search
 

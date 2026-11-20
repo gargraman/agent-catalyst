@@ -1,5 +1,7 @@
 # 12 (LLD) — Messaging Channels (inbound adapter, the 4th caller)
 
+> **⚠️ Secret custody — as built (feature 014, 2026-11-11):** secret custody now runs through a pluggable secrets backend (**AWS Secrets Manager** / LocalStack / `local`), **not** HashiCorp Vault Transit. The Vault / DEK channel-credential detail in this LLD is the **superseded design baseline** for the still-unbuilt channel family (P2) — to be re-reconciled when channels are built. See `docs/scope.md` (2026-11-11) and [`../09-security-tenancy.md §9`](../09-security-tenancy.md).
+
 > **Parent:** [`../12-channels.md`](../12-channels.md) (the four-callers principle, module layout, the DDL
 > sketch, identity federation `§4`, the invoke mapping `§5`, security `§6`, phasing). The parent **amends
 > `00 §1`** — three → four callers — and fixes the model plus the H1 (non-authoritative email) / H1.5 (inbound

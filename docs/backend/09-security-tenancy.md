@@ -1,5 +1,16 @@
 # 09 — Security, Auth & Multi-Tenancy
 
+> **Built-state (2026-11-06, feature `specs/008-rbac-enforcement`): workspace RBAC enforcement is LIVE.**
+> The 4-role→permission model is mirrored server-side (`services/api/permissions.py`, **generated from
+> `frontend/src/lib/permissions.ts`** via `scripts/gen_rbac.py` + a drift test) and enforced by a
+> `require_permission(...)` dependency on all 47 workspace-scoped routes — **deny-by-default** (coverage
+> test), **fail-closed** (unknown role → 403), **403 before resource load** (no existence leak), composed
+> with workspace membership + RLS. Role is read from the resolved principal claim. **Still deferred:**
+> per-resource access policy (role+team visibility), OIDC/member-sourced role origin,
+> `rate_limit()` thresholds (F5), and SSRF egress controls (F19) — the sections below remain the design
+> target for those. *(Provider-key custody is now BUILT via a pluggable secrets backend — §9; it reverses the
+> Vault-Transit design, see `scope.md` 2026-11-11.)*
+
 > Implements `spec.md §B12` and `backend-integration-plan.md Part 4`, and makes the frontend's existing
 > auth/access model (`docs/frontend-auth-access-plan.md`) real on the server. Trellix context: these
 > agents execute tools/MCP that reach internal systems, so this doc is not optional hardening — it is
@@ -109,8 +120,20 @@ sees the vendor shape, only the mapped result:
 
 Requires the IdP to emit a groups/roles claim scoped to this product (configured on the IdP app registration;
 per-adapter notes in 18 §5). **No SCIM or directory sync is needed for authZ** — claims are read live from the
-token on each request, so an IdP grant/revoke takes effect on next login. (Async recipient *enumeration* —
-16 — does need the adapter's `members_of` where available; see 18 §4.)
+token on each request, so an IdP grant/revoke normally takes effect on next login. (Async recipient
+*enumeration* — 16 — does need the adapter's `members_of` where available; see 18 §4.)
+
+> **Immediate revocation — the deny-set exception (2026-10-25).** "Next login" bounds a *passive* grant/revoke,
+> but it is too slow when access must be cut **now** — a disabled user, a stolen token, an incident. So the
+> per-request auth path (`verify_token` for console, `resolve_caller` §6 for callers) also checks a **transient
+> Redis deny-set** (keyed by subject *and* by token id) and **fails closed**: a matching entry rejects the
+> request immediately, killing **active console sessions** *and* caller tokens on their next call. It is
+> populated by an **admin `force-logout` / `revoke-user` action** (08, admin plane); entries carry a TTL ≥ the
+> max access-token TTL so a revoked subject can't outlive the set. This is a *transient* revocation list — **not**
+> a persistent roster or deactivation store, and **not SCIM**: automated IdP-driven offboarding (an IdP pushing
+> `active:false`) stays out of scope, so the deny-set is admin-triggered, not IdP-pushed. It is the single
+> deliberate reversal of the 2026-10-22 rev 1/2 "claims are the SoR, next-login, no app-side deactivation list"
+> bound (`scope.md`); no roster, no 4th auth plane, claims remain the authZ system of record.
 
 ## 3. Workspace scoping — the tenancy guard (layer 1)
 
@@ -304,7 +327,10 @@ async def resolve_caller(authorization: str, db) -> CallerCtx:
 
 Token lifecycle: minted by publisher/admin, **secret shown exactly once** (only the `prefix` + hash
 persist), revocable (sets `revoked_at` → immediate), optional `expires_at`, per-token rate limit. Never
-logged, never in exports.
+logged, never in exports. Postgres `revoked_at` is the authoritative record and is already checked on every
+call above; the §2.1 **Redis deny-set** unifies this guarantee with **console sessions** (which have no
+`api_tokens` row and were previously bounded only by the ≤1h access-token TTL), so one admin `revoke-user`
+action cuts both planes at once, failing closed on the same per-request path.
 
 ## 7. RLS backstop (layer 2)
 
@@ -357,7 +383,31 @@ A dedicated suite asserts tenant A can never read or act on tenant B, run in CI 
   and the suite asserts (a) no *other* role/plane can call the `SECURITY DEFINER` reader, and (b) every
   successful cross-tenant read emitted an `org.report.read` audit row. Anything else crossing = a failure.
 
-## 9. Secrets — Vault Transit envelope encryption
+## 9. Secrets — custody backend
+
+> ### ⚠️ AS BUILT (feature 014, 2026-11-11) — this section's Vault-Transit scheme is SUPERSEDED for provider keys
+>
+> The deployment target moved to AWS, so secret custody is now a **pluggable secrets backend**, not
+> HashiCorp Vault Transit. See the `docs/scope.md` 2026-11-11 decision-log entry. What actually ships:
+>
+> - **Seam:** `services/api/secrets/` — a `SecretsProvider` protocol (`put/get/rotate/disable`) + a
+>   config-selected registry (`AC_SECRETS_PROVIDER=local|aws`), mirroring the feature-012 `api/auth/` pattern.
+>   `local` = in-process (tests + offline dev); `aws` = **AWS Secrets Manager** (real AWS in prod, LocalStack
+>   locally via `AWS_ENDPOINT_URL`). The cloud provider is swappable without touching callers.
+> - **No app-level envelope encryption / DEK.** Secrets Manager's KMS-at-rest sits behind the seam; the
+>   per-workspace-DEK / Vault-Transit design below is NOT built.
+> - **`vault_path` is an OPAQUE handle** — a Secrets Manager ARN (`aws`) or a `local://…` ref (`local`) — not
+>   a Vault path. (Column name kept for FE/DB contract stability; see 01 §4.3.)
+> - **P6 boundary correction:** the custody code lives in **`services/api/`** (may import boto3), NOT
+>   `services/runtime/`. `runtime/` stays a pure library and only receives the **resolved plaintext string** via
+>   `RunContext.api_key`. The `services/runtime/secrets.py` sketch below would VIOLATE P6 and was never built.
+> - **Resolve-at-invoke** (and at eval-run) replaces the single `PROVIDER_API_KEY` env var: the API resolves
+>   the workspace's active key for the agent's provider from the custody service just-in-time. Missing / revoked
+>   / unresolvable → fail closed with `config_error` (503) before any provider call (non-prod may fall back to
+>   `PROVIDER_API_KEY` for dev continuity only). Capture is write-once; reads are masked-only; revoke is a
+>   tombstone that disables the backend secret. RBAC `key.manage` (admin) + RLS; no per-resource policy.
+> - **Scope:** provider keys ONLY. MCP/tool/connector/channel creds are *designed for* the same seam but not
+>   yet built — the Vault-Transit material below remains their (unimplemented) design reference.
 
 Provider keys, tool creds, connector creds, MCP auth — **none are ever stored plaintext** (01
 `provider_keys` holds only `masked` + `vault_path`). Base envelope scheme, **per-workspace DEK** (the
